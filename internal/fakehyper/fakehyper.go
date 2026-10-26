@@ -86,10 +86,10 @@ type Server struct {
 // User is the fake account.
 type User struct {
 	UUID, Username, Email string
-	Balance, Subscription  float64 // tenths
-	Frozen                 float64
-	Plan                   string
-	Privileges             []string
+	Balance, Subscription float64 // tenths
+	Frozen                float64
+	Plan                  string
+	Privileges            []string
 }
 
 type grant struct {

@@ -94,21 +94,21 @@ func Standard() *Server {
 	s.AddTask(&Task{
 		UUID: GeometryID, Prompt: "A hockey helmet", Created: "2026-10-15T10:00:00.000Z",
 		Step: "ModelRefine", UserState: "DoneBasic",
-		Settings: merge(baseSettings("high", []any{"?"}, []any{1.0}), confirmSettings, map[string]any{"geometry": "Base", "geometry_file_format": "obj"}),
-		Inputs:   []string{"0000.webp"},
-		Poster:   map[string]string{"preview_image": "geo-poster.webp", "geometry_image": "geometry.webp", "geometry_video": "geometry.mp4", "render_video": "render.mp4"},
-		Preview:  map[string]string{"model": "model.glb", "preview_sdf": "geo.drc"},
-		Confirmed: map[string]any{"model_version": "v1", "model_confirm_at": "2026-10-15T10:10:00.000Z"},
+		Settings:    merge(baseSettings("high", []any{"?"}, []any{1.0}), confirmSettings, map[string]any{"geometry": "Base", "geometry_file_format": "obj"}),
+		Inputs:      []string{"0000.webp"},
+		Poster:      map[string]string{"preview_image": "geo-poster.webp", "geometry_image": "geometry.webp", "geometry_video": "geometry.mp4", "render_video": "render.mp4"},
+		Preview:     map[string]string{"model": "model.glb", "preview_sdf": "geo.drc"},
+		Confirmed:   map[string]any{"model_version": "v1", "model_confirm_at": "2026-10-15T10:10:00.000Z"},
 		GeoVersions: []string{"v1"}, Pack: []string{"base.obj"},
 	})
 	s.AddTask(&Task{
 		UUID: MatDraftID, Prompt: "A wooden dog", Created: "2026-10-10T10:00:00.000Z",
 		Step: "TextureGenerate", UserState: "DonePreview",
-		Settings: merge(baseSettings("high", []any{"F"}, []any{1.0}), confirmSettings, textureSettings, map[string]any{"reference_image": "0000.webp"}),
-		Inputs:   []string{"0000.webp"},
-		Poster:   map[string]string{"preview_image": "mat-poster.webp", "geometry_image": "geometry.webp"},
-		Preview:  map[string]string{"model": "model.glb"},
-		Confirmed: map[string]any{"model_version": "v1", "model_confirm_at": "2026-10-10T10:10:00.000Z"},
+		Settings:    merge(baseSettings("high", []any{"F"}, []any{1.0}), confirmSettings, textureSettings, map[string]any{"reference_image": "0000.webp"}),
+		Inputs:      []string{"0000.webp"},
+		Poster:      map[string]string{"preview_image": "mat-poster.webp", "geometry_image": "geometry.webp"},
+		Preview:     map[string]string{"model": "model.glb"},
+		Confirmed:   map[string]any{"model_version": "v1", "model_confirm_at": "2026-10-10T10:10:00.000Z"},
 		GeoVersions: []string{"v1"}, MatVersions: map[string][]string{"0000.webp": {"v1", "v2"}},
 	})
 	s.AddTask(&Task{
@@ -129,10 +129,10 @@ func Standard() *Server {
 	s.AddTask(&Task{
 		UUID: RunningID, Prompt: "A robot", Created: "2026-10-25T10:00:00.000Z",
 		Step: "ModelGenerate", UserState: "Generating", Pending: 1,
-		Settings: baseSettings("extreme-low", []any{"?"}, []any{1.0}),
-		Inputs:   []string{"0000.webp"},
-		Poster:   map[string]string{"preview_image": "run.webp"},
-		Next:     []State{{Step: "ModelGenerate", UserState: "Generating", Pending: 1}, {Step: "ModelGenerate", UserState: "DonePreview"}},
+		Settings:    baseSettings("extreme-low", []any{"?"}, []any{1.0}),
+		Inputs:      []string{"0000.webp"},
+		Poster:      map[string]string{"preview_image": "run.webp"},
+		Next:        []State{{Step: "ModelGenerate", UserState: "Generating", Pending: 1}, {Step: "ModelGenerate", UserState: "DonePreview"}},
 		GeoVersions: []string{"v1"},
 	})
 	for _, id := range []string{DraftID, GeometryID, MatDraftID, PackedID, RunningID} {

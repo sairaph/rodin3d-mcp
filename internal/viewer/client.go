@@ -69,6 +69,18 @@ func DisplayAvailable() (bool, string) {
 // StartTimeout bounds how long Start waits for a new window to answer.
 const StartTimeout = 20 * time.Second
 
+// How long a window takes to end. A closing window saves the input sets
+// still queued for at most SaveWait (the store's busy timeout is 5 s); a
+// window told to stop by a signal whose loop does not close within
+// StopGrace exits anyway, and one whose loop did close is given SaveWait
+// and 2 s more. So a window ends within ExitWait of a close call or a stop
+// signal.
+const (
+	SaveWait  = 10 * time.Second
+	StopGrace = 5 * time.Second
+	ExitWait  = StopGrace + SaveWait + 2*time.Second
+)
+
 // Start runs `<exe> viewer` as a background process unless a window is
 // already open, and waits until its socket answers. started reports a new
 // process. A process that exits before answering is reported with the
@@ -152,8 +164,9 @@ func Start(ctx context.Context, exe string, p domain.Paths) (started bool, err e
 // Stop ends a viewer process that does not answer: it signals the process
 // id in the viewer's PID file, and only while the viewer lock is held, so a
 // process id reused by another program is never hit (Windows: terminated;
-// elsewhere: interrupted, and the window exits within 5 s even when its
-// loop is stuck). ErrNotRunning means no window holds the lock.
+// elsewhere: interrupted, and the window exits within ExitWait, within
+// StopGrace when its loop is stuck). ErrNotRunning means no window holds
+// the lock.
 func Stop(p domain.Paths) (pid int, err error) {
 	if b, rerr := os.ReadFile(p.ViewerPID); rerr == nil {
 		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))

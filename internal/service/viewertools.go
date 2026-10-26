@@ -394,8 +394,10 @@ func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result,
 }
 
 // closeWait is how long close_viewer waits for the window to end, after
-// the close call and again after stopping its process.
-const closeWait = 5 * time.Second
+// the close call and again after stopping its process: the window's own
+// bound (viewer.ExitWait, which covers saving its input sets) and 3 s for
+// the process to go.
+const closeWait = viewer.ExitWait + 3*time.Second
 
 // CloseViewer is close_viewer: close the window (a closed window is not an
 // error). A window that does not answer, or does not end after the close

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"sync"
 	"time"
 )
 
@@ -102,8 +103,13 @@ func pipeStderr(dup2 func(oldfd, newfd int) error, dup func(fd int) (int, error)
 // flushStderr ends the routing before the process exits, so the last lines
 // (and the count of a repeating line) reach the log: fd 2 points back at
 // the original stderr, the pipe's write end closes, and collapse drains
-// what is left (at most 2 s).
-func flushStderr() {
+// what is left (at most 2 s). Run and its stop watchdog may both call it:
+// it runs once, and a second caller waits until the first has finished.
+func flushStderr() { stderrFlush.Do(endStderrPipe) }
+
+var stderrFlush sync.Once
+
+func endStderrPipe() {
 	p := &stderrPipe
 	if p.restore == nil {
 		return

@@ -78,12 +78,19 @@ func Run(ctx context.Context, svc *service.Service, version string) int {
 		}
 	}()
 	// A stop signal (close_viewer stopping a window that does not answer)
-	// closes the window through its loop; a loop that is stuck never does,
-	// so the process ends on its own 5 s later.
+	// closes the window through its loop. A loop that is stuck never does,
+	// so the process ends on its own after viewer.StopGrace; a loop that
+	// closed leaves Run its input-set writes (viewer.SaveWait) and 2 s more.
+	loopDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
-		time.Sleep(stopGrace)
-		log.Printf("the window did not close within %s of the stop signal; exiting", stopGrace)
+		select {
+		case <-loopDone:
+			time.Sleep(viewer.SaveWait + 2*time.Second)
+			log.Printf("the window closed but did not end within %s; exiting", viewer.SaveWait+2*time.Second)
+		case <-time.After(viewer.StopGrace):
+			log.Printf("the window did not close within %s of the stop signal; exiting", viewer.StopGrace)
+		}
 		flushStderr()
 		os.Exit(1)
 	}()
@@ -99,9 +106,10 @@ func Run(ctx context.Context, svc *service.Service, version string) int {
 	ebiten.SetScreenClearedEveryFrame(false)
 	ebiten.SetVsyncEnabled(true)
 	err := ebiten.RunGame(a)
+	close(loopDone)
 	a.rend.stop()
 	a.saveCameras()
-	if !a.saver.flush(10 * time.Second) {
+	if !a.saver.flush(viewer.SaveWait) {
 		log.Print("an input set was still being saved when the window closed")
 	}
 	if err != nil && !errors.Is(err, ebiten.Termination) {
@@ -111,9 +119,6 @@ func Run(ctx context.Context, svc *service.Service, version string) int {
 	log.Print("closed")
 	return 0
 }
-
-// stopGrace is how long a stop signal waits for the window to close.
-const stopGrace = 5 * time.Second
 
 // openSocket opens the control socket. A process that only checks whether
 // a window runs takes the lock for a moment; a window starting just then
@@ -178,8 +183,8 @@ func (a *App) do(ctx context.Context, fn func() any) (any, error) {
 }
 
 // saveWait bounds how long a show or control call waits for the input set
-// it changed to be stored (the store's busy timeout is 5 s).
-const saveWait = 10 * time.Second
+// it changed to be stored. A variable so tests can shorten it.
+var saveWait = viewer.SaveWait
 
 // doSaving runs fn on the game loop like do, then waits for the input set
 // write fn queued, if any, so that generate_model reads the set the reply

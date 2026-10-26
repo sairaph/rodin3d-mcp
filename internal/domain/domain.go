@@ -1,15 +1,11 @@
-// Package domain holds the business logic for rodin3d.
-// This is where you implement your API client, data types, and auth.
+// Package domain holds the identity of rodin3d-mcp and the places it keeps
+// its files. It talks to nothing; the Hyper3D client is internal/rodin.
 package domain
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
-	"github.com/sairaph/mcp-wizard/installer"
-	"github.com/sairaph/mcp-wizard/secret"
 )
 
 // Identity used by install, doctor and update. Owner and Repo point at the
@@ -31,97 +27,57 @@ func AssetName(goos, goarch string) string {
 	return name
 }
 
-// CredentialPath returns the path where credentials are stored.
-func CredentialPath() string {
+// Paths are every file and folder rodin3d-mcp writes, all under one root.
+type Paths struct {
+	Root            string
+	Config          string // config.toml: the [permission] table
+	Credentials     string // credentials.json: tokens and account, mode 0600
+	CredentialsLock string // flock taken around every token refresh
+	Client          string // client.json: the registered OAuth client, kept across logouts
+	PendingLogin    string // pending-login.json: PKCE state of a sign-in in progress
+	Database        string // rodin.db: tasks, cards, events, files, sync state
+	DaemonLock      string
+	DaemonPID       string
+	DaemonLog       string
+	Cache           string // cache/<task>/<step>-<version>/: stage images
+	Downloads       string // downloads/<id8>-<slug>/: packed model files
+	Previews        string // previews/: PNGs written by get_preview
+}
+
+// PathsUnder builds every path under root.
+func PathsUnder(root string) Paths {
+	return Paths{
+		Root:            root,
+		Config:          filepath.Join(root, "config.toml"),
+		Credentials:     filepath.Join(root, "credentials.json"),
+		CredentialsLock: filepath.Join(root, "credentials.lock"),
+		Client:          filepath.Join(root, "client.json"),
+		PendingLogin:    filepath.Join(root, "pending-login.json"),
+		Database:        filepath.Join(root, "rodin.db"),
+		DaemonLock:      filepath.Join(root, "daemon.lock"),
+		DaemonPID:       filepath.Join(root, "daemon.pid"),
+		DaemonLog:       filepath.Join(root, "daemon.log"),
+		Cache:           filepath.Join(root, "cache"),
+		Downloads:       filepath.Join(root, "downloads"),
+		Previews:        filepath.Join(root, "previews"),
+	}
+}
+
+// DefaultRoot is ~/.rodin3d-mcp (a relative .rodin3d-mcp when the home
+// folder cannot be determined).
+func DefaultRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".rodin3d", "credentials.json")
+		return "." + BinaryName
 	}
-	return filepath.Join(home, ".rodin3d", "credentials.json")
+	return filepath.Join(home, "."+BinaryName)
 }
 
-// ProjectCredentialPath returns the credentials path inside a project directory.
-// Use this with the project-scoped "add" subcommand.
-func ProjectCredentialPath(dir string) string {
-	return filepath.Join(dir, ".rodin3d", "credentials.json")
-}
+// DefaultPaths is PathsUnder(DefaultRoot()).
+func DefaultPaths() Paths { return PathsUnder(DefaultRoot()) }
 
-// RemoteConfig describes a hosted MCP endpoint that this binary bridges to.
-// When Remote returns non-nil, `rodin3d mcp` forwards the AI client's
-// stdio session to the remote over Streamable HTTP and adds the credential
-// collected by the login step as a request header. The secret lives only in
-// the credential store, never in any AI client's config file.
-type RemoteConfig struct {
-	URL           string // Streamable HTTP endpoint, e.g. https://mcp.example.com/mcp
-	HeaderName    string // request header carrying the credential, e.g. "Authorization"
-	HeaderPrefix  string // prefix before the credential value, e.g. "Bearer "
-	CredentialKey string // key in the credential store, e.g. "token"
-	Prompt        string // what the login step asks for, e.g. "your API token"
-}
-
-// Remote returns the hosted endpoint this binary bridges to, or nil when the
-// binary serves its own MCP server locally (the default).
-//
-// To ship a one-line installer for a hosted server, return for example:
-//
-//	return &RemoteConfig{
-//	    URL:           "https://mcp.example.com/mcp",
-//	    HeaderName:    "Authorization",
-//	    HeaderPrefix:  "Bearer ",
-//	    CredentialKey: "token",
-//	    Prompt:        "your rodin3d API token",
-//	}
-func Remote() *RemoteConfig {
-	return nil
-}
-
-// LoginConfig returns the credential collection configuration: an API token
-// when bridging to a remote endpoint, otherwise a placeholder email stage.
-// Replace the placeholder with your actual auth flow.
-func LoginConfig(store secret.Store) installer.LoginConfig {
-	return installer.LoginConfig{
-		ID:        "rodin3d-login",
-		Label:     "rodin3d account",
-		Skippable: true,
-		Stages:    loginStages(),
-		Store:     store,
-	}
-}
-
-func loginStages() []installer.LoginStage {
-	if r := Remote(); r != nil {
-		return []installer.LoginStage{{
-			Prompt: r.Prompt,
-			Field: installer.LoginField{
-				Name: r.CredentialKey, Label: "Token", Masked: true,
-				Validate: func(v string) error {
-					if strings.TrimSpace(v) == "" {
-						return fmt.Errorf("the token must not be empty")
-					}
-					return nil
-				},
-			},
-		}}
-	}
-	return []installer.LoginStage{{
-		Prompt: "your email address",
-		Field: installer.LoginField{
-			Name: "email", Label: "Email",
-		},
-	}}
-}
-
-// ProjectLoginConfig returns a project-scoped credential collection configuration.
-// Credentials are stored via the provided store (built from ProjectCredentialPath).
-func ProjectLoginConfig(store secret.Store, dir string) installer.LoginConfig {
-	return installer.LoginConfig{
-		ID:        "rodin3d-login-project",
-		Label:     fmt.Sprintf("rodin3d account (%s)", filepath.Base(dir)),
-		Skippable: true,
-		Stages:    loginStages(),
-		Store:     store,
-	}
-}
+// CredentialPath returns the path where credentials are stored.
+func CredentialPath() string { return DefaultPaths().Credentials }
 
 // DefaultEnv returns the environment variables written into AI client
 // configs when the server is registered. The server reads TRANSPORT (stdio

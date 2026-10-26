@@ -250,6 +250,15 @@ func (a *App) onKey(k ebiten.Key, now time.Time) {
 	}
 }
 
+// minWeight is the lowest weight the window's - button sets.
+const minWeight = 0.05
+
+// userMoving reports a camera drag or wheel zoom in progress: its action is
+// recorded (and the revision bumped) only when it ends.
+func (a *App) userMoving() bool {
+	return (strings.HasPrefix(a.in.pressed, "pane:") && a.in.moved) || a.in.wheelPending
+}
+
 // User actions: what the window's controls do.
 
 func (a *App) userMode(m string) {
@@ -388,12 +397,12 @@ func (a *App) userWeight(i int, delta float64) {
 	if a.inputs == nil || !a.inputs.editable || i < 0 || i >= len(a.inputs.items) {
 		return
 	}
+	// The first edit of a set without weights gives every image its even
+	// share, the start value of the edited one: generate_model takes a
+	// weight on every image or on none. A weight stays above 0.
+	a.fillWeights()
 	it := a.inputs.items[i]
-	w := 1 / float64(len(a.inputs.items))
-	if it.weight != nil {
-		w = *it.weight
-	}
-	w = clamp(math.Round((w+delta)*20)/20, 0, 1)
+	w := clamp(math.Round((*it.weight+delta)*20)/20, minWeight, 1)
 	it.weight = &w
 	a.saveInputs()
 	a.userAction("weight", fmt.Sprintf("image %d: %.2f", i, w))

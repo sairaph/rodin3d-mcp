@@ -67,12 +67,15 @@ func (a *App) loadPane(p *pane) {
 	p.mapsWanted = p.kind == viewer.KindTask && p.stage.Name == "material" && len(p.stage.Maps) > 0
 	a.dirty()
 	current := func() bool { return a.contentGen == cgen && p.gen == gen }
+	// A load ending changes no state the agent or the user set, so it does
+	// not bump the revision (an agent's expected_revision stays good); the
+	// pane's status and note in the state say what happened.
 	failed := func(err error) {
 		e := service.Classify(err)
 		a.post(func() {
 			if current() {
 				p.status, p.err = "error", e.Message
-				a.bump()
+				a.dirty()
 			}
 		})
 	}
@@ -100,12 +103,17 @@ func (a *App) loadPane(p *pane) {
 				}
 				p.mesh, p.simple, p.maps, p.frame, p.modes, p.status = m.Mesh, simple, m.Maps, render3d.FrameOf(m.Mesh), modes, "ready"
 				if !slices.Contains(p.modes, a.mode) {
+					// a.mode is set before the load only when a show asked for it.
+					asked := a.mode
 					a.mode = defaultMode(p.modes)
+					if asked != "" {
+						p.note = fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
+					}
 				}
 				if m.Maps != nil && len(a.textures) == 0 {
 					a.textures = mapThumbs(m.Maps, nil)
 				}
-				a.bump()
+				a.dirty()
 			})
 			return
 		}

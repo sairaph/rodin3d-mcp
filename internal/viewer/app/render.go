@@ -179,6 +179,27 @@ func (r *renderer) loop() {
 
 var backgrounds = map[string]*[3]uint8{"light": {226, 229, 234}, "dark": {22, 24, 28}}
 
+// Frame bounds: render3d draws at most maxFrameSide pixels per side, and a
+// full frame takes supersampling 2 only up to maxFullSamples samples (a
+// sample costs 32 bytes), so a large screen does not need gigabytes per
+// frame. A smaller picture is scaled into the pane when drawn.
+const (
+	maxFrameSide   = 4096
+	maxFullSamples = 8 << 20
+)
+
+// frameSize is the render size and supersampling of a w x h pane picture.
+func frameSize(w, h int, interactive bool) (int, int, int) {
+	if m := max(w, h); m > maxFrameSide {
+		w, h = max(w*maxFrameSide/m, 16), max(h*maxFrameSide/m, 16)
+	}
+	ss := 2
+	if interactive || w*h*ss*ss > maxFullSamples {
+		ss = 1
+	}
+	return w, h, ss
+}
+
 func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 	res.job = j
 	defer func() {
@@ -189,11 +210,9 @@ func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 	}()
 	k := j.key
 	cam := k.cam
-	o := render3d.Options{Mode: render3d.Mode(k.mode), Width: k.w, Height: k.h, Camera: &cam, Frame: &j.frame, Draft: j.draft,
-		Background: backgrounds[k.bg], WireOverlay: k.overlay, Cancel: cancel, SS: 2}
-	if k.interactive {
-		o.SS, o.Interactive = 1, true
-	}
+	w, h, ss := frameSize(k.w, k.h, k.interactive)
+	o := render3d.Options{Mode: render3d.Mode(k.mode), Width: w, Height: h, Camera: &cam, Frame: &j.frame, Draft: j.draft,
+		Background: backgrounds[k.bg], WireOverlay: k.overlay, Cancel: cancel, SS: ss, Interactive: k.interactive}
 	t0 := time.Now()
 	res.img, _, res.err = render3d.Render(j.mesh, j.maps, o)
 	res.took = time.Since(t0)

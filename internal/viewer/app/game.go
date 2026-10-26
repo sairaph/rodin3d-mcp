@@ -5,6 +5,7 @@ import (
 	"context"
 	"image"
 	"image/png"
+	"log"
 	"math"
 	"os"
 	"time"
@@ -26,10 +27,15 @@ type App struct {
 	cmds    chan func()
 	loaded  chan func()
 	rend    *renderer
+	saver   *setSaver
+	// pendingSave is the input set write queued by the call running on the
+	// loop now (doSaving waits for it).
+	pendingSave <-chan error
 
 	// The shared state (viewer.State is built from it by snapshot).
 	rev        int64
 	actions    []viewer.UserAction
+	droppedRev int64 // revision of the newest user action no longer kept
 	kind       string
 	info       viewer.ContentInfo
 	panes      []*pane
@@ -76,9 +82,11 @@ type App struct {
 	test         testHooks // input injection (viewertest builds)
 }
 
-// captureReq is a screenshot waiting for a full-quality frame.
+// captureReq is a screenshot waiting for a full-quality frame; since, when
+// set, asks for the user's actions after that revision as well.
 type captureReq struct {
 	start, deadline time.Time
+	since           *int64
 	done            chan viewer.CaptureReply
 }
 
@@ -88,6 +96,13 @@ func newApp(ctx context.Context, svc *service.Service, version string) *App {
 		cam: defaultCam(), viewName: "three_quarter", scale: 1, lastTick: time.Now()}
 	a.loadCameras()
 	a.ui = newUI()
+	a.saver = newSetSaver(svc.SaveInputSet, func(id string, err error) {
+		log.Printf("save input set %s: %v", id, err)
+		a.post(func() {
+			a.message = "Could not save input set " + id + ": " + service.Classify(err).Message
+			a.dirty()
+		})
+	})
 	return a
 }
 
@@ -333,13 +348,17 @@ func (a *App) serveCaptures(now time.Time) {
 			q = viewer.QualityInteractive
 		}
 		st.Quality = q
-		waited := int(now.Sub(c.start) / time.Millisecond)
+		rep := viewer.CaptureReply{Width: b.Dx(), Height: b.Dy(), Quality: q, Waited: int(now.Sub(c.start) / time.Millisecond), State: st, PID: os.Getpid()}
+		if c.since != nil {
+			rep.Actions, rep.ActionsTruncated = a.actionsSince(*c.since)
+		}
 		go func(c *captureReq) {
 			img := &image.RGBA{Pix: pix, Stride: 4 * b.Dx(), Rect: image.Rect(0, 0, b.Dx(), b.Dy())}
 			opaque(img)
 			var buf bytes.Buffer
 			_ = png.Encode(&buf, img)
-			c.done <- viewer.CaptureReply{PNG: buf.Bytes(), Width: b.Dx(), Height: b.Dy(), Quality: q, Waited: waited, State: st, PID: os.Getpid()}
+			rep.PNG = buf.Bytes()
+			c.done <- rep
 		}(c)
 	}
 	a.captures = keep
@@ -377,7 +396,11 @@ func (a *App) Draw(screen *ebiten.Image) {
 // LayoutF makes the screen as many pixels as the window has on the
 // display (crisp at any scale).
 func (a *App) LayoutF(ow, oh float64) (float64, float64) {
-	s := ebiten.Monitor().DeviceScaleFactor()
+	// Monitor is nil when the backend cannot name one; the last scale stays.
+	s := a.scale
+	if m := ebiten.Monitor(); m != nil {
+		s = m.DeviceScaleFactor()
+	}
 	if !(s > 0) {
 		s = 1
 	}

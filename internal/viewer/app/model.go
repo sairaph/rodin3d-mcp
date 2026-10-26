@@ -73,6 +73,7 @@ type pane struct {
 	gen    uint64 // bumps when the pane's mesh source changes
 	status string // loading | ready | error
 	err    string
+	note   string // a change the load made to what was asked (state notes)
 	what   string // what is loading, for the screen
 
 	mesh, simple *render3d.Mesh
@@ -119,13 +120,15 @@ type prepared struct {
 	tasks    []*service.ViewTask
 	stages   []service.ViewStage
 	inputSet *service.InputSet
+	newSet   bool // inputSet is new: stored once the show is applied
 	maps     []string
 	file     string
 	images   []string
 }
 
-// prepare resolves show content: reads tasks, checks files, stores input
-// sets. It runs on the socket goroutine and may take seconds.
+// prepare resolves show content: reads tasks, checks files, builds new
+// input sets (stored by applyShow once the show is accepted). It runs on
+// the socket goroutine and may take seconds.
 func (a *App) prepare(ctx context.Context, c viewer.Content) (*prepared, error) {
 	kind, err := c.Kind()
 	if err != nil {
@@ -166,10 +169,7 @@ func (a *App) prepare(ctx context.Context, c viewer.Content) (*prepared, error) 
 			return nil, err
 		}
 		set := service.InputSet{ID: service.NewInputSetID(), Images: normaliseViews(c.InputSet.Images)}
-		if err := a.svc.SaveInputSet(set); err != nil {
-			return nil, err
-		}
-		p.inputSet = &set
+		p.inputSet, p.newSet = &set, true
 	case viewer.KindTaskInputs:
 		vt, err := a.svc.ViewTask(ctx, c.TaskInputs)
 		if err != nil {
@@ -186,10 +186,7 @@ func (a *App) prepare(ctx context.Context, c viewer.Content) (*prepared, error) 
 			}
 			set.Images = append(set.Images, viewer.InputImage{Path: f, View: in.View, Weight: in.Weight})
 		}
-		if err := a.svc.SaveInputSet(set); err != nil {
-			return nil, err
-		}
-		p.tasks, p.inputSet = []*service.ViewTask{vt}, &set
+		p.tasks, p.inputSet, p.newSet = []*service.ViewTask{vt}, &set, true
 	case viewer.KindTextures:
 		vt, err := a.svc.ViewTask(ctx, c.Textures.TaskID)
 		if err != nil {
@@ -368,9 +365,14 @@ func (a *App) staleRevision(expected *int64) (viewer.StateReply, bool) {
 	if expected == nil || *expected == a.rev {
 		return viewer.StateReply{}, false
 	}
+	actions, truncated := a.actionsSince(*expected)
+	fields := map[string]any{"user_actions": actions}
+	if truncated {
+		fields["user_actions_truncated"] = true
+	}
 	return a.conflict(fmt.Sprintf("The view changed since revision %d (now %d); the call was not applied.", *expected, a.rev),
 		"Read the state in this reply (get_viewer_state shows the user's actions), then call again with expected_revision set to the current revision.",
-		map[string]any{"user_actions": a.actionsSince(*expected)}), true
+		fields), true
 }
 
 // applyShow puts prepared content on screen (game loop).
@@ -442,6 +444,9 @@ func (a *App) applyShow(p *prepared, params viewer.ShowParams) viewer.StateReply
 		for _, im := range p.inputSet.Images {
 			a.inputs.items = append(a.inputs.items, &thumb{kind: "input", name: filepath.Base(im.Path), view: im.View, file: im.Path, weight: im.Weight})
 		}
+		if p.newSet {
+			a.saveInputs()
+		}
 	}
 	a.layout = defaultLayout(p.kind)
 	switch {
@@ -495,6 +500,12 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 	if rep, stale := a.staleRevision(c.ExpectedRevision); stale {
 		return rep
 	}
+	// A drag or wheel zoom of the user is recorded when it ends; until then
+	// the camera is the user's (D16: a newer user change is not overwritten).
+	if a.userMoving() && (c.Stage != nil || c.Version != nil || c.View != nil || c.ResetCamera || c.Orbit != nil || c.Zoom != nil || c.Pan != nil) {
+		return a.conflict("The user is moving the view right now; the call was not applied.",
+			"Call get_viewer_state in a moment, then send the call again with its revision as expected_revision.", map[string]any{"user_moving": true})
+	}
 	has3D := len(a.panes) > 0
 	need3D := func(what string) (viewer.StateReply, bool) {
 		if has3D {
@@ -543,6 +554,10 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 	if c.Mode != nil {
 		if r, no := need3D("mode"); no {
 			return r
+		}
+		if len(modes) == 0 {
+			return a.conflict("The model is still loading; its modes are known once it has loaded.",
+				"Call get_viewer_state until the pane's status is ready (its available_modes are listed then), then set the mode.", nil)
 		}
 		if !slices.Contains(modes, *c.Mode) {
 			return a.conflict(fmt.Sprintf("Mode %s is not available here.", *c.Mode), "Use one of: "+strings.Join(modes, ", ")+".", map[string]any{"available_modes": modes})
@@ -640,8 +655,8 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 			if !slices.Contains(viewer.ViewTags, t.View) {
 				return a.invalid(fmt.Sprintf("Unknown view tag %q.", t.View), "Use one of "+strings.Join(viewer.ViewTags, " ")+".")
 			}
-			if t.Weight != nil && (!finite(*t.Weight) || *t.Weight < 0 || *t.Weight > 1) {
-				return a.invalid("weight must be from 0 to 1.", "Pass a weight in range.")
+			if t.Weight != nil && (!finite(*t.Weight) || *t.Weight <= 0 || *t.Weight > 1) {
+				return a.invalid("weight must be above 0 and at most 1.", "Pass a weight in (0, 1]; weights are normalised to sum 1.")
 			}
 		}
 		if r := c.Reorder; r != nil && (r.From < 0 || r.From >= n || r.To < 0 || r.To >= n) {
@@ -697,6 +712,7 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 		if t.Weight != nil {
 			w := *t.Weight
 			it.weight = &w
+			a.fillWeights()
 		}
 		a.saveInputs()
 	}
@@ -799,17 +815,34 @@ func (a *App) reorder(from, to int) {
 	a.saveInputs()
 }
 
-// saveInputs stores the shown input set as it now stands.
+// saveInputs queues the shown input set, as it now stands, for writing
+// (setSaver); pendingSave is the write a tool call waits for.
 func (a *App) saveInputs() {
 	if a.inputs == nil || !a.inputs.editable {
 		return
 	}
 	set := service.InputSet{ID: a.inputs.id, FromTask: a.inputs.fromTask}
 	for _, it := range a.inputs.items {
-		set.Images = append(set.Images, viewer.InputImage{Path: it.file, View: it.view, Weight: it.weight})
+		var w *float64
+		if it.weight != nil {
+			v := *it.weight
+			w = &v
+		}
+		set.Images = append(set.Images, viewer.InputImage{Path: it.file, View: it.view, Weight: w})
 	}
-	if err := a.svc.SaveInputSet(set); err != nil {
-		a.message = "Could not save the input set: " + err.Error()
+	a.pendingSave = a.saver.save(set)
+}
+
+// fillWeights gives every image of the shown input set without a weight
+// the even share 1/N, so a set with one weight edited still has a weight
+// on every image (generate_model takes all or none).
+func (a *App) fillWeights() {
+	n := len(a.inputs.items)
+	for _, it := range a.inputs.items {
+		if it.weight == nil {
+			w := math.Round(100/float64(n)) / 100
+			it.weight = &w
+		}
 	}
 }
 
@@ -823,19 +856,21 @@ func (a *App) bump() {
 func (a *App) userAction(action, detail string) {
 	a.bump()
 	a.actions = append(a.actions, viewer.UserAction{Revision: a.rev, At: time.Now().UTC().Format(time.RFC3339), Action: action, Detail: detail})
-	if len(a.actions) > maxActions {
-		a.actions = a.actions[len(a.actions)-maxActions:]
+	if n := len(a.actions) - maxActions; n > 0 {
+		a.droppedRev = a.actions[n-1].Revision
+		a.actions = a.actions[n:]
 	}
 }
 
-func (a *App) actionsSince(rev int64) []viewer.UserAction {
-	var out []viewer.UserAction
+// actionsSince lists the kept user actions after revision rev; truncated
+// reports that actions after rev were dropped (only the last 50 are kept).
+func (a *App) actionsSince(rev int64) (out []viewer.UserAction, truncated bool) {
 	for _, x := range a.actions {
 		if x.Revision > rev {
 			out = append(out, x)
 		}
 	}
-	return out
+	return out, rev < a.droppedRev
 }
 
 // quality reports whether the screen shows full frames of loaded content.
@@ -895,7 +930,7 @@ func (a *App) snapshot() viewer.State {
 		}
 	}
 	for _, p := range a.panes {
-		ps := viewer.PaneState{Index: p.index, Kind: p.kind, File: p.file, Modes: p.modes, Status: p.status, Error: p.err}
+		ps := viewer.PaneState{Index: p.index, Kind: p.kind, File: p.file, Modes: p.modes, Status: p.status, Error: p.err, Note: p.note}
 		if ps.Modes == nil {
 			ps.Modes = []string{}
 		}

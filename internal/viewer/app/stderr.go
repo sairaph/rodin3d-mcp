@@ -60,6 +60,13 @@ func collapse(r io.Reader, w io.Writer) {
 	}
 }
 
+// stderrPipe is the routed stderr while guardStderr is in effect.
+var stderrPipe struct {
+	restore func() // points fd 2 back at the original stderr
+	w       *os.File
+	done    chan struct{} // closed when collapse has written everything
+}
+
 // pipeStderr makes fd 2 the write end of a pipe whose lines collapse
 // copies to the original stderr; dup2 does the swap (per OS). On any error
 // stderr stays as it was.
@@ -83,5 +90,29 @@ func pipeStderr(dup2 func(oldfd, newfd int) error, dup func(fd int) (int, error)
 	// A crash ends the process before the pipe is read; its report goes to
 	// the log directly.
 	_ = debug.SetCrashOutput(out, debug.CrashOptions{})
-	go collapse(r, out)
+	done := make(chan struct{})
+	stderrPipe.restore = func() { _ = dup2(orig, 2) }
+	stderrPipe.w, stderrPipe.done = w, done
+	go func() {
+		collapse(r, out)
+		close(done)
+	}()
+}
+
+// flushStderr ends the routing before the process exits, so the last lines
+// (and the count of a repeating line) reach the log: fd 2 points back at
+// the original stderr, the pipe's write end closes, and collapse drains
+// what is left (at most 2 s).
+func flushStderr() {
+	p := &stderrPipe
+	if p.restore == nil {
+		return
+	}
+	p.restore()
+	p.restore = nil
+	p.w.Close()
+	select {
+	case <-p.done:
+	case <-time.After(2 * time.Second):
+	}
 }

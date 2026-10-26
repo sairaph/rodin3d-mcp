@@ -225,9 +225,12 @@ type StateParams struct {
 }
 
 // CaptureParams is the capture method's input: wait up to WaitMS for a
-// full-quality frame, then take the current one.
+// full-quality frame, then take the current one. With SinceRevision the
+// reply also lists the user's actions after that revision, read at the
+// moment of the screenshot.
 type CaptureParams struct {
-	WaitMS int `json:"wait_ms,omitempty"`
+	WaitMS        int    `json:"wait_ms,omitempty"`
+	SinceRevision *int64 `json:"since_revision,omitempty"`
 }
 
 // ContentInfo says what the window shows.
@@ -265,6 +268,7 @@ type PaneState struct {
 	Modes     []string `json:"available_modes" yaml:"available_modes,flow"`
 	Status    string   `json:"status" yaml:"status"` // loading | ready | error
 	Error     string   `json:"error,omitempty" yaml:"error,omitempty"`
+	Note      string   `json:"note,omitempty" yaml:"note,omitempty"` // a change the load made to what was asked (a mode the model lacks)
 	Triangles int      `json:"triangles,omitempty" yaml:"triangles,omitempty"`
 }
 
@@ -361,19 +365,27 @@ func (e *Error) Error() string { return e.Message }
 type StateReply struct {
 	State   State        `json:"state"`
 	Actions []UserAction `json:"user_actions,omitempty"`
-	PID     int          `json:"pid"`
-	Error   *Error       `json:"error,omitempty"`
+	// ActionsTruncated: the window keeps the last 50 actions, and older
+	// ones after the asked revision were dropped.
+	ActionsTruncated bool   `json:"actions_truncated,omitempty"`
+	PID              int    `json:"pid"`
+	Error            *Error `json:"error,omitempty"`
 }
 
-// CaptureReply is a screenshot: the composed window image as PNG.
+// CaptureReply is a screenshot: the composed window image as PNG, with the
+// state (and, when asked, the user's actions) of the same moment; Error
+// when no screenshot was taken (the window closed meanwhile).
 type CaptureReply struct {
-	PNG     []byte `json:"png"`
-	Width   int    `json:"width"`
-	Height  int    `json:"height"`
-	Quality string `json:"quality"`
-	Waited  int    `json:"waited_ms"`
-	State   State  `json:"state"`
-	PID     int    `json:"pid"`
+	PNG              []byte       `json:"png"`
+	Width            int          `json:"width"`
+	Height           int          `json:"height"`
+	Quality          string       `json:"quality"`
+	Waited           int          `json:"waited_ms"`
+	State            State        `json:"state"`
+	Actions          []UserAction `json:"user_actions,omitempty"`
+	ActionsTruncated bool         `json:"actions_truncated,omitempty"`
+	PID              int          `json:"pid"`
+	Error            *Error       `json:"error,omitempty"`
 }
 
 // PingReply identifies the window process.

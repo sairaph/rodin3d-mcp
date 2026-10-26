@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,12 +37,10 @@ func Running(p domain.Paths) bool { return lock.IsRunning(LockPath(p)) }
 var ErrNotRunning = errors.New("no viewer window is open")
 
 // Call sends one RPC to the viewer process and decodes its result. It
-// returns ErrNotRunning when no process holds the lock or its socket does
-// not answer.
+// returns ErrNotRunning when nothing listens on the viewer socket. It dials
+// without probing the lock: a probe takes the lock for a moment, and a
+// window starting in that moment would find it taken and quit.
 func Call(ctx context.Context, p domain.Paths, method string, params, result any) error {
-	if !Running(p) {
-		return ErrNotRunning
-	}
 	c, err := socket.Dial(SocketPath(p))
 	if err != nil {
 		return fmt.Errorf("%w (%v)", ErrNotRunning, err)
@@ -95,6 +94,7 @@ func Start(ctx context.Context, exe string, p domain.Paths) (started bool, err e
 	}
 	defer out.Close()
 	exited := make(chan error, 1)
+	var child *os.Process
 	start := func(breakaway bool) error {
 		cmd := exec.Command(exe, "viewer")
 		cmd.Dir = filepath.Dir(exe)
@@ -103,6 +103,7 @@ func Start(ctx context.Context, exe string, p domain.Paths) (started bool, err e
 		if err := cmd.Start(); err != nil {
 			return err
 		}
+		child = cmd.Process
 		go func() { exited <- cmd.Wait() }()
 		return nil
 	}
@@ -136,9 +137,34 @@ func Start(ctx context.Context, exe string, p domain.Paths) (started bool, err e
 		case <-time.After(150 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
-			return false, &StartError{Reason: fmt.Sprintf("the window did not answer within %s; see %s", StartTimeout, p.ViewerLog)}
+			// A window that never answers would hold the viewer lock for
+			// good; the process this call started is stopped.
+			_ = child.Kill()
+			select {
+			case <-exited:
+			case <-time.After(2 * time.Second):
+			}
+			return false, &StartError{Reason: fmt.Sprintf("the window did not answer within %s and was stopped; see %s", StartTimeout, p.ViewerLog)}
 		}
 	}
+}
+
+// Stop ends a viewer process that does not answer: it signals the process
+// id in the viewer's PID file, and only while the viewer lock is held, so a
+// process id reused by another program is never hit (Windows: terminated;
+// elsewhere: interrupted, and the window exits within 5 s even when its
+// loop is stuck). ErrNotRunning means no window holds the lock.
+func Stop(p domain.Paths) (pid int, err error) {
+	if b, rerr := os.ReadFile(p.ViewerPID); rerr == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	if err := lock.Stop(p.ViewerPID, LockPath(p)); err != nil {
+		if errors.Is(err, lock.ErrNotRunning) {
+			return pid, ErrNotRunning
+		}
+		return pid, err
+	}
+	return pid, nil
 }
 
 // StartError is a viewer process that could not open its window.

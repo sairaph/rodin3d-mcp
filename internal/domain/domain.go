@@ -35,6 +35,7 @@ type Paths struct {
 	CredentialsLock string // flock taken around every token refresh
 	Client          string // client.json: the registered OAuth client, kept across logouts
 	PendingLogin    string // pending-login.json: PKCE state of a sign-in in progress
+	RevokePending   string // revoke-pending.json: a grant whose revoke failed, retried by logout
 	Database        string // rodin.db: tasks, cards, events, files, sync state
 	DaemonLock      string
 	DaemonPID       string
@@ -53,6 +54,7 @@ func PathsUnder(root string) Paths {
 		CredentialsLock: filepath.Join(root, "credentials.lock"),
 		Client:          filepath.Join(root, "client.json"),
 		PendingLogin:    filepath.Join(root, "pending-login.json"),
+		RevokePending:   filepath.Join(root, "revoke-pending.json"),
 		Database:        filepath.Join(root, "rodin.db"),
 		DaemonLock:      filepath.Join(root, "daemon.lock"),
 		DaemonPID:       filepath.Join(root, "daemon.pid"),

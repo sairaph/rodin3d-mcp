@@ -101,6 +101,7 @@ type Store struct {
 	lockPath string
 	client   string // client.json
 	pending  string // pending-login.json
+	revoke   string // revoke-pending.json
 }
 
 // NewStore returns the store for paths.
@@ -110,6 +111,7 @@ func NewStore(paths domain.Paths) *Store {
 		lockPath: paths.CredentialsLock,
 		client:   paths.Client,
 		pending:  paths.PendingLogin,
+		revoke:   paths.RevokePending,
 	}
 }
 
@@ -128,10 +130,50 @@ func (s *Store) Load(ctx context.Context) (*Credentials, error) {
 	return fromSession(sess), nil
 }
 
-// Save writes c atomically with mode 0600.
-func (s *Store) Save(ctx context.Context, c *Credentials) error {
-	return s.file.Save(ctx, c.toSession())
+// Save writes c atomically with mode 0600, in the format secret.FileStore
+// reads, through domain.WriteFileAtomic: its Windows replace retries when
+// another process holds the file for a moment, which a lost write after a
+// refresh-token rotation cannot afford.
+func (s *Store) Save(_ context.Context, c *Credentials) error {
+	data, err := json.MarshalIndent(c.toSession().Values, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode credentials: %w", err)
+	}
+	return domain.WriteFileAtomic(s.file.Path(), data, 0o600)
 }
+
+// revokeRecord is one entry of revoke-pending.json: a grant whose revoke
+// failed at logout.
+type revokeRecord struct {
+	ClientID     string    `json:"client_id"`
+	RefreshToken string    `json:"refresh_token"`
+	Since        time.Time `json:"since"`
+}
+
+// saveRevokes writes the grants still to revoke; none removes the file.
+func (s *Store) saveRevokes(rs []revokeRecord) error {
+	if len(rs) == 0 {
+		_ = os.Remove(s.revoke)
+		return nil
+	}
+	data, _ := json.MarshalIndent(rs, "", "  ")
+	return domain.WriteFileAtomic(s.revoke, data, 0o600)
+}
+
+func (s *Store) loadRevokes() []revokeRecord {
+	data, err := os.ReadFile(s.revoke)
+	if err != nil {
+		return nil
+	}
+	var rs []revokeRecord
+	if json.Unmarshal(data, &rs) != nil {
+		return nil
+	}
+	return rs
+}
+
+// RevokePending reports whether a failed revoke waits for a retry.
+func (s *Store) RevokePending() bool { return len(s.loadRevokes()) > 0 }
 
 // Delete removes the credentials file.
 func (s *Store) Delete(ctx context.Context) error { return s.file.Delete(ctx) }
@@ -194,6 +236,9 @@ type pendingLogin struct {
 	Verifier    string    `json:"verifier"`
 	Issuer      string    `json:"issuer"`
 	CreatedAt   time.Time `json:"created_at"`
+	// Completed marks a sign-in that finished; State then identifies the
+	// answer that finished it.
+	Completed bool `json:"completed,omitempty"`
 }
 
 func (s *Store) savePending(p pendingLogin) error {

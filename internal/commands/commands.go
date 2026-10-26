@@ -309,24 +309,44 @@ func toJSON(front any) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
 }
 
+// loginArgs reads the login arguments: json, no-browser (with or without
+// dashes) and the pasted final address in any form parseRedirect takes
+// (full address, path with query, or the query alone). Anything carrying a
+// code= or error= is the address, never an option.
+func loginArgs(raw []string) (a args, open bool, address string, err error) {
+	a, open = args{opts: map[string]string{}}, true
+	for _, r := range raw {
+		switch strings.ToLower(strings.TrimLeft(r, "-")) {
+		case "json":
+			a.json = true
+			continue
+		case "no-browser":
+			open = false
+			continue
+		}
+		if strings.Contains(r, "code=") || strings.Contains(r, "error=") || strings.Contains(r, "://") {
+			address = r
+			continue
+		}
+		if strings.HasPrefix(r, "-") {
+			return a, open, "", usage("login takes no option " + strconv.Quote(r) + "; use no-browser, json, or the final address")
+		}
+		return a, open, "", usage(strconv.Quote(r) + " is not a sign-in address: paste the whole address that starts with http://127.0.0.1: (quote it, it holds &)")
+	}
+	return a, open, address, nil
+}
+
 // Login is the login command. With an address it finishes the pending
 // sign-in. Without one it starts a sign-in, prints the link and a QR code,
 // opens the local browser unless no-browser is given, and waits up to ten
 // minutes for the loopback listener or a pasted final address.
 func Login(ctx context.Context, env Env, raw []string) int {
+	a, open, address, err := loginArgs(raw)
+	if err != nil {
+		return env.print(service.Result{}, err, a.json)
+	}
 	svc := env.Service()
 	defer svc.Close()
-	a := parse(raw)
-	open := true
-	address := ""
-	for _, p := range a.pos {
-		switch p {
-		case "no-browser", "--no-browser":
-			open = false
-		default:
-			address = p
-		}
-	}
 	if address != "" {
 		res, _, err := svc.Login(ctx, service.LoginInput{RedirectURL: address})
 		return env.print(res, err, a.json)

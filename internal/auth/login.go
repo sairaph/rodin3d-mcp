@@ -38,6 +38,19 @@ var (
 	ErrLoginReplaced  = errors.New("the sign-in was replaced by a newer one or cancelled")
 )
 
+// retryable marks a failure that used up nothing: the same address can be
+// tried again.
+type retryable struct{ err error }
+
+func (r *retryable) Error() string { return r.err.Error() }
+func (r *retryable) Unwrap() error { return r.err }
+
+// IsRetryable reports whether a Complete failure left the sign-in usable.
+func IsRetryable(err error) bool {
+	var r *retryable
+	return errors.As(err, &r)
+}
+
 // LoginRejected is an authorization reply that carries an error (the user
 // pressed Deny, or the server refused the request).
 type LoginRejected struct {
@@ -166,10 +179,17 @@ func (m *Manager) serve(ln net.Listener) <-chan Outcome {
 		creds, err := m.Complete(ctx, r.URL.String())
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		if errors.Is(err, ErrStateMismatch) {
+		switch {
+		case errors.Is(err, ErrStateMismatch):
 			// A tab from an older attempt: keep waiting for the current one.
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(w, page("This sign-in link is out of date", "Open the latest link that rodin3d-mcp printed, then approve again."))
+			return
+		case errors.Is(err, ErrNotRedirect), errors.Is(err, ErrNoPendingLogin), IsRetryable(err):
+			// Not a code, or no code was used up: the real redirect may still
+			// come, so the listener keeps waiting.
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, page("Sign-in not finished", err.Error()+" This page can be reloaded to try again."))
 			return
 		}
 		if err != nil {
@@ -283,9 +303,17 @@ func (m *Manager) Complete(ctx context.Context, address string) (*Credentials, e
 			return err
 		}
 		if p == nil {
-			if c, _ := m.store.Load(ctx); c.State() == StateSignedIn && m.now().Sub(c.ObtainedAt) < LoginWindow {
-				creds = c
-				return nil
+			return ErrNoPendingLogin
+		}
+		if p.Completed {
+			// The same answer again (the listener and a paste racing, or a
+			// reloaded tab): the session it made is the result. Any other
+			// address has no sign-in to finish.
+			if q.Get("state") == p.State && m.now().Sub(p.CreatedAt) <= LoginWindow {
+				if c, _ := m.store.Load(ctx); c.State() == StateSignedIn {
+					creds = c
+					return nil
+				}
 			}
 			return ErrNoPendingLogin
 		}
@@ -306,7 +334,11 @@ func (m *Manager) Complete(ctx context.Context, address string) (*Credentials, e
 		ts, err := m.oauth.Exchange(ctx, p.ClientID, p.RedirectURI, q.Get("code"), p.Verifier)
 		if err != nil {
 			var oe *OAuthError
-			if errors.As(err, &oe) && (oe.Code == "invalid_client" || oe.Code == "invalid_grant") {
+			if !errors.As(err, &oe) {
+				// No answer from the server: the code may still be unused.
+				return &retryable{fmt.Errorf("exchange the sign-in code: %w", err)}
+			}
+			if oe.Code == "invalid_client" || oe.Code == "invalid_grant" {
 				m.store.deletePending()
 				if oe.Code == "invalid_client" {
 					m.store.forgetClient()
@@ -316,6 +348,7 @@ func (m *Manager) Complete(ctx context.Context, address string) (*Credentials, e
 		}
 		acct, err := m.verify(ctx, ts.AccessToken)
 		if err != nil {
+			m.store.deletePending() // the code is used up
 			return fmt.Errorf("check the new session: %w", err)
 		}
 		if acct.UserUUID == "" {
@@ -332,7 +365,12 @@ func (m *Manager) Complete(ctx context.Context, address string) (*Credentials, e
 		if err := m.store.Save(ctx, c); err != nil {
 			return err
 		}
-		m.store.deletePending()
+		// Keep the record, marked done and without the verifier, so the same
+		// answer arriving again is recognised (and nothing else is).
+		p.Completed, p.Verifier = true, ""
+		if err := m.store.savePending(*p); err != nil {
+			m.store.deletePending()
+		}
 		creds = c
 		return nil
 	})
@@ -345,23 +383,31 @@ func (m *Manager) Complete(ctx context.Context, address string) (*Credentials, e
 // Pending reports the sign-in in progress, if any: its redirect and expiry.
 func (m *Manager) Pending() (redirect string, expires time.Time, ok bool) {
 	p, err := m.store.loadPending()
-	if err != nil || p == nil || m.now().Sub(p.CreatedAt) > LoginWindow {
+	if err != nil || p == nil || p.Completed || m.now().Sub(p.CreatedAt) > LoginWindow {
 		return "", time.Time{}, false
 	}
 	return p.RedirectURI, p.CreatedAt.Add(LoginWindow), true
 }
 
+
 // LogoutResult says what Logout did.
 type LogoutResult struct {
 	WasSignedIn bool
 	Revoked     bool
-	RevokeError error // why the revoke failed; local tokens are deleted anyway
+	RevokeError error // why the revoke failed; the grant is then kept for a retry
+	// RevokePending is true when a grant still waits for its revoke: the
+	// refresh token is kept in revoke-pending.json and the next logout
+	// tries again.
+	RevokePending bool
 }
 
 // Logout revokes the refresh token (ending the grant session on the
 // server), then deletes the credentials and any pending sign-in. The access
 // token cannot be revoked server-side and lapses within the hour; it is
-// deleted with the rest. The registered client (client.json) is kept.
+// deleted with the rest. When the revoke fails (no network), the refresh
+// token alone is kept in revoke-pending.json, never used for anything but
+// the revoke, and the next Logout retries it. The registered client
+// (client.json) is kept.
 func (m *Manager) Logout(ctx context.Context) (LogoutResult, error) {
 	m.stopActive()
 	var res LogoutResult
@@ -371,16 +417,33 @@ func (m *Manager) Logout(ctx context.Context) (LogoutResult, error) {
 			return err
 		}
 		m.store.deletePending()
-		if c == nil {
-			return nil
-		}
-		res.WasSignedIn = c.State() == StateSignedIn
-		if c.RefreshToken != "" && c.ClientID != "" {
-			if err := m.oauth.Revoke(ctx, c.ClientID, c.RefreshToken); err != nil {
+		// Grants whose revoke failed earlier first, then the current one.
+		var left []revokeRecord
+		for _, r := range m.store.loadRevokes() {
+			if err := m.oauth.Revoke(ctx, r.ClientID, r.RefreshToken); err != nil {
 				res.RevokeError = err
+				left = append(left, r)
 			} else {
 				res.Revoked = true
 			}
+		}
+		if c != nil {
+			res.WasSignedIn = c.State() == StateSignedIn
+			if c.RefreshToken != "" && c.ClientID != "" {
+				if err := m.oauth.Revoke(ctx, c.ClientID, c.RefreshToken); err != nil {
+					res.RevokeError = err
+					left = append(left, revokeRecord{ClientID: c.ClientID, RefreshToken: c.RefreshToken, Since: m.now().UTC()})
+				} else {
+					res.Revoked = true
+				}
+			}
+		}
+		if err := m.store.saveRevokes(left); err != nil {
+			return err // keep the credentials: the grant must stay revocable
+		}
+		res.RevokePending = len(left) > 0
+		if c == nil {
+			return nil
 		}
 		return m.store.Delete(ctx)
 	})

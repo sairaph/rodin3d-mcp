@@ -62,9 +62,10 @@ type loginFront struct {
 	ExpiresAt string `yaml:"expires_at,omitempty"`
 }
 
+// daemonFront is get_account.daemon: state is the syncer's phase (idle,
+// syncing, watching, needs_login, error) while it runs, else "stopped".
 type daemonFront struct {
-	Running   bool   `yaml:"running"`
-	Phase     string `yaml:"phase,omitempty"`
+	State     string `yaml:"state"`
 	LastSync  string `yaml:"last_sync,omitempty"`
 	LastError string `yaml:"last_error,omitempty"`
 	Tasks     int    `yaml:"tasks"`
@@ -139,14 +140,18 @@ func (s *Service) Account(ctx context.Context) (Result, error) {
 }
 
 func (s *Service) daemonState() daemonFront {
-	d := daemonFront{Running: s.DaemonRunning()}
+	running := s.DaemonRunning()
+	d := daemonFront{State: "stopped"}
 	st, err := s.Store()
 	if err != nil {
 		d.LastError = err.Error()
 		return d
 	}
 	if state, err := st.State(); err == nil {
-		d.Phase, d.LastError = state.Phase, state.LastError
+		if running {
+			d.State = orUnknown(state.Phase)
+		}
+		d.LastError = state.LastError
 		if !state.LastSync.IsZero() {
 			d.LastSync = state.LastSync.UTC().Format(time.RFC3339)
 		}
@@ -218,7 +223,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Result, *auth.Start
 
 	var b strings.Builder
 	b.WriteString("Sign in to Hyper3D:\n\n")
-	b.WriteString("1. Open the authorize_url on any device (or scan the QR code): sign in to Hyper3D there if asked, then click Authorize on the page \"Connect rodin3d-mcp to Hyper3D task API\". The page says Hyper3D cannot verify the app's identity because rodin3d-mcp registered itself; the redirect address it shows is " + started.RedirectURI + ".\n")
+	b.WriteString("1. Open the authorize_url on any device (or scan the QR code): sign in to Hyper3D there if asked, then click Authorize on the page \"Connect rodin3d-mcp to Hyper3D task API\". The page says Hyper3D cannot verify the app's identity because rodin3d-mcp registered itself; it shows the redirect address " + auth.RedirectURI(auth.Ports[0]) + " (the first one rodin3d-mcp registered) whichever port this sign-in uses.\n")
 	if started.Listening {
 		b.WriteString("2. If that browser runs on this computer, the sign-in finishes by itself and the tab says so.\n")
 		b.WriteString("3. Otherwise the browser shows a page that cannot connect to 127.0.0.1. Copy that page's whole address and call login with it as redirect_url.\n")
@@ -268,6 +273,7 @@ func (s *Service) CompleteLogin(ctx context.Context, address string) (*auth.Cred
 type logoutFront struct {
 	WasSignedIn   bool   `yaml:"was_signed_in"`
 	Revoked       bool   `yaml:"revoked"`
+	RevokePending bool   `yaml:"revoke_pending"`
 	RevokeError   string `yaml:"revoke_error,omitempty"`
 	DaemonStopped bool   `yaml:"daemon_stopped"`
 }
@@ -279,7 +285,7 @@ func (s *Service) Logout(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	front := logoutFront{WasSignedIn: res.WasSignedIn, Revoked: res.Revoked}
+	front := logoutFront{WasSignedIn: res.WasSignedIn, Revoked: res.Revoked, RevokePending: res.RevokePending}
 	if res.RevokeError != nil {
 		front.RevokeError = res.RevokeError.Error()
 	}
@@ -290,14 +296,21 @@ func (s *Service) Logout(ctx context.Context) (Result, error) {
 	}
 	var b strings.Builder
 	switch {
+	case res.RevokePending:
+		fmt.Fprintf(&b, "Signed out on this computer, but Hyper3D could not be asked to revoke the grant (%s). "+
+			"Its refresh token is kept in %s for one purpose, the revoke, and the grant stays valid until then "+
+			"(its lifetime is not measured). Call logout again when the network is back to finish the revoke.", front.RevokeError, s.paths.RevokePending)
 	case !res.WasSignedIn && !res.Revoked:
 		b.WriteString("Not signed in; nothing to sign out of.")
-	case res.Revoked:
-		b.WriteString("Signed out: the Hyper3D grant is revoked and the tokens on this computer are deleted. The access token that was in use cannot be revoked by Hyper3D and lapses within the hour; it is deleted here.")
 	default:
-		fmt.Fprintf(&b, "The tokens on this computer are deleted, but Hyper3D could not revoke the grant (%s); it ends when its refresh token expires.", front.RevokeError)
+		b.WriteString("Signed out: the Hyper3D grant is revoked and the tokens on this computer are deleted. The access token that was in use cannot be revoked by Hyper3D and lapses within the hour; it is deleted here.")
 	}
-	b.WriteString(" The task index stays in " + s.paths.Database + ".\n\nNext: login to sign in again.")
+	b.WriteString(" The task index stays in " + s.paths.Database + ".")
+	if res.RevokePending {
+		b.WriteString("\n\nNext: logout again to finish the revoke; login to sign in again.")
+	} else {
+		b.WriteString("\n\nNext: login to sign in again.")
+	}
 	return Result{Front: front, Body: b.String()}, nil
 }
 

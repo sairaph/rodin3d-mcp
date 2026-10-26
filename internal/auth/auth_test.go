@@ -104,8 +104,17 @@ func TestLoginThroughTheLoopbackListener(t *testing.T) {
 	if fi, err := os.Stat(e.paths.Credentials); err != nil || (fi.Mode().Perm()&0o077 != 0 && os.PathSeparator == '/') {
 		t.Fatalf("credentials file: %v", err)
 	}
-	if _, err := os.Stat(e.paths.PendingLogin); !os.IsNotExist(err) {
-		t.Fatal("pending login left behind")
+	// The finished sign-in stays recorded (to recognise the same answer
+	// again) without its PKCE verifier, and is no longer pending.
+	data, err := os.ReadFile(e.paths.PendingLogin)
+	if err != nil || !strings.Contains(string(data), `"completed": true`) || strings.Contains(string(data), `"verifier": "`+"x") {
+		t.Fatalf("completed record: %v %s", err, data)
+	}
+	if strings.Contains(string(data), `"verifier": "`) && !strings.Contains(string(data), `"verifier": ""`) {
+		t.Fatal("the verifier outlived the sign-in")
+	}
+	if _, _, ok := e.mgr.Pending(); ok {
+		t.Fatal("a finished sign-in still reports as pending")
 	}
 }
 

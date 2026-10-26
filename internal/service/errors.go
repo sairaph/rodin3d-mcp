@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/sairaph/mcp-wizard/render"
 
@@ -27,6 +28,10 @@ const (
 const (
 	hintLogin     = "Call login with no arguments, give the user the link it returns, and after they approve call get_account."
 	hintNewLogin  = "Call login with no arguments to get a new sign-in link."
+	hintPasteAgain = "The sign-in is still pending. Ask the user for the whole address of the page that cannot connect " +
+		"(it starts with http://127.0.0.1:) and call login again with it as redirect_url. Start a new sign-in only if the link expired."
+	hintOlderAddress = "The sign-in is still pending. Ask the user for the address shown after approving the latest link " +
+		"and call login again with it as redirect_url; if they only have an older one, call login with no arguments for a new link."
 	hintListTasks = "Call list_tasks to see the task ids (an id prefix of 8 or more characters works too)."
 	hintRetry     = "Retry the call in a moment; if it keeps failing, run `" + domain.BinaryName + " doctor`."
 	hintInternal  = "This is not caused by the arguments. Run `" + domain.BinaryName + " doctor`, then retry."
@@ -90,8 +95,13 @@ func Classify(err error) render.Error {
 		return render.Error{Code: render.CodeAuth, Message: capital(lr.Error()) + ".", Hint: hintLogin}
 	}
 	switch {
-	case errors.Is(err, auth.ErrStateMismatch), errors.Is(err, auth.ErrNotRedirect),
-		errors.Is(err, auth.ErrNoPendingLogin), errors.Is(err, auth.ErrLoginExpired):
+	case errors.Is(err, auth.ErrNotRedirect):
+		// The approval the user gave is still good: never send them back to
+		// a new link for a paste that was cut short.
+		return render.Error{Code: render.CodeInvalidInput, Message: capital(err.Error()) + ".", Hint: hintPasteAgain}
+	case errors.Is(err, auth.ErrStateMismatch):
+		return render.Error{Code: render.CodeInvalidInput, Message: capital(err.Error()) + ".", Hint: hintOlderAddress}
+	case errors.Is(err, auth.ErrNoPendingLogin), errors.Is(err, auth.ErrLoginExpired):
 		return render.Error{Code: render.CodeInvalidInput, Message: capital(err.Error()) + ".", Hint: hintNewLogin}
 	case errors.Is(err, store.ErrNotFound):
 		return render.Error{Code: render.CodeNotFound, Message: "No task with that id.", Hint: hintListTasks}
@@ -146,7 +156,15 @@ func Classify(err error) render.Error {
 		}
 		return e
 	}
+	// A file host that refuses or fails is an expired signed address or a
+	// passing outage, not a plan or id problem.
 	var he *rodin.HTTPError
+	var fne *rodin.NetError
+	if (errors.As(err, &he) && strings.HasPrefix(he.Procedure, rodin.FetchPrefix)) ||
+		(errors.As(err, &fne) && strings.HasPrefix(fne.Procedure, rodin.FetchPrefix)) {
+		return render.Error{Code: render.CodeUnavailable, Message: "A file could not be fetched: " + err.Error(),
+			Hint: "File addresses expire after a while: call the same tool again; it reads fresh addresses from Hyper3D."}
+	}
 	if errors.As(err, &he) {
 		e := render.Error{Message: "Hyper3D answered " + he.Error(), Fields: map[string]any{"http_status": he.Status}}
 		switch {

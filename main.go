@@ -66,7 +66,7 @@ var usageSpecs = []cli.Spec{
 	{Name: "install", Description: "Register the MCP server with the AI clients on this machine"},
 	{Name: "uninstall", Description: "Remove the AI client registrations"},
 	{Name: "add", Description: "Register the server in this project's AI client configs"},
-	{Name: "login", Description: "Sign in to Hyper3D (login [final-address] [no-browser])"},
+	{Name: "login", Description: "Sign in to Hyper3D (login [no-browser] [\"<final address>\"]: quote the address, it holds &)"},
 	{Name: "daemon", Description: "Run the background syncer (daemon --stop stops it)"},
 	{Name: "doctor", Description: "Diagnose the installation"},
 	{Name: "update", Description: "Update to the latest release"},
@@ -83,6 +83,11 @@ func main() {
 	if opts := updateOptions(); opts.InstallDir != "" {
 		update.RemoveStaleBinaries(opts.InstallDir, opts.BinaryName)
 	}
+	// login takes words and a pasted address that the library's flag set
+	// would refuse (--no-browser) or misread, so it is dispatched first.
+	if len(os.Args) > 1 && os.Args[1] == "login" {
+		os.Exit(commands.Login(ctx, commandEnv(), os.Args[2:]))
+	}
 	if len(os.Args) == 1 && tui.IsInteractive() {
 		os.Exit(runApp(ctx))
 	}
@@ -94,6 +99,13 @@ func main() {
 			os.Exit(0)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
+
+	// The library parses --token and --email for these commands; Hyper3D
+	// sign-in has neither (the browser approves it).
+	if len(cmd.Credentials) > 0 {
+		fmt.Fprintln(os.Stderr, "Error: "+domain.BinaryName+" takes no --token or --email; sign in with `"+domain.BinaryName+" login` and approve in a browser.")
 		os.Exit(2)
 	}
 
@@ -109,12 +121,6 @@ func main() {
 		os.Exit(runUninstall(ctx, cmd))
 	case "add":
 		os.Exit(runAdd(ctx, cmd))
-	case "login":
-		if len(cmd.Credentials) > 0 {
-			fmt.Fprintln(os.Stderr, "Error: Hyper3D sign-in has no token or e-mail option; run `"+domain.BinaryName+" login` and approve in a browser.")
-			os.Exit(2)
-		}
-		os.Exit(commands.Login(ctx, commandEnv(), cmd.Args))
 	case "daemon":
 		os.Exit(runDaemon(ctx, cmd.Args))
 	case "doctor":

@@ -63,7 +63,10 @@ type viewerResultFront struct {
 	InputSetID  string              `yaml:"input_set_id,omitempty"`
 	State       *viewer.State       `yaml:"state,omitempty"`
 	UserActions []viewer.UserAction `yaml:"user_actions,omitempty"`
-	Screenshot  *shotFront          `yaml:"screenshot,omitempty"`
+	// UserActionsTruncated: older user actions after since_revision were
+	// dropped (the window keeps the last 50).
+	UserActionsTruncated bool       `yaml:"user_actions_truncated,omitempty"`
+	Screenshot           *shotFront `yaml:"screenshot,omitempty"`
 }
 
 // viewerCall calls the window, turning a closed or silent window and a
@@ -81,7 +84,7 @@ func (s *Service) viewerCall(ctx context.Context, method string, params, result 
 		return err
 	}
 	return fail(render.CodeUnavailable, "The viewer window did not answer: "+err.Error()+".",
-		"Call get_viewer_state again; if the window stays silent, close_viewer and then open_viewer.")
+		"Call get_viewer_state again; if the window stays silent, close_viewer stops a window that does not answer, then open_viewer starts a new one.")
 }
 
 // refused turns a refusal in a reply into the tool error.
@@ -146,6 +149,9 @@ func describe(st viewer.State) string {
 		case "error":
 			fmt.Fprintf(&b, " Pane %d could not be drawn: %s", p.Index, p.Error)
 		}
+		if p.Note != "" {
+			fmt.Fprintf(&b, " Pane %d: %s.", p.Index, p.Note)
+		}
 	}
 	if st.Message != "" {
 		fmt.Fprintf(&b, " Banner: %q.", st.Message)
@@ -154,10 +160,14 @@ func describe(st viewer.State) string {
 }
 
 // capture takes a screenshot, waiting up to captureWait for a full-quality
-// frame; size > 0 shrinks it to that longer edge.
-func (s *Service) capture(ctx context.Context, size int) (viewer.CaptureReply, []byte, error) {
+// frame; size > 0 shrinks it to that longer edge. since, when set, asks
+// for the user's actions after that revision, read with the screenshot.
+func (s *Service) capture(ctx context.Context, size int, since *int64) (viewer.CaptureReply, []byte, error) {
 	var shot viewer.CaptureReply
-	if err := s.viewerCall(ctx, viewer.MethodCapture, viewer.CaptureParams{WaitMS: int(captureWait / time.Millisecond)}, &shot); err != nil {
+	if err := s.viewerCall(ctx, viewer.MethodCapture, viewer.CaptureParams{WaitMS: int(captureWait / time.Millisecond), SinceRevision: since}, &shot); err != nil {
+		return shot, nil, err
+	}
+	if err := refused(shot.Error); err != nil {
 		return shot, nil, err
 	}
 	png := shot.PNG
@@ -197,13 +207,28 @@ func (s *Service) OpenViewer(ctx context.Context, in ViewerOpenInput) (Result, e
 		return Result{}, fail(render.CodeUnavailable, "The viewer window cannot open on this computer: "+why+".",
 			"Use get_preview for pictures of a task; the viewer needs a desktop session.")
 	}
-	started, err := viewer.Start(ctx, s.opts.Executable, s.paths)
-	var se *viewer.StartError
-	if errors.As(err, &se) {
-		return Result{}, fail(render.CodeUnavailable, capital(se.Error())+".", "Use get_preview for pictures of a task; "+s.paths.ViewerLog+" has the window's log.")
-	}
+	started, err := s.startViewer(ctx)
 	if err != nil {
-		return Result{}, wrapf(err, "start the viewer")
+		return Result{}, err
+	}
+	replaced := false
+	if !started {
+		// A window of another build of this program (opened before an
+		// update) may speak another protocol: it is closed and a new one
+		// started.
+		var pong viewer.PingReply
+		if err := s.viewerCall(ctx, viewer.MethodPing, nil, &pong); err != nil {
+			return Result{}, err
+		}
+		if pong.Version != s.opts.Version {
+			if _, err := s.CloseViewer(ctx); err != nil {
+				return Result{}, err
+			}
+			if started, err = s.startViewer(ctx); err != nil {
+				return Result{}, err
+			}
+			replaced = started
+		}
 	}
 	var rep viewer.StateReply
 	if !started {
@@ -231,7 +256,7 @@ func (s *Service) OpenViewer(ctx context.Context, in ViewerOpenInput) (Result, e
 	if err := refused(rep.Error); err != nil {
 		return Result{}, err
 	}
-	shot, png, err := s.capture(ctx, 0)
+	shot, png, err := s.capture(ctx, 0, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -243,12 +268,29 @@ func (s *Service) OpenViewer(ctx context.Context, in ViewerOpenInput) (Result, e
 		front.InputSetID = st.Content.InputSetID
 	}
 	lead := "Opened the viewer window. "
-	if !started {
+	switch {
+	case replaced:
+		lead = "The open viewer window came from another version of this program; it was closed and a new one opened. "
+	case !started:
 		lead = "The viewer window was already open; it was brought to the front. "
 	}
 	body := lead + describe(st) + shotNote(shot) + " " + userMayChange +
 		"\n\nNext: show_in_viewer for other content, control_viewer to change the mode, stage, camera or layout or to put a message on the banner, close_viewer when the user is done."
 	return Result{Front: front, Body: body, Images: []Image{{PNG: png, What: "viewer screenshot"}}}, nil
+}
+
+// startViewer starts the window unless one is open (started reports a new
+// one); a window that cannot open is unavailable with its reason.
+func (s *Service) startViewer(ctx context.Context) (bool, error) {
+	started, err := viewer.Start(ctx, s.opts.Executable, s.paths)
+	var se *viewer.StartError
+	if errors.As(err, &se) {
+		return false, fail(render.CodeUnavailable, capital(se.Error())+".", "Use get_preview for pictures of a task; "+s.paths.ViewerLog+" has the window's log.")
+	}
+	if err != nil {
+		return false, wrapf(err, "start the viewer")
+	}
+	return started, nil
 }
 
 // ShowInViewer is show_in_viewer: put new content in the open window.
@@ -263,7 +305,7 @@ func (s *Service) ShowInViewer(ctx context.Context, p viewer.ShowParams) (Result
 	if err := refused(rep.Error); err != nil {
 		return Result{}, err
 	}
-	shot, png, err := s.capture(ctx, 0)
+	shot, png, err := s.capture(ctx, 0, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -304,64 +346,102 @@ type ViewerStateInput struct {
 }
 
 // ViewerState is get_viewer_state: the shared state, the user's actions
-// since a revision and a screenshot of the window.
+// since a revision and a screenshot of the window. With a screenshot, the
+// state and the actions are read at the moment the screenshot is taken, so
+// every action up to the reply's revision is listed.
 func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result, error) {
 	if in.Size != 0 && (in.Size < ViewerShotMin || in.Size > ViewerShotMax) {
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("size %d is outside %d-%d.", in.Size, ViewerShotMin, ViewerShotMax), "Call get_viewer_state with size between 256 and 1600, or without it for the window's size.")
 	}
-	var rep viewer.StateReply
-	if err := s.viewerCall(ctx, viewer.MethodState, viewer.StateParams{SinceRevision: in.SinceRevision}, &rep); err != nil {
-		return Result{}, err
-	}
-	front := viewerResultFront{Viewer: frontOf(rep), UserActions: rep.Actions}
+	var front viewerResultFront
+	var st viewer.State
+	var actions []viewer.UserAction
+	var truncated bool
 	var images []Image
 	note := ""
 	if in.Screenshot {
-		shot, png, err := s.capture(ctx, in.Size)
+		since := in.SinceRevision
+		shot, png, err := s.capture(ctx, in.Size, &since)
 		if err != nil {
 			return Result{}, err
 		}
-		rep.State = shot.State
+		st, actions, truncated = shot.State, shot.Actions, shot.ActionsTruncated
 		front.Viewer = frontOf(viewer.StateReply{State: shot.State, PID: shot.PID})
 		front.Screenshot = &shotFront{Width: shot.Width, Height: shot.Height, Quality: shot.Quality}
 		images = []Image{{PNG: png, What: "viewer screenshot"}}
 		note = shotNote(shot)
+	} else {
+		var rep viewer.StateReply
+		if err := s.viewerCall(ctx, viewer.MethodState, viewer.StateParams{SinceRevision: in.SinceRevision}, &rep); err != nil {
+			return Result{}, err
+		}
+		st, actions, truncated = rep.State, rep.Actions, rep.ActionsTruncated
+		front.Viewer = frontOf(rep)
 	}
-	st := rep.State
-	front.State = &st
+	front.State, front.UserActions, front.UserActionsTruncated = &st, actions, truncated
 	body := describe(st) + note
-	switch n := len(rep.Actions); {
+	switch n := len(actions); {
 	case n == 0 && in.SinceRevision > 0:
 		body += fmt.Sprintf(" The user changed nothing since revision %d.", in.SinceRevision)
 	case n > 0:
 		body += fmt.Sprintf(" The user made %d change(s) since revision %d (user_actions).", n, in.SinceRevision)
 	}
+	if truncated {
+		body += " Older changes after that revision were dropped (the window keeps the last 50): read the state itself for what is shown now."
+	}
 	body += fmt.Sprintf("\n\nNext: pass since_revision %d next time to see only newer user changes; control_viewer with expected_revision %d changes the view unless the user changed it first.", st.Revision, st.Revision)
 	return Result{Front: front, Body: body, Images: images}, nil
 }
 
+// closeWait is how long close_viewer waits for the window to end, after
+// the close call and again after stopping its process.
+const closeWait = 5 * time.Second
+
 // CloseViewer is close_viewer: close the window (a closed window is not an
-// error).
+// error). A window that does not answer, or does not end after the close
+// call, has its process stopped (the process id the window wrote, only
+// while it holds the viewer lock).
 func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 	front := viewerResultFront{Viewer: viewerFront{Open: false}}
 	if !viewer.Running(s.paths) {
 		return Result{Front: front, Body: "No viewer window was open."}, nil
 	}
 	var rep viewer.StateReply
-	if err := s.viewerCall(ctx, viewer.MethodClose, nil, &rep); err != nil {
-		var f *Failure
-		if errors.As(err, &f) && f.E.Code == render.CodeUnavailable && !viewer.Running(s.paths) {
-			return Result{Front: front, Body: "No viewer window was open."}, nil
-		}
+	err := s.viewerCall(ctx, viewer.MethodClose, nil, &rep)
+	if errors.Is(err, context.Canceled) {
 		return Result{}, err
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for viewer.Running(s.paths) && time.Now().Before(deadline) {
+	if err == nil {
+		front.Viewer.Revision = rep.State.Revision
+		if s.waitViewerGone(closeWait) {
+			return Result{Front: front, Body: "Closed the viewer window. Its last camera per task is kept for the next time a task is shown."}, nil
+		}
+	} else if !viewer.Running(s.paths) {
+		return Result{Front: front, Body: "No viewer window was open."}, nil
+	}
+	pid, serr := viewer.Stop(s.paths)
+	if errors.Is(serr, viewer.ErrNotRunning) {
+		return Result{Front: front, Body: "Closed the viewer window."}, nil
+	}
+	if serr != nil {
+		return Result{}, fail(render.CodeUnavailable, "The viewer window does not answer and could not be stopped: "+serr.Error()+".",
+			"Close the window on the screen; "+s.paths.ViewerLog+" has the window's log.")
+	}
+	if !s.waitViewerGone(closeWait) {
+		return Result{}, fail(render.CodeUnavailable, fmt.Sprintf("The viewer window (process %d) does not answer and is still running after it was told to stop.", pid),
+			"Close the window on the screen; "+s.paths.ViewerLog+" has the window's log.")
+	}
+	return Result{Front: front, Body: fmt.Sprintf("The viewer window did not answer, so its process (%d) was stopped; its last cameras of this session may not be kept.", pid)}, nil
+}
+
+// waitViewerGone waits up to d for the viewer lock to be free.
+func (s *Service) waitViewerGone(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for viewer.Running(s.paths) {
+		if time.Now().After(deadline) {
+			return false
+		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	front.Viewer.Revision = rep.State.Revision
-	if viewer.Running(s.paths) {
-		return Result{}, fail(render.CodeUnavailable, "The viewer window was asked to close but is still running after 5 s.", "Call close_viewer again.")
-	}
-	return Result{Front: front, Body: "Closed the viewer window. Its last camera per task is kept for the next time a task is shown."}, nil
+	return true
 }

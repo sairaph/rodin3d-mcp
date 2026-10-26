@@ -131,7 +131,7 @@ func (s *Service) TextureModel(ctx context.Context, in TextureModelInput) (Resul
 		return Result{}, err
 	}
 
-	sp, err := s.prepare(ctx, "texture_model", "", price.Input{Model: model}, in.Expected, true)
+	sp, err := s.prepare(ctx, "texture_model", "", price.Input{Model: model, Images: len(images)}, in.Expected, true)
 	if err != nil {
 		return Result{}, err
 	}

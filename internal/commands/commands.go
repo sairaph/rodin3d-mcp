@@ -91,7 +91,7 @@ func Register(reg *command.Registry, env Env) {
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			return s.Options(ctx, a.arg(0))
 		})})
-	reg.Register(command.Handler{Name: "quote", Description: "Quote the price of an operation", Usage: "quote <operation> [task=<id>] [tier=..] [model=..] [mode=..] [texture_mode=..] [smart_low_poly=true] [mesh=raw|quad] [hd_texture=true] [sharp=true] [face_enhance=true] [delight=true] [type=mesh|material] [resolution=..] [geometry=..] [format=..] [material=..] [budget=..] [batch=N] [stage=..] [step=..] [strength=N] [template=..] [animations=N] [json]",
+	reg.Register(command.Handler{Name: "quote", Description: "Quote the price of an operation", Usage: "quote <operation> [task=<id>] [tier=..] [model=..] [mode=..] [texture_mode=..] [smart_low_poly=true] [mesh=raw|quad] [hd_texture=true] [sharp=true] [face_enhance=true] [delight=true] [type=mesh|material] [resolution=..] [geometry=..] [format=..] [material=..] [budget=..] [batch=N] [stage=..] [step=..] [strength=N] [part=..] [bang_version=..] [template=..] [skinning=..] [animations=N] [animation_files=N] [images=N] [json]",
 		Run: run(quote)})
 	reg.Register(command.Handler{Name: "tasks", Description: "List the generations from the local index", Usage: "tasks [query] [stage=..] [state=..] [page=N] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
@@ -229,6 +229,14 @@ func quote(ctx context.Context, s *service.Service, a args) (service.Result, err
 	if err != nil {
 		return service.Result{}, err
 	}
+	animFiles, err := intOpt(a, "animation_files", 0)
+	if err != nil {
+		return service.Result{}, err
+	}
+	images, err := intOpt(a, "images", 0)
+	if err != nil {
+		return service.Result{}, err
+	}
 	flags := map[string]*bool{}
 	for _, k := range []string{"smart_low_poly", "hd_texture", "sharp", "face_enhance", "delight"} {
 		b, err := boolOpt(a, k)
@@ -243,7 +251,8 @@ func quote(ctx context.Context, s *service.Service, a args) (service.Result, err
 		SmartLowPoly: smart, Mesh: a.opts["mesh"], HD: flags["hd_texture"], Sharp: flags["sharp"], FaceEnhance: flags["face_enhance"],
 		Delight: flags["delight"], PackType: a.opts["type"], Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Format: a.opts["format"],
 		Material: a.opts["material"], Budget: a.opts["budget"], Batch: batch, ForkStage: a.opts["stage"],
-		BangStep: a.opts["step"], Strength: strength, RigTemplate: a.opts["template"], Animations: animations,
+		BangStep: a.opts["step"], Strength: strength, Part: a.opts["part"], BangVersion: a.opts["bang_version"],
+		RigTemplate: a.opts["template"], Skinning: a.opts["skinning"], Animations: animations, AnimationFiles: animFiles, Images: images,
 	})
 }
 

@@ -165,7 +165,7 @@ func (s *Service) ConfirmGeometry(ctx context.Context, in ConfirmGeometryInput) 
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{SmartLowPoly: in.SmartLowPoly, Mesh: strings.ToLower(strings.TrimSpace(in.Mesh))}
+	pin := price.Input{SmartLowPoly: in.SmartLowPoly, Mesh: strings.ToLower(strings.TrimSpace(in.Mesh)), Bang: strings.TrimSpace(in.BangVersion) != ""}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "confirm_geometry", uuid, pin, in.Expected, true)
 	if err != nil {

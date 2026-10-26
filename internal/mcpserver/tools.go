@@ -82,8 +82,13 @@ type quoteSettings struct {
 	Stage        *string `json:"stage,omitempty" jsonschema:"fork_task: the stage to fork from (default material, the priced one)"`
 	Step         *string `json:"step,omitempty" jsonschema:"split_parts: plan, generate or both (default both)"`
 	Strength     *int    `json:"strength,omitempty" jsonschema:"split_parts: the part count 1-12 (default 5)"`
-	Template     *string `json:"template,omitempty" jsonschema:"rig_model: the template (default human); custom for an own skeleton or a description"`
-	Animations   *int    `json:"animations,omitempty" jsonschema:"animate_model: how many presets and own files the export carries"`
+	Part         *string `json:"part,omitempty" jsonschema:"split_parts: the part name when one part of an earlier Bang result is split again"`
+	BangVersion  *string `json:"bang_version,omitempty" jsonschema:"confirm_geometry: the Bang result the confirm confirms"`
+	Template     *string `json:"template,omitempty" jsonschema:"rig_model: the template (default human); custom for an own skeleton, an FBX skeleton or a description"`
+	Skinning     *string `json:"skinning,omitempty" jsonschema:"rig_model: shell or core (default as rig_model's: core for the human template, shell otherwise)"`
+	Animations   *int    `json:"animations,omitempty" jsonschema:"animate_model: how many presets the export carries"`
+	AnimFiles    *int    `json:"animation_files,omitempty" jsonschema:"animate_model: how many own FBX animations the export carries"`
+	Images       *int    `json:"images,omitempty" jsonschema:"texture_model: how many reference images (default 1: the rendered front)"`
 }
 
 type quoteInput struct {
@@ -281,7 +286,9 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 		q.Batch = optInt(st.Batch, 0)
 		q.ForkStage = optString(st.Stage)
 		q.BangStep, q.Strength = optString(st.Step), optInt(st.Strength, 0)
-		q.RigTemplate, q.Animations = optString(st.Template), optInt(st.Animations, 0)
+		q.Part, q.BangVersion = optString(st.Part), optString(st.BangVersion)
+		q.RigTemplate, q.Skinning = optString(st.Template), optString(st.Skinning)
+		q.Animations, q.AnimationFiles, q.Images = optInt(st.Animations, 0), optInt(st.AnimFiles, 0), optInt(st.Images, 0)
 	}
 	return reply(s.svc.Quote(ctx, q)), nil, nil
 }

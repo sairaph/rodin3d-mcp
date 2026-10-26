@@ -214,8 +214,13 @@ type QuoteInput struct {
 	ForkStage                       string
 	BangStep                        string // split_parts: plan | generate | both
 	Strength                        int    // split_parts part count
+	Part                            string // split_parts: the part of an earlier Bang result split again
+	BangVersion                     string // confirm_geometry: the Bang result confirmed
 	RigTemplate                     string // rig_model template
-	Animations                      int    // animate_model presets and files
+	Skinning                        string // rig_model skinning
+	Animations                      int    // animate_model presets
+	AnimationFiles                  int    // animate_model own FBX files
+	Images                          int    // texture_model reference images
 }
 
 type permissionFront struct {
@@ -248,7 +253,9 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		Operation: in.Operation, Model: in.Model, Tier: in.Tier, Mode: in.Mode, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
 		Mesh: in.Mesh, PackType: in.PackType,
 		Resolution: in.Resolution, Geometry: in.Geometry, Format: in.Format, Material: in.Material, Budget: in.Budget, Batch: in.Batch,
-		ForkStage: in.ForkStage, BangStep: in.BangStep, Strength: in.Strength, RigTemplate: in.RigTemplate, Animations: in.Animations,
+		ForkStage: in.ForkStage, BangStep: in.BangStep, Strength: in.Strength, BangPart: strings.TrimSpace(in.Part) != "",
+		Bang: strings.TrimSpace(in.BangVersion) != "", RigTemplate: in.RigTemplate, Skinning: in.Skinning,
+		Animations: in.Animations, AnimationFiles: in.AnimationFiles, Images: in.Images,
 	}
 	var task *TaskFront
 	var base map[string]any // the draft's settings a material redo repeats

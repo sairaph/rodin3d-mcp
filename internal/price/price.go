@@ -51,6 +51,9 @@ type Input struct {
 	TextureMode  string // extreme-low .. extreme-high, legacy (Gen-1.5)
 	SmartLowPoly bool
 	Mesh         string // confirm_geometry: raw | quad; empty: DefaultMesh
+	// Bang is true when confirm_geometry confirms a Bang result
+	// (bang_version) of the draft.
+	Bang bool
 	// generate_texture and redo_material options as the call sends them
 	// (generate_texture: unset is off; redo_material: unset is the draft's).
 	HD, Sharp, FaceEnhance, Delight bool
@@ -67,11 +70,21 @@ type Input struct {
 	BangStep string
 	// Strength is split_parts' part count (1-12; 0 is the web's 5).
 	Strength int
+	// BangPart is true when split_parts splits one part of an earlier Bang
+	// result again (bang_version and part).
+	BangPart bool
 	// RigTemplate is rig_model's template ("" is human; custom for an own
-	// skeleton or a description).
+	// skeleton, an FBX skeleton or a description).
 	RigTemplate string
-	// Animations is animate_model's number of presets and own files.
-	Animations int
+	// Skinning is rig_model's skinning method, shell or core; "" is the
+	// web's rule (core for the human template, shell otherwise).
+	Skinning string
+	// Animations is animate_model's number of presets, AnimationFiles its
+	// number of own FBX animations.
+	Animations, AnimationFiles int
+	// Images is texture_model's number of reference images; 0 is the
+	// rendered front of the model, one image.
+	Images int
 	// TaskCreated is the creation time of the task an operation acts on, for
 	// the 30-day fork rule; zero when not known.
 	TaskCreated time.Time
@@ -262,35 +275,51 @@ func For(in Input, acct Account) (Quote, error) {
 		if tmpl == "" {
 			tmpl = "human"
 		}
-		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && tmpl == "human" {
-			q := measured(0, "", "wallet delta of a human-template rig of a textured gen-2.5 high task, 2026-10-27 (the web shows no price for rigging)")
+		skin := strings.ToLower(in.Skinning)
+		if skin == "" {
+			skin = "shell"
+			if tmpl == "human" {
+				skin = "core"
+			}
+		}
+		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && tmpl == "human" && skin == "core" {
+			q := measured(0, "", "wallet delta of a human-template rig with core skinning of a textured gen-2.5 high task, 2026-10-27 (the web shows no price for rigging)")
 			q.FreeReason = "this rig took no credits"
 			return q, nil
 		}
-		return unknown(fmt.Sprintf("the web shows no price for rigging, and a rig was measured only with the human template on a textured gen-2.5 high task (free); this is template %s on a %s task (%s stage)",
-			tmpl, task(model, tier), orNone(in.PackType))), nil
+		return unknown(fmt.Sprintf("the web shows no price for rigging, and a rig was measured only with the human template and core skinning on a textured gen-2.5 high task (free); this is template %s with %s skinning on a %s task (%s stage)",
+			tmpl, skin, task(model, tier), orNone(in.PackType))), nil
 	case "animate_model":
 		format := strings.ToLower(in.Format)
 		if format == "" {
 			format = "glb"
 		}
 		res := strings.ToLower(in.Resolution)
-		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && format == "glb" && (res == "" || res == "2k") && in.Animations == 1 {
-			q := measured(0, "", "wallet delta of a 2k glb export with one animation preset of a rigged, textured gen-2.5 high task, 2026-10-27 (the web shows no price)")
+		if res == "" {
+			res = "2k"
+		}
+		maps := strings.ToLower(in.Material)
+		if maps == "" {
+			maps = "all"
+		}
+		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && format == "glb" && res == "2k" && maps == "all" &&
+			in.Animations == 1 && in.AnimationFiles == 0 {
+			q := measured(0, "", "wallet delta of a 2k glb export (all maps) with one animation preset and no own file of a rigged, textured gen-2.5 high task, 2026-10-27 (the web shows no price)")
 			q.FreeReason = "this export took no credits"
 			return q, nil
 		}
-		return unknown(fmt.Sprintf("the web shows no price for animation exports, and one was measured only as a 2k glb export with one preset of a rigged, textured gen-2.5 high task (free); this is %s at %s with %d animation(s) of a %s task (%s stage)",
-			format, orNone(res), in.Animations, task(model, tier), orNone(in.PackType))), nil
+		return unknown(fmt.Sprintf("the web shows no price for animation exports, and one was measured only as a 2k glb export (all maps) with one preset and no own file of a rigged, textured gen-2.5 high task (free); this is %s at %s (maps %s) with %d preset(s) and %d own file(s) of a %s task (%s stage)",
+			format, res, maps, in.Animations, in.AnimationFiles, task(model, tier), orNone(in.PackType))), nil
 	case "texture_model":
-		if model == "gen-2.5" {
+		images := max(in.Images, 1) // no image: the rendered front is the one reference
+		if model == "gen-2.5" && images == 1 {
 			// The web's 3D Editing submit sends no tier (brilliant_mode).
-			q := measured(0, "confirm_geometry", "wallet delta of a gen-2.5 3D Editing submit, 2026-10-27: nothing taken, 0.5 frozen at submit (the web shows no price)")
+			q := measured(0, "confirm_geometry", "wallet delta of a gen-2.5 3D Editing submit with one reference image, 2026-10-27: nothing taken, 0.5 frozen at submit (the web shows no price)")
 			q.FreeReason = "the draft is free; the 0.5 frozen at submit is taken when the geometry is confirmed, or released"
 			q.FrozenAtSubmit = credits(0.5)
 			return q, nil
 		}
-		return unknown("a 3D Editing submit was measured only with gen-2.5 (nothing taken, 0.5 frozen); not with " + model), nil
+		return unknown(fmt.Sprintf("a 3D Editing submit was measured only with gen-2.5 and one reference image (nothing taken, 0.5 frozen); this is %s with %d images", model, images)), nil
 	}
 	names := make([]string, len(Operations))
 	for i, o := range Operations {
@@ -308,17 +337,45 @@ func splitParts(in Input, acct Account) (Quote, error) {
 	if in.Strength > 5 && !acct.has("RodinBangGenerateAdvancedQuality") {
 		return Quote{}, &Gate{"a part split strength above 5 needs the RodinBangGenerateAdvancedQuality privilege (Creator plan or higher)"}
 	}
-	// Measured 2026-10-27 on a gen-2.5 extreme-low draft (notes 35, P3): the
-	// plan took nothing; the split froze 0.5 at submit and took it when done.
-	const plan = "wallet delta of a Bang plan, strength 5, on a gen-2.5 extreme-low draft, 2026-10-27 (the web shows no price for it)"
-	const generate = `web label "0.5 Credits" on Bang to Parts; measured 2026-10-27: a split of a gen-2.5 extreme-low draft froze 0.5 at submit and took it when done`
+	strength := in.Strength
+	if strength == 0 {
+		strength = 5 // the web slider's default
+	}
+	model := strings.ToLower(in.Model)
+	if model == "" {
+		model = "gen-2.5"
+	}
+	tier := strings.ToLower(in.Tier)
+	// Measured 2026-10-27 at strength 5 of the whole model of a gen-2.5
+	// extreme-low draft (notes 35, P3-2 and P3-3): the plan took nothing;
+	// the split froze 0.5 at submit and took it when done.
+	exact := model == "gen-2.5" && tier == "extreme-low" && strength == 5 && !in.BangPart
+	of := "the whole model"
+	if in.BangPart {
+		of = "one part"
+	}
+	this := fmt.Sprintf("this is strength %d of %s on a %s draft", strength, of, task(model, tier))
+	const planCase = "a Bang plan was measured only at strength 5 of the whole model on a gen-2.5 extreme-low draft (free; the web shows no price for it)"
+	const splitLabel = `web label "0.5 Credits" on Bang to Parts`
+	const charged = "submit (frozen), taken when the split is done"
 	switch strings.ToLower(in.BangStep) {
 	case "plan":
-		q := measured(0, "", plan)
+		if !exact {
+			return unknown(planCase + "; " + this), nil
+		}
+		q := measured(0, "", "wallet delta of a Bang plan at strength 5 of the whole model on a gen-2.5 extreme-low draft, 2026-10-27 (the web shows no price for it)")
 		q.FreeReason = "the Bang plan took no credits"
 		return q, nil
-	case "generate", "", "both":
-		return measured(0.5, "submit (frozen), taken when the split is done", generate+"; the plan step before it took nothing"), nil
+	case "generate":
+		if !exact {
+			return label(0.5, charged, splitLabel+"; a split was measured only at strength 5 of the whole model on a gen-2.5 extreme-low draft (0.5 frozen at submit, taken when done)"), nil
+		}
+		return measured(0.5, charged, splitLabel+"; measured 2026-10-27: a split at strength 5 of the whole model on a gen-2.5 extreme-low draft froze 0.5 at submit and took it when done"), nil
+	case "", "both":
+		if !exact {
+			return unknown(splitLabel + " names the split, but " + planCase + ", so plan and split together are not known; " + this), nil
+		}
+		return measured(0.5, charged, splitLabel+"; measured 2026-10-27 at strength 5 of the whole model on a gen-2.5 extreme-low draft: the plan took nothing, the split froze 0.5 at submit and took it when done"), nil
 	}
 	return Quote{}, &InvalidInput{fmt.Sprintf("step %q is not plan, generate or both", in.BangStep)}
 }
@@ -390,6 +447,9 @@ func generate(in Input, acct Account) (Quote, error) {
 }
 
 func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) {
+	if in.Bang {
+		return confirmBang(in, acct, model, tier)
+	}
 	if in.SmartLowPoly {
 		if !acct.has("RodinRemeshAdditionalFeatures") {
 			return Quote{}, &Gate{"smart low-poly needs the RodinRemeshAdditionalFeatures privilege (Creator plan or higher)"}
@@ -420,6 +480,29 @@ func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) 
 		}
 	}
 	return unknown(`the web's Confirm label ("0.5 Credits") was read and the price measured only on gen-2.5 extreme-low and high drafts; not on ` + task(model, tier)), nil
+}
+
+// confirmBang prices the confirm of a Bang result (split_parts). One was
+// measured: a raw confirm of a Bang result of a forked gen-2.5 extreme-low
+// draft, which had no submit freeze, took 0.5 (notes 35, P3-4). Every other
+// case is not known.
+func confirmBang(in Input, acct Account, model, tier string) (Quote, error) {
+	mesh := strings.ToLower(in.Mesh)
+	if mesh == "" {
+		mesh = DefaultMesh(acct)
+	}
+	if mesh != "raw" && mesh != "quad" {
+		return Quote{}, &InvalidInput{fmt.Sprintf("mesh %q is not raw or quad", in.Mesh)}
+	}
+	if !in.SmartLowPoly && model == "gen-2.5" && tier == "extreme-low" && mesh == "raw" {
+		return measured(0.5, "confirm", `wallet delta of a raw confirm of a Bang result of a gen-2.5 extreme-low draft, 2026-10-27: 0.5 taken (the web's Confirm label reads "0.5 Credits")`), nil
+	}
+	shape := mesh
+	if in.SmartLowPoly {
+		shape = "smart low-poly"
+	}
+	return unknown(fmt.Sprintf("the confirm of a Bang result was measured only as a raw confirm of a gen-2.5 extreme-low draft (0.5 taken); this is a %s confirm of a %s draft",
+		shape, task(model, tier))), nil
 }
 
 const noOptions = "no options"

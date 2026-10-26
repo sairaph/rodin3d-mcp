@@ -90,7 +90,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{BangStep: step, Strength: strength}
+	pin := price.Input{BangStep: step, Strength: strength, BangPart: part != ""}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "split_parts", uuid, pin, in.Expected, true)
 	if err != nil {

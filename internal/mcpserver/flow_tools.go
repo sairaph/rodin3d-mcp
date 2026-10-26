@@ -233,7 +233,7 @@ func (s *Server) registerFlowTools() {
 		"Confirm a geometry draft version (default the newest) as the model's mesh: raw (Triangle) simplified to faces or full, quad with a "+
 			"quality or face count, or smart low-poly. An extreme-low draft is paid for here (a high draft paid at its submit); quote_cost "+
 			"gives the price. Needs [permission] confirm_geometry = \"allow\" and expected_credits from quote_cost (operation "+
-			"confirm_geometry, task_id, mesh, smart_low_poly when used). Returns the task at stage geometry; next generate_texture or export_model.",
+			"confirm_geometry, task_id, mesh, smart_low_poly and bang_version when used). Returns the task at stage geometry; next generate_texture or export_model.",
 		paidTool, conf, s.confirmGeometry)
 
 	tex := nonNullDeep(inputSchema[textureArgs](map[string]string{"wait": "true", "escore": "7"}))

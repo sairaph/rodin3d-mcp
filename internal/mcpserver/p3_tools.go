@@ -91,7 +91,7 @@ func (s *Server) registerP3Tools() {
 			"then the split makes a Bang result of the draft version with one mesh per part. step plan stops after the plan and attaches its "+
 			"picture so the user can approve it; step generate splits by that plan. The parts file is saved in the task's files folder and a "+
 			"render attached. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
-			"expected_credits from quote_cost (operation split_parts, task_id, settings.step and strength).",
+			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
 		paidTool, sp, s.splitParts)
 
 	rg := nonNull(inputSchema[rigArgs](map[string]string{"template": `"human"`, "wait": "true"}))

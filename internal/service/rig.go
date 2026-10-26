@@ -128,7 +128,7 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{Operation: "rig_model", RigTemplate: rig.Template}
+	pin := price.Input{Operation: "rig_model", RigTemplate: rig.Template, Skinning: rig.Skinning}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "rig_model", uuid, pin, in.Expected, true)
 	if err != nil {
@@ -299,7 +299,8 @@ func (s *Service) AnimateModel(ctx context.Context, in AnimateInput) (Result, er
 	if in.Height != nil && *in.Height <= 0 {
 		return Result{}, bad("height must be above 0.", "Pass the real-world height, or leave it out.")
 	}
-	pin := price.Input{Operation: "animate_model", Format: format, Resolution: resolution, Animations: len(in.Presets) + len(files)}
+	pin := price.Input{Operation: "animate_model", Format: format, Resolution: resolution, Material: strings.ToLower(matWire),
+		Animations: len(in.Presets), AnimationFiles: len(files)}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "animate_model", uuid, pin, in.Expected, true)
 	if err != nil {

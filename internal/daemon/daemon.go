@@ -58,6 +58,7 @@ type Daemon struct {
 	PageSize int
 
 	lastNeedsLogin bool
+	lastCardErr    string // the lone card error already logged, so it is logged once
 }
 
 // ErrSignedOut ends Serve: there is nothing to sync without an account.
@@ -180,7 +181,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 		}
 	}
 	if watchErr != nil {
-		// One unreadable card does not hold up the history sync above.
+		// Every card tried failed: the service is the likely cause, so back off.
 		return d.fail(watchErr)
 	}
 	phase := store.PhaseIdle
@@ -219,29 +220,46 @@ func (d *Daemon) fail(err error) error {
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // watch refreshes the card of every task a job works on and returns how
-// many there were. When a card could not be read it returns the first such
-// error after trying them all, so the cycle counts as failed and backs off.
+// many there were. It returns the first card error only when every card
+// tried failed, so the cycle counts as failed and backs off; one card that
+// keeps failing while the others work is logged once and delays nothing.
 func (d *Daemon) watch(ctx context.Context) (int, error) {
 	ids, err := d.Store.InFlight()
 	if err != nil {
 		return 0, err
 	}
 	var first error
+	tried, failed := 0, 0
 	for _, id := range ids {
-		if err := d.refreshCard(ctx, id); err != nil {
-			var se *rodin.ServiceError
-			if errors.As(err, &se) && se.Code == "NO_SUCH_TASK" {
-				continue
-			}
-			if auth.IsLoginRequired(err) || errors.Is(err, rodin.ErrUnauthorized) {
-				return 0, err
-			}
-			if first == nil {
-				first = fmt.Errorf("watch %s: %w", short(id), err)
-			}
+		err := d.refreshCard(ctx, id)
+		var se *rodin.ServiceError
+		if errors.As(err, &se) && se.Code == "NO_SUCH_TASK" {
+			continue // the task is gone: neither a success nor a failure
+		}
+		tried++
+		if err == nil {
+			continue
+		}
+		if auth.IsLoginRequired(err) || errors.Is(err, rodin.ErrUnauthorized) {
+			return 0, err
+		}
+		failed++
+		if first == nil {
+			first = fmt.Errorf("watch %s: %w", short(id), err)
 		}
 	}
-	return len(ids), first
+	switch {
+	case failed == 0:
+		d.lastCardErr = ""
+	case failed == tried:
+		return len(ids), first
+	default:
+		if msg := oneLine(first.Error()); msg != d.lastCardErr {
+			d.logf("%d of %d cards could not be read: %s", failed, tried, msg)
+			d.lastCardErr = msg
+		}
+	}
+	return len(ids), nil
 }
 
 // refreshCard fetches and stores one card, caching its images on a change.

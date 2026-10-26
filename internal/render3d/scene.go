@@ -64,7 +64,7 @@ func (m Mode) Describe() string {
 	case ModeGlossy:
 		return "glossy white under a sunset sky (web Glossy)"
 	case ModeCopper:
-		return "aged copper on a ground plane (web Copper)"
+		return "dark green-grey patina with brown rust on sharp creases, on a ground plane (web Copper)"
 	case ModeMetal:
 		return "polished grey metal (web Metal)"
 	case ModeAO:

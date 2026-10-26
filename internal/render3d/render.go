@@ -203,7 +203,10 @@ func render(m *Mesh, maps *Maps, def modeDef, o Options, theta, phi float64) (*i
 	// Geometry: the model, plus the ground plane when the mode shows it.
 	pos, idx := m.Pos, m.Idx
 	if def.ground {
-		gy := float32(center[1] - size[1]/2)
+		// A hair below the model's lowest point: a flat base exactly on the
+		// plane would leave the depth test between coplanar triangles to
+		// float noise (speckle under the base in Copper and AO).
+		gy := float32(center[1] - size[1]/2 - 1e-3*N)
 		pos = make([][3]float32, len(m.Pos), len(m.Pos)+len(groundMesh.Pos))
 		copy(pos, m.Pos)
 		base := uint32(len(pos))

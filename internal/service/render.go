@@ -26,7 +26,12 @@ import (
 
 // renderVersion is part of every cached render's key: bump it when a change
 // to render3d changes its pixels, so stale renders are not served.
-const renderVersion = "2"
+const renderVersion = "3"
+
+// meshVersion is part of every cached mesh file's name and render's key:
+// bump it when a change to the Draco or GLB reader (or meshOfDraco) changes
+// the mesh read from a file, so stale meshes and renders are not served.
+const meshVersion = "1"
 
 // renderState is what get_preview keeps between renders in one process: the
 // Draco decoder (compiled once), the last stage mesh and texture set (so a
@@ -142,7 +147,7 @@ func (s *Service) renderStage(ctx context.Context, uuid string, d *taskDetail, s
 	}
 
 	key := sha256.New()
-	fmt.Fprintf(key, "%s\n%s\n%s\n%s\n%d\n", renderVersion, meshSum, mode, view, size)
+	fmt.Fprintf(key, "%s\n%s\n%s\n%s\n%s\n%d\n", renderVersion, meshVersion, meshSum, mode, view, size)
 	for _, m := range maps {
 		fmt.Fprintf(key, "%s %s\n", m.kind, m.sum)
 	}
@@ -236,7 +241,7 @@ func (s *Service) stageMesh(ctx context.Context, srcFile string, src []byte, key
 		r.meshKey, r.mesh = key, m
 		r.mu.Unlock()
 	}
-	meshFile := filepath.Join(filepath.Dir(srcFile), fmt.Sprintf("mesh-%s.r3dmesh", key[:16]))
+	meshFile := filepath.Join(filepath.Dir(srcFile), fmt.Sprintf("mesh-v%s-%s.r3dmesh", meshVersion, key[:16]))
 	if b, err := os.ReadFile(meshFile); err == nil {
 		if m, _, err := render3d.DecodeMesh(b); err == nil {
 			keep(m)

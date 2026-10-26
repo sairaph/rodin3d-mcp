@@ -335,6 +335,31 @@ type taskDetailFront struct {
 	Confirmed *confirmedFront `yaml:"confirmed,omitempty"`
 	Previews  []previewFront  `yaml:"previews"`
 	Files     filesFront      `yaml:"files,omitempty"`
+	Spend     []spendRow      `yaml:"spend,omitempty"`
+}
+
+// spendRow is one ledger row of the task: a paid or changing call this
+// tool made on it.
+type spendRow struct {
+	At     string   `yaml:"at"`
+	Op     string   `yaml:"op"`
+	Quoted *float64 `yaml:"quoted,omitempty"`
+	Before string   `yaml:"wallet_before"`
+	After  string   `yaml:"wallet_after,omitempty"`
+	Result string   `yaml:"result"`
+}
+
+func spendRows(rows []store.LedgerEntry) []spendRow {
+	var out []spendRow
+	for _, e := range rows {
+		r := spendRow{At: e.At.UTC().Format(time.RFC3339), Op: e.Op, Quoted: e.Quoted, Result: e.Result,
+			Before: fmt.Sprintf("%s available, %s frozen", num(e.BalanceBefore), num(e.FrozenBefore))}
+		if e.BalanceAfter != nil && e.FrozenAfter != nil {
+			r.After = fmt.Sprintf("%s available, %s frozen", num(*e.BalanceAfter), num(*e.FrozenAfter))
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 var settingGroups = map[string]string{}
@@ -555,6 +580,9 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 					front.Files.Downloaded = append(front.Files.Downloaded, fileFront{Name: filepath.Base(f.Path), Path: f.Path, Bytes: f.Bytes})
 				}
 			}
+		}
+		if rows, err := st.LedgerFor(uuid); err == nil {
+			front.Spend = spendRows(rows)
 		}
 	}
 

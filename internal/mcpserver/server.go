@@ -34,7 +34,11 @@ type Server struct {
 const instructions = "Rodin (Hyper3D) image-to-3D generations of the signed-in account. " +
 	"Start with get_account; when it answers authentication, call login and give the user the link it returns. " +
 	"list_tasks and get_task read the generations with every setting, get_preview returns their images, " +
-	"download_model saves packed model files, and quote_cost gives the price of an operation before anything is spent."
+	"download_model saves packed model files, and quote_cost gives the price of an operation before anything is spent. " +
+	"The staged flow is generate_model (draft), redo_geometry, confirm_geometry, generate_texture, redo_material, confirm_material, " +
+	"export_model (pack), then download_model; fork_task branches a task. Each of these needs its [permission] key set to allow in " +
+	"config.toml (get_account shows them), and the paid ones need expected_credits: the credits quote_cost returned for the same call. " +
+	"Never resend a paid call that timed out; get_task or list_tasks shows whether it started."
 
 // New creates the server and registers its tools.
 func New(config Config) *Server {

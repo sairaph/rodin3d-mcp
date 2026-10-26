@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/sairaph/mcp-wizard/render"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/daemon"
 	"github.com/sairaph/rodin3d-mcp/internal/price"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
-	"github.com/sairaph/rodin3d-mcp/internal/stage"
 )
 
 type privilegeFront struct {
@@ -252,15 +250,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		}
 		t := s.taskFront(card)
 		task = &t
-		if pin.Model == "" {
-			pin.Model = stage.Model(card.Setting("generation_mode"))
-		}
-		if pin.Tier == "" {
-			pin.Tier = stage.Tier(card.Setting("brilliant_mode"))
-		}
-		if ts, err := time.Parse(time.RFC3339, card.Time); err == nil {
-			pin.TaskCreated = ts
-		}
+		pinFromCard(&pin, card)
 	}
 	info, err := s.client.GetInfo(ctx)
 	if err != nil {

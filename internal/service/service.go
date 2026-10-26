@@ -27,6 +27,8 @@ import (
 var Tools = []string{
 	"get_account", "login", "logout", "get_generation_options", "quote_cost",
 	"list_tasks", "get_task", "wait_task", "get_preview", "download_model",
+	"generate_model", "redo_geometry", "confirm_geometry", "select_candidate", "generate_texture", "redo_material",
+	"confirm_material", "export_model", "fork_task",
 }
 
 func registered(tool string) bool {

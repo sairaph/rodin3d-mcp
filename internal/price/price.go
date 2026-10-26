@@ -14,11 +14,14 @@ import (
 // Operations quote_cost accepts, each with the [permission] key that allows it.
 var Operations = []struct{ Name, Permission string }{
 	{"generate_model", "generate"},
+	{"redo_geometry", "redo"},
 	{"confirm_geometry", "confirm_geometry"},
 	{"generate_texture", "generate_texture"},
+	{"redo_material", "redo"},
 	{"confirm_material", "confirm_material"},
 	{"export_model", "export"},
 	{"fork_task", "fork"},
+	{"select_candidate", "redo"},
 	{"generate_agentic", "agentic"},
 	{"split_parts", "split_parts"},
 	{"rig_model", "rig"},
@@ -111,6 +114,21 @@ func For(in Input, acct Account) (Quote, error) {
 	switch in.Operation {
 	case "generate_model":
 		return generate(in, acct)
+	case "redo_geometry":
+		if strings.ToLower(in.Tier) == "extreme-high" {
+			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit", Basis: `web hover label "2 Credits" on Redo of an Extreme-High draft`}, nil
+		}
+		return Quote{Credits: credits(0), Known: true, FreeReason: "geometry redos are free below the extreme-high tier; the plan limits their number (redo_left)",
+			Basis: `web Redo button with its counter and no price ("Redos are free, but confirmation costs credits")`}, nil
+	case "redo_material":
+		if strings.ToLower(in.TextureMode) == "extreme-high" {
+			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit", Basis: `web hover label "2 Credits" on material Redo at the Extreme High texture tier`}, nil
+		}
+		return Quote{Credits: credits(0), Known: true, FreeReason: "material redos are free below the extreme-high texture tier; the plan limits their number (redo_left)",
+			Basis: "web material Redo button with its counter and no price"}, nil
+	case "select_candidate":
+		return Quote{Credits: credits(0), Known: true, FreeReason: "picking one draft of a batch changes nothing that is charged",
+			Basis: "web batch view: the pick has no price label"}, nil
 	case "confirm_geometry":
 		if in.SmartLowPoly {
 			if !acct.has("RodinRemeshAdditionalFeatures") {
@@ -123,6 +141,9 @@ func For(in Input, acct Account) (Quote, error) {
 		mode := strings.ToLower(in.TextureMode)
 		if mode == "" {
 			mode = "high" // the web panel's default tier
+		}
+		if mode == "legacy" || strings.ToLower(in.Model) == "gen-1.5" {
+			return unknown("the web shows no price for a Gen-1.5 (legacy) texture and it has not been measured"), nil
 		}
 		if !oneOf(mode, tiers) {
 			return Quote{}, &InvalidInput{fmt.Sprintf("texture_mode %q is not one of %s", in.TextureMode, strings.Join(tiers, ", "))}

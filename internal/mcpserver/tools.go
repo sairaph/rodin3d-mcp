@@ -205,6 +205,8 @@ func (s *Server) registerTools() {
 			"the data directory; files limits the download to names from get_task files.pack, and the stage videos (files.videos) can be "+
 			"named too. Answers conflict when the task has no finished pack yet. Returns each file's path and size.",
 		localTool, nonNull(inputSchema[downloadInput](nil)), s.downloadModel)
+
+	s.registerFlowTools()
 }
 
 // --- handlers ---

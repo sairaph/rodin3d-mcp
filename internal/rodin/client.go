@@ -76,6 +76,7 @@ type Client struct {
 	tokens    TokenSource
 	userAgent string
 	api       *http.Client
+	upload    *http.Client // multipart submits: the file timeout, the API redirect rule
 	files     *http.Client
 }
 
@@ -83,25 +84,23 @@ type Client struct {
 // version goes into the User-Agent.
 func New(base string, tokens TokenSource, version string) *Client {
 	base = strings.TrimRight(base, "/")
+	// A redirect to another host would carry the bearer token away.
+	sameHost := func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			return errors.New("redirect to another host refused")
+		}
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	}
 	return &Client{
 		base:      base,
 		tokens:    tokens,
 		userAgent: "rodin3d-mcp/" + version,
-		api: &http.Client{
-			Transport: transport,
-			Timeout:   apiTimeout,
-			// A redirect to another host would carry the bearer token away.
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-					return errors.New("redirect to another host refused")
-				}
-				if len(via) >= 5 {
-					return errors.New("too many redirects")
-				}
-				return nil
-			},
-		},
-		files: &http.Client{Transport: transport, Timeout: fileTimeout},
+		api:       &http.Client{Transport: transport, Timeout: apiTimeout, CheckRedirect: sameHost},
+		upload:    &http.Client{Transport: transport, Timeout: fileTimeout, CheckRedirect: sameHost},
+		files:     &http.Client{Transport: transport, Timeout: fileTimeout},
 	}
 }
 
@@ -116,6 +115,7 @@ type request struct {
 	body        []byte
 	contentType string
 	noAuth      bool
+	upload      bool // send with the upload client (file timeout)
 }
 
 // call runs req and decodes the reply into out (nil to discard). A 401 gets
@@ -170,7 +170,11 @@ func (c *Client) send(ctx context.Context, req request, token string) (int, []by
 	if token != "" {
 		hr.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := c.api.Do(hr)
+	hc := c.api
+	if req.upload {
+		hc = c.upload
+	}
+	resp, err := hc.Do(hr)
 	if err != nil {
 		return 0, nil, transportError(req.procedure, err)
 	}

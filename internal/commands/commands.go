@@ -173,6 +173,7 @@ func Register(reg *command.Registry, env Env) {
 		})})
 	reg.Register(command.Handler{Name: "permissions", Description: "Show the [permission] values of config.toml", Usage: "permissions [json]",
 		Run: run(func(_ context.Context, s *service.Service, _ args) (service.Result, error) { return permissions(s) })})
+	registerFlow(reg, run)
 }
 
 func isMode(p string) bool {

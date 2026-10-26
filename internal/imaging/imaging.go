@@ -31,6 +31,38 @@ func Decode(r io.Reader) (image.Image, error) {
 	return nil, fmt.Errorf("not a webp, jpeg or png image")
 }
 
+// Sniff returns the MIME type of a webp, jpeg or png image by its first
+// bytes, or "" for anything else.
+func Sniff(data []byte) string {
+	switch {
+	case len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "image/jpeg"
+	case len(data) >= 8 && string(data[1:4]) == "PNG":
+		return "image/png"
+	}
+	return ""
+}
+
+// Size reads the width and height of a webp, jpeg or png image without
+// decoding its pixels.
+func Size(data []byte) (int, int, error) {
+	var cfg image.Config
+	var err error
+	switch Sniff(data) {
+	case "image/webp":
+		cfg, err = webp.DecodeConfig(bytes.NewReader(data))
+	case "image/jpeg":
+		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
+	case "image/png":
+		cfg, err = png.DecodeConfig(bytes.NewReader(data))
+	default:
+		return 0, 0, fmt.Errorf("not a webp, jpeg or png image")
+	}
+	return cfg.Width, cfg.Height, err
+}
+
 // Fit scales img so its longer edge is at most edge pixels (never up).
 func Fit(img image.Image, edge int) image.Image {
 	b := img.Bounds()

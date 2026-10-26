@@ -100,6 +100,54 @@ func TestUnauthorizedTwiceIsAuthError(t *testing.T) {
 	}
 }
 
+// Hyper3D refuses a session it does not accept on user-scoped routes with
+// HTTP 200/201 and a body error code; that is treated like a 401.
+func TestBodyLevelRefusalRefreshesOnceAndRetries(t *testing.T) {
+	for _, code := range []string{"NO_CURRENT_USER", "UNAUTHORIZED", "USER_NOT_FOUND"} {
+		var seen []string
+		s := server(t, func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, r.Header.Get("Authorization"))
+			w.WriteHeader(201)
+			if r.Header.Get("Authorization") != "Bearer t2" {
+				w.Write([]byte(`{"error":"` + code + `"}`))
+				return
+			}
+			w.Write([]byte(`{"meta":{"user_uuid":"u1","username":"me"}}`))
+		})
+		tok := &tokens{current: "t1"}
+		info, err := New(s.URL, tok, "test").GetInfo(context.Background())
+		if err != nil || info.Meta.UserUUID != "u1" || tok.refreshes != 1 || len(seen) != 2 || seen[1] != "Bearer t2" {
+			t.Fatalf("%s: info %+v err %v refreshes %d requests %v", code, info, err, tok.refreshes, seen)
+		}
+	}
+}
+
+func TestBodyLevelRefusalTwiceIsAuthError(t *testing.T) {
+	calls := 0
+	s := server(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(200)
+		w.Write([]byte(`{"error":"NO_CURRENT_USER"}`))
+	})
+	tok := &tokens{current: "t1"}
+	_, err := New(s.URL, tok, "test").ListMine(context.Background(), "u", 1, 10)
+	var ae *AuthError
+	if !errors.As(err, &ae) || !errors.Is(err, ErrUnauthorized) || ae.Code != "NO_CURRENT_USER" || calls != 2 || tok.refreshes != 1 {
+		t.Fatalf("err %v calls %d refreshes %d", err, calls, tok.refreshes)
+	}
+	// Another body error on a 2xx stays a service error, without a refresh.
+	tok = &tokens{current: "t1"}
+	s2 := server(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		w.Write([]byte(`{"error":"NO_SUCH_TASK"}`))
+	})
+	_, err = New(s2.URL, tok, "test").Card(context.Background(), "x")
+	var se *ServiceError
+	if !errors.As(err, &se) || errors.Is(err, ErrUnauthorized) || tok.refreshes != 0 {
+		t.Fatalf("NO_SUCH_TASK: err %v refreshes %d", err, tok.refreshes)
+	}
+}
+
 func TestHTTPErrorKeepsStatusAndMessage(t *testing.T) {
 	s := server(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)

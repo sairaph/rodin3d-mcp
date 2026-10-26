@@ -137,7 +137,7 @@ func (c *Client) call(ctx context.Context, req request, out any) error {
 		fresh, rerr := c.tokens.ForceRefresh(ctx, token)
 		if rerr != nil {
 			if errors.Is(rerr, ErrUnauthorized) {
-				return unauthorized(req.procedure, data)
+				return unauthorized(req.procedure, status, data)
 			}
 			return rerr
 		}
@@ -230,7 +230,7 @@ func decode(procedure string, status int, data []byte, out any) error {
 	msg := envString(env.Message)
 	switch {
 	case refused(status, data):
-		return unauthorized(procedure, data)
+		return unauthorized(procedure, status, data)
 	case status < 200 || status >= 300:
 		return &HTTPError{Procedure: procedure, Status: status, Code: code, Message: msg}
 	case code != "" && code != "OK":
@@ -262,10 +262,10 @@ func envString(raw json.RawMessage) string {
 	return ""
 }
 
-func unauthorized(procedure string, data []byte) error {
+func unauthorized(procedure string, status int, data []byte) error {
 	var env envelope
 	_ = json.Unmarshal(data, &env)
-	return &AuthError{Procedure: procedure, Code: envString(env.Error), Message: envString(env.Message)}
+	return &AuthError{Procedure: procedure, Status: status, Code: envString(env.Error), Message: envString(env.Message)}
 }
 
 // postJSON sends body as JSON.

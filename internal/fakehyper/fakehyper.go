@@ -73,6 +73,15 @@ type Server struct {
 	revoked   map[string]bool   // grant ids
 	calls     map[string]int
 	refreshes int
+	revokes   int
+	// Switches set through their methods (under the lock).
+	bodyRefuse int // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
+	failList   int // next n history lists: HTTP 503
+	failRevoke int // next n revokes: HTTP 503
+	fileStatus int // non-zero: every file request answers this status
+	extraTotal int // added to the history list's reported total
+	fileOK     int // file replies with the body
+	fileNotMod int // file replies 304 Not Modified
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
 	// Reject401 makes the next n API calls answer 401 regardless of the token.
@@ -184,6 +193,85 @@ func (s *Server) GrantRevoked() bool {
 	return len(s.revoked) > 0
 }
 
+// Revokes returns how many revoke requests were answered 200.
+func (s *Server) Revokes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revokes
+}
+
+// RefuseBody makes the next n API calls answer 2xx with the body error
+// NO_CURRENT_USER, the way Hyper3D refuses a session on user-scoped routes.
+func (s *Server) RefuseBody(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bodyRefuse = n
+}
+
+// FailLists makes the next n history list calls answer HTTP 503.
+func (s *Server) FailLists(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failList = n
+}
+
+// FailRevokes makes the next n revoke requests answer HTTP 503.
+func (s *Server) FailRevokes(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failRevoke = n
+}
+
+// SetFileStatus makes every file request answer status (403: an expired
+// signature, 503: the host is down); 0 serves files again.
+func (s *Server) SetFileStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fileStatus = status
+}
+
+// SetExtraTotal adds n to the total the history list reports, as when tasks
+// appear or hide while a sync pages through the list.
+func (s *Server) SetExtraTotal(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extraTotal = n
+}
+
+// FileReplies returns how many file requests were answered with the body
+// and how many with 304 Not Modified.
+func (s *Server) FileReplies() (ok, notModified int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fileOK, s.fileNotMod
+}
+
+// SetUser changes the account get_info reports.
+func (s *Server) SetUser(fn func(u *User)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(&s.User)
+}
+
+// RemoveTask drops a task from the account (as a deletion in the web would).
+func (s *Server) RemoveTask(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tasks, id)
+	for i, v := range s.order {
+		if v == id {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// ETag is the entity tag the file host sends for data.
+func ETag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
+}
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -249,15 +337,32 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		s.BearerOnFile = true
 	}
 	data, ok := s.files[strings.TrimPrefix(r.URL.Path, "/files/")]
+	status := s.fileStatus
 	s.mu.Unlock()
-	if !strings.HasPrefix(r.URL.Query().Get("sig"), SignatureMark) {
+	switch {
+	case status != 0:
+		http.Error(w, http.StatusText(status), status)
+		return
+	case !strings.HasPrefix(r.URL.Query().Get("sig"), SignatureMark):
 		http.Error(w, "missing signature", http.StatusForbidden)
 		return
-	}
-	if !ok {
+	case !ok:
 		http.NotFound(w, r)
 		return
 	}
+	// Like an object store: an ETag on every file, 304 when it still matches.
+	etag := ETag(data)
+	w.Header().Set("ETag", etag)
+	if r.Header.Get("If-None-Match") == etag {
+		s.mu.Lock()
+		s.fileNotMod++
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	s.mu.Lock()
+	s.fileOK++
+	s.mu.Unlock()
 	_, _ = w.Write(data)
 }
 
@@ -315,6 +420,11 @@ func (s *Server) serveOAuth(w http.ResponseWriter, r *http.Request, p string) {
 			writeJSON(w, 400, map[string]string{"error": "unsupported_grant_type"})
 		}
 	case "/oauth2/revoke":
+		if s.failRevoke > 0 {
+			s.failRevoke--
+			writeJSON(w, 503, map[string]string{"error": "temporarily_unavailable"})
+			return
+		}
 		form, _ := url.ParseQuery(string(body))
 		tok := form.Get("token")
 		if _, ok := s.access[tok]; ok {
@@ -324,6 +434,7 @@ func (s *Server) serveOAuth(w http.ResponseWriter, r *http.Request, p string) {
 		if gid, ok := s.refresh[tok]; ok {
 			s.revoked[gid] = true
 		}
+		s.revokes++
 		writeJSON(w, 200, map[string]any{})
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not_found"})
@@ -361,6 +472,11 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		writeJSON(w, 401, map[string]any{"statusCode": 401, "message": "Invalid authorization header"})
 		return
 	}
+	if s.bodyRefuse > 0 {
+		s.bodyRefuse--
+		writeJSON(w, 201, map[string]any{"error": "NO_CURRENT_USER"})
+		return
+	}
 	if !s.authorized(r) {
 		writeJSON(w, 401, map[string]any{"statusCode": 401, "message": "Invalid authorization header"})
 		return
@@ -387,11 +503,16 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 			writeJSON(w, 400, map[string]any{"statusCode": 400, "message": []string{"step must be one of the Rodin steps"}})
 			return
 		}
+		if s.failList > 0 {
+			s.failList--
+			writeJSON(w, 503, map[string]any{"statusCode": 503, "message": "Service Unavailable"})
+			return
+		}
 		ids := append([]string(nil), s.order...)
 		sort.SliceStable(ids, func(i, j int) bool { return s.tasks[ids[i]].Created > s.tasks[ids[j]].Created })
-		total := len(ids)
-		start := min((page-1)*limit, total)
-		end := min(start+limit, total)
+		start := min((page-1)*limit, len(ids))
+		end := min(start+limit, len(ids))
+		total := len(ids) + s.extraTotal
 		var rows []any
 		for _, id := range ids[start:end] {
 			t := s.tasks[id]

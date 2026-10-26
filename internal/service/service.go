@@ -135,6 +135,10 @@ func (s *Service) Credentials(ctx context.Context) (*auth.Credentials, error) {
 	return s.creds.Load(ctx)
 }
 
+// RevokePending reports whether an earlier logout could not revoke its grant
+// and keeps it for the next logout to retry.
+func (s *Service) RevokePending() bool { return s.creds.RevokePending() }
+
 // signedIn returns the credentials or the LoginRequired error.
 func (s *Service) signedIn(ctx context.Context) (*auth.Credentials, error) {
 	c, err := s.creds.Load(ctx)
@@ -193,15 +197,18 @@ func (s *Service) RunDaemon(ctx context.Context) error {
 		return err
 	}
 	defer inst.Close()
+	logger := log.New(os.Stderr, "", log.LstdFlags|log.LUTC)
+	// Holding the lock, no other daemon writes; a temporary file older than
+	// an hour is a leftover of a hard stop.
+	if n := daemon.Sweep(s.paths, time.Now()); n > 0 {
+		logger.Printf("removed %d temporary files left by an earlier stop", n)
+	}
 	st, err := s.Store()
 	if err != nil {
 		return err
 	}
 	cache, _ := s.assetCache()
-	d := &daemon.Daemon{
-		Store: st, Client: s.client, Session: s.session, Cache: cache,
-		Log: log.New(os.Stderr, "", log.LstdFlags|log.LUTC),
-	}
+	d := &daemon.Daemon{Store: st, Client: s.client, Session: s.session, Cache: cache, Log: logger}
 	return d.Serve(ctx)
 }
 

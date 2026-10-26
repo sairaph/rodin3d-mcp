@@ -9,15 +9,17 @@ import (
 // TokenSource that has no token to give.
 var ErrUnauthorized = errors.New("not authorized")
 
-// AuthError is an HTTP 401 that one token refresh did not cure.
+// AuthError is a refused session that one token refresh did not cure: an
+// HTTP 401, or a 2xx reply whose body carries a session error code.
 type AuthError struct {
 	Procedure string
-	Code      string // body error code, e.g. UNAUTHORIZED
+	Status    int    // HTTP status of the reply
+	Code      string // body error code, e.g. UNAUTHORIZED or NO_CURRENT_USER
 	Message   string
 }
 
 func (e *AuthError) Error() string {
-	s := e.Procedure + ": not authorized (HTTP 401)"
+	s := fmt.Sprintf("%s: not authorized (HTTP %d)", e.Procedure, e.Status)
 	if e.Code != "" {
 		s += " " + e.Code
 	}

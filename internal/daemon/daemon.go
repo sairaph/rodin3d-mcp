@@ -54,6 +54,8 @@ type Daemon struct {
 	Cache   *assets.Cache
 	Log     *log.Logger
 	Now     func() time.Time
+	// PageSize is the history list page size; 0 is the web's 50.
+	PageSize int
 
 	lastNeedsLogin bool
 }
@@ -267,8 +269,12 @@ func (d *Daemon) SyncHistory(ctx context.Context, userUUID string) error {
 	var need []string
 	seen := map[string]bool{}
 	total := -1
+	limit := pageSize
+	if d.PageSize > 0 {
+		limit = d.PageSize
+	}
 	for page := 1; page <= maxPages; page++ {
-		res, err := d.Client.ListMine(ctx, userUUID, page, pageSize)
+		res, err := d.Client.ListMine(ctx, userUUID, page, limit)
 		if err != nil {
 			return fmt.Errorf("list tasks (page %d): %w", page, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/assets"
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
@@ -144,6 +145,134 @@ func TestRefusedSessionIsNeedsLogin(t *testing.T) {
 	st, _ := f.store.State()
 	if st.Phase != store.PhaseNeedsLogin {
 		t.Fatalf("phase %s (%s)", st.Phase, st.LastError)
+	}
+}
+
+func TestBodyLevelRefusalRefreshesOnce(t *testing.T) {
+	f := setup(t)
+	// One refusal: the forced refresh cures it and the sync goes on.
+	f.fake.RefuseBody(1)
+	if err := f.d.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.fake.Refreshes() != 1 {
+		t.Errorf("%d refreshes, want 1", f.fake.Refreshes())
+	}
+	if tasks, _ := f.store.Tasks(); len(tasks) != 5 {
+		t.Errorf("%d tasks after a cured refusal", len(tasks))
+	}
+}
+
+func TestBodyLevelRefusalTwiceIsNeedsLogin(t *testing.T) {
+	f := setup(t)
+	f.fake.RefuseBody(2) // the call and its one retry after the refresh
+	err := f.d.Cycle(context.Background())
+	if !errors.Is(err, rodin.ErrUnauthorized) {
+		t.Fatalf("err %v, want an authorization error (so Serve backs off)", err)
+	}
+	st, _ := f.store.State()
+	if st.Phase != store.PhaseNeedsLogin {
+		t.Fatalf("phase %s (%s)", st.Phase, st.LastError)
+	}
+	if f.fake.Refreshes() != 1 {
+		t.Errorf("%d refreshes, want 1", f.fake.Refreshes())
+	}
+	// The session heals: the next cycle syncs and the phase clears.
+	if err := f.d.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.store.State(); st.Phase != store.PhaseIdle && st.Phase != store.PhaseWatching {
+		t.Errorf("phase after recovery %s", st.Phase)
+	}
+}
+
+func TestFailedListIsAnErrorPhase(t *testing.T) {
+	f := setup(t)
+	f.fake.FailLists(1)
+	err := f.d.Cycle(context.Background())
+	var he *rodin.HTTPError
+	if !errors.As(err, &he) || he.Status != 503 {
+		t.Fatalf("err %v, want the HTTP 503", err)
+	}
+	st, _ := f.store.State()
+	if st.Phase != store.PhaseError || !strings.Contains(st.LastError, "503") || !st.LastSync.IsZero() {
+		t.Fatalf("state %+v", st)
+	}
+	// Not synced, so the next cycle lists again (after Serve's backoff).
+	if err := f.d.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.store.State(); st.LastSync.IsZero() || st.Phase == store.PhaseError {
+		t.Errorf("after recovery %+v", st)
+	}
+}
+
+func TestBackoff(t *testing.T) {
+	// 5 s doubling: 5, 10, 20, 40 s ... 10m40s at 8 failures, then the cap.
+	want := []time.Duration{daemon.Tick, daemon.Tick, 2 * daemon.Tick, 4 * daemon.Tick, 8 * daemon.Tick}
+	for failures, w := range want {
+		if got := daemon.Backoff(failures); got != w {
+			t.Errorf("Backoff(%d) = %s, want %s", failures, got, w)
+		}
+	}
+	if got := daemon.Backoff(8); got != 128*daemon.Tick {
+		t.Errorf("Backoff(8) = %s, want %s", got, 128*daemon.Tick)
+	}
+	for _, failures := range []int{9, 10, 50, 1000} {
+		if got := daemon.Backoff(failures); got != daemon.SyncInterval {
+			t.Errorf("Backoff(%d) = %s, want the cap %s", failures, got, daemon.SyncInterval)
+		}
+	}
+	for failures := 1; failures < 20; failures++ {
+		if daemon.Backoff(failures+1) < daemon.Backoff(failures) {
+			t.Fatalf("Backoff shrinks at %d", failures)
+		}
+	}
+}
+
+func TestSyncFollowsEveryPage(t *testing.T) {
+	f := setup(t)
+	f.d.PageSize = 2 // 5 fixture tasks: pages of 2, 2, 1
+	st, _ := f.store.State()
+	if err := f.d.SyncHistory(context.Background(), st.UserUUID); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.fake.Calls("task/list_Rodin"); n != 3 {
+		t.Errorf("%d list calls, want 3", n)
+	}
+	if tasks, _ := f.store.Tasks(); len(tasks) != 5 {
+		t.Fatalf("%d tasks, want 5", len(tasks))
+	}
+}
+
+func TestShortListDoesNotPrune(t *testing.T) {
+	f := setup(t)
+	f.d.PageSize = 2
+	ctx := context.Background()
+	if err := f.d.SyncHistory(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The account drops a task, but the list reports one more than it
+	// returned (a task hidden or added while paging): the list is not
+	// complete, so nothing is removed.
+	f.fake.RemoveTask(fakehyper.GeometryID)
+	f.fake.SetExtraTotal(1)
+	if err := f.d.SyncHistory(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if tasks, _ := f.store.Tasks(); len(tasks) != 5 {
+		t.Fatalf("an incomplete list pruned: %d tasks", len(tasks))
+	}
+	// A complete list removes it.
+	f.fake.SetExtraTotal(0)
+	if err := f.d.SyncHistory(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if tasks, _ := f.store.Tasks(); len(tasks) != 4 {
+		t.Fatalf("%d tasks after the complete list, want 4", len(tasks))
+	}
+	if _, err := f.store.Task(fakehyper.GeometryID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("removed task still indexed: %v", err)
 	}
 }
 

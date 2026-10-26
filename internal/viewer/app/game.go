@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/png"
 	"log"
@@ -279,6 +280,13 @@ func (a *App) rendered(d renderDone) {
 		p.hasQueued = false
 	}
 	k := d.job.key
+	if errors.Is(d.err, render3d.ErrCanceled) {
+		// A trace stopped before its full quality: trace its view again.
+		if p.hasShown && p.shown == k && !p.shownFull {
+			p.hasShown = false
+		}
+		return
+	}
 	if k.interactive {
 		switch {
 		case d.took > quickSlow && p.div < maxQuickDivisor:
@@ -313,7 +321,7 @@ func (a *App) rendered(d renderDone) {
 		p.img = ebiten.NewImage(b.Dx(), b.Dy())
 	}
 	p.img.WritePixels(d.img.Pix)
-	p.shown, p.hasShown = k, true
+	p.shown, p.hasShown, p.shownFull = k, true, d.full
 	a.dirty()
 }
 

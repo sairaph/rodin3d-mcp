@@ -84,6 +84,7 @@ type pane struct {
 
 	img       *ebiten.Image
 	shown     renderKey
+	shownFull bool // the shown picture has its full quality (a trace may not yet)
 	hasShown  bool
 	queued    renderKey
 	hasQueued bool
@@ -879,7 +880,7 @@ func (a *App) quality() string {
 		if p.status == "loading" || p.mapsWanted && modeNeedsMaps(a.mode) {
 			return viewer.QualityInteractive
 		}
-		if p.status == "ready" && p.renderErr == "" && (!p.hasShown || p.shown.interactive || p.shown != a.fullKey(p)) {
+		if p.status == "ready" && p.renderErr == "" && (!p.hasShown || p.shown.interactive || !p.shownFull || p.shown != a.fullKey(p)) {
 			return viewer.QualityInteractive
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"image"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -16,12 +17,22 @@ import (
 // SS 1, no SAO; when it rests, one full frame at its size from the full
 // mesh, SS 2. div starts at 2 and steps up to 4 while quick frames take more
 // than 45 ms, back down under 20 ms.
+//
+// The tracer mode's quick frames are one sample per pixel; at rest it is
+// traced progressively (plan 2.11 Modes, M15): at most tracePixels pixels
+// (scaled into the pane), shown after 1, 2, 4, ... samples per pixel, full
+// quality at traceFull, then refined up to traceMax while no other pane
+// waits for the renderer.
 const (
 	settleDelay     = 150 * time.Millisecond
 	simplifyTarget  = 200000
 	quickSlow       = 45 * time.Millisecond
 	quickFast       = 20 * time.Millisecond
 	maxQuickDivisor = 4
+
+	tracePixels = 1 << 19
+	traceFull   = 32
+	traceMax    = 128
 )
 
 // renderKey is everything a pane's picture depends on.
@@ -50,6 +61,9 @@ type renderDone struct {
 	img  *image.NRGBA
 	took time.Duration
 	err  error
+	// full: the picture has its full quality (a tracer picture of fewer
+	// than traceFull samples does not).
+	full bool
 }
 
 // renderer runs one render at a time on its own goroutine; render3d uses
@@ -88,7 +102,10 @@ func (r *renderer) submit(j *renderJob) {
 		}
 	}
 	r.queue = append(kept, j)
-	if j.key.interactive && r.running != nil && !r.running.key.interactive && r.cancel != nil {
+	// A full render in flight gives way to any quick job (the user moves
+	// the view) and to a newer job of its own pane (its picture is no
+	// longer wanted).
+	if r.running != nil && !r.running.key.interactive && r.cancel != nil && (j.key.interactive || r.running.p == j.p) {
 		close(r.cancel)
 		r.cancel = nil
 	}
@@ -165,7 +182,9 @@ func (r *renderer) loop() {
 			r.mu.Lock()
 			r.running = nil
 			r.mu.Unlock()
-			if errors.Is(res.err, render3d.ErrCanceled) {
+			// A cancelled render is dropped; a cancelled trace is reported, as
+			// its pane may show a partial picture that must be traced again.
+			if errors.Is(res.err, render3d.ErrCanceled) && (j.key.interactive || j.key.mode != string(render3d.ModeTracer)) {
 				continue
 			}
 			select {
@@ -188,10 +207,15 @@ const (
 	maxFullSamples = 8 << 20
 )
 
-// frameSize is the render size and supersampling of a w x h pane picture.
-func frameSize(w, h int, interactive bool) (int, int, int) {
+// frameSize is the render size and supersampling of a w x h pane picture
+// in mode.
+func frameSize(w, h int, interactive bool, mode string) (int, int, int) {
 	if m := max(w, h); m > maxFrameSide {
 		w, h = max(w*maxFrameSide/m, 16), max(h*maxFrameSide/m, 16)
+	}
+	if mode == string(render3d.ModeTracer) && !interactive && w*h > tracePixels {
+		k := math.Sqrt(float64(tracePixels) / float64(w*h))
+		w, h = max(int(float64(w)*k), 16), max(int(float64(h)*k), 16)
 	}
 	ss := 2
 	if interactive || w*h*ss*ss > maxFullSamples {
@@ -210,11 +234,47 @@ func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 	}()
 	k := j.key
 	cam := k.cam
-	w, h, ss := frameSize(k.w, k.h, k.interactive)
+	w, h, ss := frameSize(k.w, k.h, k.interactive, k.mode)
 	o := render3d.Options{Mode: render3d.Mode(k.mode), Width: w, Height: h, Camera: &cam, Frame: &j.frame, Draft: j.draft,
 		Background: backgrounds[k.bg], WireOverlay: k.overlay, Cancel: cancel, SS: ss, Interactive: k.interactive}
 	t0 := time.Now()
+	if o.Mode == render3d.ModeTracer && !k.interactive {
+		return r.trace(j, o)
+	}
 	res.img, _, res.err = render3d.Render(j.mesh, j.maps, o)
 	res.took = time.Since(t0)
+	res.full = true
 	return res
+}
+
+// trace draws a tracer picture progressively: each pass doubles the
+// samples per pixel and is shown; the picture is full at traceFull and is
+// refined up to traceMax unless another pane waits for the renderer. The
+// last picture is returned; a pass the caller cancels ends it.
+func (r *renderer) trace(j *renderJob, o render3d.Options) renderDone {
+	t, err := render3d.NewTrace(j.mesh, j.maps, o)
+	if err != nil {
+		return renderDone{job: j, err: err}
+	}
+	for n := 1; ; n *= 2 {
+		if err := t.Add(n - t.Samples()); err != nil {
+			return renderDone{job: j, err: err}
+		}
+		res := renderDone{job: j, img: t.Image(), full: t.Samples() >= traceFull}
+		if t.Samples() >= traceMax || (res.full && r.othersWait()) {
+			return res
+		}
+		select {
+		case r.out <- res:
+		case <-r.quit:
+			return renderDone{job: j, err: render3d.ErrCanceled}
+		}
+	}
+}
+
+// othersWait reports queued jobs.
+func (r *renderer) othersWait() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.queue) > 0
 }

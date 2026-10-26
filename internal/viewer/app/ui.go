@@ -869,7 +869,7 @@ func stageLabel(s string) string {
 }
 
 var modeNames = map[string]string{"normal": "Normal", "raw": "Raw", "classic": "Classic", "glossy": "Glossy", "copper": "Copper", "metal": "Metal",
-	"ao": "AO", "wireframe": "Wireframe", "geometry": "Geometry", "pbr": "PBR", "shaded": "Shaded", "toon": "Toon", "depth": "Depth", "uv_checker": "UV checker"}
+	"ao": "AO", "wireframe": "Wireframe", "geometry": "Geometry", "pbr": "PBR", "shaded": "Shaded", "toon": "Toon", "tracer": "Tracer", "depth": "Depth", "uv_checker": "UV checker"}
 
 func modeLabel(m string) string {
 	if n, ok := modeNames[m]; ok {

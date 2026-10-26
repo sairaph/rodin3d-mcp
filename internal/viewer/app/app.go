@@ -31,7 +31,7 @@ import (
 
 // cmdTimeout bounds how long a call waits for the game loop to take it
 // (plan 2.11: 2 s). A variable so tests can shorten it.
-var cmdTimeout = 2 * time.Second
+var cmdTimeout = viewer.TakeWait
 
 var errBusy = errors.New("the window did not take the call within 2 s (is it frozen or minimised?)")
 

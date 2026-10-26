@@ -69,6 +69,11 @@ func DisplayAvailable() (bool, string) {
 // StartTimeout bounds how long Start waits for a new window to answer.
 const StartTimeout = 20 * time.Second
 
+// TakeWait is how long a window waits for its game loop to take a call; a
+// call not taken by then is answered as busy. So a window whose socket
+// works answers every call within TakeWait plus the call's own work.
+const TakeWait = 2 * time.Second
+
 // How long a window takes to end. A closing window saves the input sets
 // still queued for at most SaveWait (the store's busy timeout is 5 s); a
 // window told to stop by a signal whose loop does not close within

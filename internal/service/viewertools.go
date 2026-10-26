@@ -399,8 +399,11 @@ func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result,
 	return Result{Front: front, Body: body, Images: images}, nil
 }
 
-// How long close_viewer waits for the window to end: the window's own
-// bound in each case and a few seconds for the process to go.
+// How long close_viewer waits: closeCallWait for the window to answer the
+// close call (the close itself is instant on the loop, so a window whose
+// socket works answers within viewer.TakeWait, taken or busy; a longer wait
+// only delays the stop of a window that cannot answer), then the window's
+// own bound to end in each case and a few seconds for the process to go.
 //   - closeWait, after a close call the window took: its loop ends 200 ms
 //     after the reply, then the process saves queued input sets for at most
 //     viewer.SaveWait and (Unix) flushes its log for at most 2 s.
@@ -410,12 +413,13 @@ func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result,
 //   - stopBusyWait, after stopping a window that did not take the close call:
 //     its loop may still close and save, so viewer.ExitWait.
 //
-// So close_viewer answers within about 23 s in every case (2 s busy + 20 s,
-// or 15 s + 8 s).
+// So close_viewer answers within about 23 s in every case (3 s for the call
+// + 20 s, or 15 s + 8 s), also when the window's socket does not answer.
 const (
-	closeWait    = viewer.SaveWait + 5*time.Second
-	stopWait     = viewer.StopGrace + 3*time.Second
-	stopBusyWait = viewer.ExitWait + 3*time.Second
+	closeCallWait = viewer.TakeWait + time.Second
+	closeWait     = viewer.SaveWait + 5*time.Second
+	stopWait      = viewer.StopGrace + 3*time.Second
+	stopBusyWait  = viewer.ExitWait + 3*time.Second
 )
 
 // CloseViewer is close_viewer: close the window (a closed window is not an
@@ -428,7 +432,9 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 		return Result{Front: front, Body: "No viewer window was open."}, nil
 	}
 	var rep viewer.StateReply
-	err := s.viewerCall(ctx, viewer.MethodClose, nil, &rep)
+	cctx, cancel := context.WithTimeout(ctx, closeCallWait)
+	err := s.viewerCall(cctx, viewer.MethodClose, nil, &rep)
+	cancel()
 	if errors.Is(err, context.Canceled) {
 		return Result{}, err
 	}

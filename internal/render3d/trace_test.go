@@ -12,13 +12,17 @@ func texel(n vec3) *Texture {
 	return &Texture{W: 1, H: 1, Pix: []uint8{b(n[0]), b(n[1]), b(n[2]), 255}}
 }
 
-// TestNormalMapOrientation checks both renderers against three.js's
-// tangent frame: a map's +x tilts the normal towards growing u, +y towards
-// growing v; on a face seen from behind (double-sided) both turn round.
+// TestNormalMapOrientation checks both renderers against the web viewer's
+// frame, which is glTF's: a map's +x tilts the normal towards growing u,
+// +y towards falling v (up the image); on a face seen from behind
+// (double-sided) both turn round. Evidence, the saved web bundle: chunk
+// 7859 builds the pbr material new (normalScale 1, 1) and sets Mikk
+// tangents from the rodin-mikk-tangent worker, which negates their sign
+// (e[t]*=-1); three.js then uses B = cross(N, T) * sign = -dP/dv.
 // The quad faces +Z (towards the camera); u grows along +X, v along -Y
 // (down the picture, as glTF images are stored).
 func TestNormalMapOrientation(t *testing.T) {
-	right, down := vec3{1, 0, 0}, vec3{0, -1, 0}
+	right, up := vec3{1, 0, 0}, vec3{0, 1, 0}
 	N := vec3{0, 0, 1}
 	for _, tc := range []struct {
 		name string
@@ -27,14 +31,14 @@ func TestNormalMapOrientation(t *testing.T) {
 	}{
 		{"+x leans to +u", vec3{0.7, 0, 0.7}, right},
 		{"-x leans to -u", vec3{-0.7, 0, 0.7}, right.mul(-1)},
-		{"+y leans to +v", vec3{0, 0.7, 0.7}, down},
-		{"-y leans to -v", vec3{0, -0.7, 0.7}, down.mul(-1)},
+		{"+y leans to -v (up the picture)", vec3{0, 0.7, 0.7}, up},
+		{"-y leans to +v (down the picture)", vec3{0, -0.7, 0.7}, up.mul(-1)},
 	} {
 		for _, face := range []float64{1, -1} {
 			want := tc.want.mul(face)
 			// Raster: screen derivatives per pixel, rows downwards.
 			const px = 0.01
-			f := frag{face: face, uv: [2]float64{0.5, 0.5}, dPdx: right.mul(px), dPdy: down.mul(px),
+			f := frag{face: face, uv: [2]float64{0.5, 0.5}, dPdx: right.mul(px), dPdy: up.mul(-px),
 				dUVdx: [2]float64{px, 0}, dUVdy: [2]float64{0, px}}
 			s := &shadeCtx{maps: &Maps{Normal: texel(tc.mn)}}
 			if got := s.normalMap(&f, N); got.dot(want) <= 0.5 {

@@ -305,14 +305,16 @@ func (t *Trace) surface(h hit, d vec3) surface {
 }
 
 // normalMapFrame applies a tangent-space normal map texel c at a triangle
-// with edges e1, e2 and texture coordinate steps (du, dv) along them, as
-// three.js's getTangentFrame does from screen derivatives: T and B are the
-// surface gradients of u and v in the plane of the shading normal N (which
-// faces the viewer), scaled together so the longer is unit length.
+// with edges e1, e2 and texture coordinate steps (du, dv) along them, in
+// the frame normalMap uses (glTF: T = +grad u, B = -grad v, the map's +y up
+// the image): a and b give the surface gradients of u and v in the plane of
+// the shading normal N (which faces the viewer), scaled together so the
+// longer is unit length. Their sign follows N.(e1 x e2), so a face seen from
+// behind turns the frame as three.js's faceDirection does.
 func normalMapFrame(e1, e2 vec3, du1, dv1, du2, dv2 float64, N vec3, c [4]float32) (vec3, bool) {
 	a, b := e2.cross(N), N.cross(e1)
 	T := a.mul(du1).add(b.mul(du2))
-	B := a.mul(dv1).add(b.mul(dv2))
+	B := a.mul(-dv1).add(b.mul(-dv2))
 	det := math.Max(T.dot(T), B.dot(B))
 	if det == 0 {
 		return N, false

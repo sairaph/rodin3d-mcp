@@ -215,8 +215,13 @@ func (s *shadeCtx) shade(f *frag) (vec3, float64) {
 	return c, 1
 }
 
-// normalMap applies a tangent-space normal map with a per-triangle tangent
-// frame from the UV gradients (three.js getTangentFrame).
+// normalMap applies a tangent-space normal map in the glTF convention, as
+// the web viewer does: the map's +x leans the normal towards growing u and
+// its +y towards falling v (up the image, glTF images have v down). The
+// web's pbr material takes MikkTSpace tangents with the sign negated
+// (three.js's glTF rule) and normalScale (1, 1), so its frame is T = +grad u,
+// B = -grad v. Here T and B come from the screen derivatives as three.js's
+// getTangentFrame builds them.
 func (s *shadeCtx) normalMap(f *frag, N vec3) vec3 {
 	q0, q1 := f.dPdx, f.dPdy
 	st0 := [2]float64{f.dUVdx[0], f.dUVdx[1]}
@@ -229,14 +234,15 @@ func (s *shadeCtx) normalMap(f *frag, N vec3) vec3 {
 	if det == 0 {
 		return N
 	}
-	// three.js takes dFdy with window y up; the derivatives here run with
-	// pixel rows (y down), which turns T and B round (getTangentFrame does
-	// not divide by the frame's determinant), so they are negated.
-	sc := -1 / math.Sqrt(det)
-	T, B = T.mul(sc*f.face), B.mul(sc*f.face)
+	// With window y up (three.js's dFdy) T and B are +grad u and +grad v.
+	// The derivatives here run with pixel rows (y down), which turns both
+	// round, so T is negated back to +grad u and B is kept, giving -grad v.
+	// A face seen from behind turns the whole frame, as three.js's
+	// faceDirection does.
+	sc := f.face / math.Sqrt(det)
+	T, B = T.mul(-sc), B.mul(sc)
 	c := s.maps.Normal.Sample(f.uv[0], f.uv[1])
 	mn := vec3{float64(c[0])*2 - 1, float64(c[1])*2 - 1, float64(c[2])*2 - 1}
-	// glTF UVs have v down; three's frame uses the same texture coordinates.
 	return T.mul(mn[0]).add(B.mul(mn[1])).add(N.mul(mn[2])).norm()
 }
 

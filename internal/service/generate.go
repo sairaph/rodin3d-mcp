@@ -388,10 +388,12 @@ func checkWeights(ws []*float64, name func(int) string) error {
 func imageName(i int) string { return fmt.Sprintf("images[%d]", i) }
 
 // viewWeights returns the weights sent: the default table of the model when
-// none is given, else the given ones normalised to sum 1 in hundredths, as
-// the web sends them. Each sent weight is at least 0.01, and the largest
-// takes the rounding remainder (the web gives it to the last image, which
-// could send 0 for a small last weight).
+// none is given, else the given ones normalised to sum 1 in hundredths as
+// the web sends them (notes 14: each share rounded, the last image takes the
+// remainder), so equal weights of three go out as 0.33, 0.33, 0.34. Where
+// that would send a weight below 0.01 (a share that rounds to 0, or a last
+// image left with nothing), every share is at least 0.01 and the largest
+// takes the remainder instead.
 func viewWeights(images []preparedImage, model string) ([]float64, error) {
 	n := len(images)
 	ws := make([]*float64, n)
@@ -416,19 +418,30 @@ func viewWeights(images []preparedImage, model string) ([]float64, error) {
 	for _, w := range ws {
 		sum += *w
 	}
-	// In hundredths: rounded shares, at least 1 each. The remainder (at
-	// most n/2 + n - 1 hundredths either way) goes to the largest share,
-	// which is at least 100/n, so it stays above 1.
+	// In hundredths. The web's split: rounded shares, the last takes the
+	// remainder.
 	cents := make([]int, n)
-	total, big := 0, 0
-	for i, w := range ws {
-		cents[i] = max(1, int(math.Round(*w/sum*100)))
+	total, web := 0, true
+	for i, w := range ws[:n-1] {
+		cents[i] = int(math.Round(*w / sum * 100))
 		total += cents[i]
-		if cents[i] > cents[big] {
-			big = i
-		}
+		web = web && cents[i] >= 1
 	}
-	cents[big] += 100 - total
+	cents[n-1] = 100 - total
+	if !web || cents[n-1] < 1 {
+		// Rounded shares, at least 1 each. The remainder (at most n/2 + n - 1
+		// hundredths either way) goes to the largest share, which is at
+		// least 100/n, so it stays above 1.
+		total, big := 0, 0
+		for i, w := range ws {
+			cents[i] = max(1, int(math.Round(*w/sum*100)))
+			total += cents[i]
+			if cents[i] > cents[big] {
+				big = i
+			}
+		}
+		cents[big] += 100 - total
+	}
 	out := make([]float64, n)
 	for i, c := range cents {
 		out[i] = float64(c) / 100

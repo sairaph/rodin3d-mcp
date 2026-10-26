@@ -78,7 +78,7 @@ func TestWeightRule(t *testing.T) {
 // sentOK checks the weights viewWeights sent for ws: in hundredths, each
 // at least 0.01, summing to 1, each within 0.07 of its share (rounding
 // moves each share by at most half a hundredth and the 0.01 floor by at
-// most one; the largest takes what that adds up to).
+// most one; the last, or the largest, takes what that adds up to).
 func sentOK(t *testing.T, ws, out []float64) {
 	t.Helper()
 	sum, total := 0.0, 0
@@ -113,14 +113,29 @@ func sendWeights(t *testing.T, ws []float64) []float64 {
 	return out
 }
 
-// TestViewWeights: the sent weights are never 0 for a weight above 0. The
-// review's two sets (the last image used to get 0), every set the viewer
-// window can make (0.05 to 1 in steps of 0.05, 1 to 5 images), and random
-// sets of any weights in (0, 1].
+// TestViewWeights: ordinary sets go out as the web splits them (the last
+// image takes the remainder), and the sent weights are never 0 for a weight
+// above 0: the review's sets (the last image used to get 0), every set the
+// viewer window can make (0.05 to 1 in steps of 0.05, 1 to 5 images), and
+// random sets of any weights in (0, 1].
 func TestViewWeights(t *testing.T) {
 	for _, tc := range []struct{ ws, want []float64 }{
+		// The web's split: rounded shares, the last takes the remainder.
+		{[]float64{1}, []float64{1}},
+		{[]float64{1, 1}, []float64{0.5, 0.5}},
+		{[]float64{1, 1, 1}, []float64{0.33, 0.33, 0.34}},
+		{[]float64{0.33, 0.33, 0.33}, []float64{0.33, 0.33, 0.34}},
+		{[]float64{1, 1, 1, 1, 1}, []float64{0.2, 0.2, 0.2, 0.2, 0.2}},
+		{[]float64{0.5, 1}, []float64{0.33, 0.67}},
+		{[]float64{1, 0.5, 0.5}, []float64{0.5, 0.25, 0.25}},
+		{[]float64{1, 1, 1, 1, 0.3}, []float64{0.23, 0.23, 0.23, 0.23, 0.08}},
+		{[]float64{1, 1, 1, 1, 0.1}, []float64{0.24, 0.24, 0.24, 0.24, 0.04}},
+		// The web's split would send 0 (last left with nothing, or a share
+		// rounding to 0): at least 0.01 each, the largest takes the rest.
 		{[]float64{1, 1, 1, 1, 0.05}, []float64{0.24, 0.25, 0.25, 0.25, 0.01}},
 		{[]float64{0.1, 0.9, 0.9, 0.9, 0.05}, []float64{0.04, 0.30, 0.32, 0.32, 0.02}},
+		{[]float64{0.004, 1}, []float64{0.01, 0.99}},
+		{[]float64{1, 0.004}, []float64{0.99, 0.01}},
 	} {
 		out := sendWeights(t, tc.ws)
 		sentOK(t, tc.ws, out)

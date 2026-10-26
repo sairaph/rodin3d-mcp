@@ -86,6 +86,10 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	if part != "" && bangVer == "" {
 		return Result{}, fail(render.CodeInvalidInput, "part needs bang_version: the Bang result the part belongs to.", "get_task lists the Bang results with their parts.")
 	}
+	if bangVer != "" && part == "" {
+		return Result{}, fail(render.CodeInvalidInput, "bang_version needs part: split_parts splits one part of an earlier Bang result again.",
+			"Pass part (a part name of that result; get_task lists them), or leave bang_version out to split the whole draft.")
+	}
 	uuid, card, _, err := s.actionCard(ctx, in.TaskID, "split_parts")
 	if err != nil {
 		return Result{}, err
@@ -125,6 +129,9 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 
 	detail := splitDetail{Version: version, Strength: strength, Step: step, Part: part}
 	deadline := time.Now().Add(FlowWait)
+	// wait false returns right after the request of step plan or generate;
+	// step both needs the finished plan before it can split, so it waits.
+	wait := in.Wait || step == "both"
 	var images []Image
 	sp.open()
 	if step == "generate" {
@@ -135,10 +142,12 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			sp.close(ctx, err)
 			return Result{}, sendFailure("split_parts (bang_plan)", uuid, err)
 		}
-		jr, err := s.waitJobs(ctx, reply.UUIDs(), deadline)
-		if err != nil {
-			sp.close(ctx, nil)
-			return Result{}, wrapf(err, "the Bang plan was started; follow it with get_task")
+		jr := jobsResult{}
+		if wait {
+			if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
+				sp.close(ctx, nil)
+				return Result{}, wrapf(err, "the Bang plan was started; split_parts with step generate splits by it once it is made")
+			}
 		}
 		detail.Plan = jobWord(jr)
 		if jr.Done && jr.Status == "Succeeded" {
@@ -153,16 +162,18 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			return s.finishSplit(ctx, sp, uuid, detail, images), nil
 		}
 	}
-	reply, err := s.client.BangGenerate(ctx, req)
+	reply, err := s.client.BangGenerate(ctx, uuid, version)
 	if err != nil {
 		sp.close(ctx, err)
 		return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
 	}
 	detail.Result = &bangPart{Version: reply.Version}
-	jr, err := s.waitJobs(ctx, reply.UUIDs(), deadline)
-	if err != nil {
-		sp.close(ctx, nil)
-		return Result{}, wrapf(err, "the split was started (Bang version %s); follow it with get_task", reply.Version)
+	jr := jobsResult{}
+	if wait {
+		if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
+			sp.close(ctx, nil)
+			return Result{}, wrapf(err, "the split was started (Bang version %s); follow it with get_task", reply.Version)
+		}
 	}
 	sp.close(ctx, nil)
 	detail.Split, detail.TimedOut = jobWord(jr), jr.TimedOut
@@ -296,10 +307,16 @@ func (s *Service) finishSplit(ctx context.Context, sp *spend, uuid string, d spl
 		front.Task = s.taskFront(card)
 	}
 	front.Charge, front.TimedOut, front.Extra = sp.front(), d.TimedOut, d
+	same := "the same version"
+	if d.Part != "" {
+		same = "the same version, bang_version and part"
+	}
 	var b strings.Builder
 	switch {
-	case d.Plan == "running":
+	case d.Plan == "running" && d.TimedOut:
 		fmt.Fprintf(&b, "The Bang plan of geometry %s is still running after %d seconds.", d.Version, int(FlowWait.Seconds()))
+	case d.Plan == "running":
+		fmt.Fprintf(&b, "The Bang plan of geometry %s was sent and is running.", d.Version)
 	case d.Plan != "succeeded" && d.Plan != "existing":
 		fmt.Fprintf(&b, "The Bang plan of geometry %s ended %s.", d.Version, d.Plan)
 	case d.Step == "plan":
@@ -323,11 +340,16 @@ func (s *Service) finishSplit(ctx context.Context, sp *spend, uuid string, d spl
 	}
 	b.WriteString("\n\n" + sp.walletText())
 	switch {
-	case d.Plan == "running" || d.Split == "running":
+	case d.Plan == "running":
+		// No split was sent: the plan comes first, and get_task does not
+		// show a plan.
+		b.WriteString("\n\nNext: in a minute, split_parts with step generate (and " + same + ") splits the draft by this plan; " +
+			"it answers conflict when the draft has no plan yet. No split was sent.")
+	case d.Split == "running":
 		b.WriteString("\n\nNext: in a minute or two, get_task with " + uuid + ": its bang block lists the results of each draft version once they are done, " +
 			"with the name download_model saves the parts file by. Do not call split_parts again for this split.")
 	case d.Step == "plan" && d.Plan == "succeeded":
-		b.WriteString("\n\nNext: split_parts with step generate (and the same version) splits the draft by this plan; step plan with another strength makes a new plan.")
+		b.WriteString("\n\nNext: split_parts with step generate (and " + same + ") splits the draft by this plan; step plan with another strength makes a new plan.")
 	case d.Split == "succeeded":
 		fmt.Fprintf(&b, "\n\nNext: confirm_geometry with bang_version %s confirms the draft as these parts; split_parts again (another strength, or bang_version and part) makes another result.", d.Result.Version)
 	}

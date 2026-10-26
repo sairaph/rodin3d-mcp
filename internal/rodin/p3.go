@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
-	"net/http"
-	"net/url"
 )
 
 // The procedures of the Rodin modes beyond the staged chain (notes 14
@@ -96,30 +94,23 @@ func (c *Client) Agentic(ctx context.Context, req AgenticRequest) (*AgenticReply
 	return &out, nil
 }
 
-// AgenticHistory calls GET task/rodin_agentic_history?uuid=: the versions of
-// a RodinAgentic task, as sent.
-func (c *Client) AgenticHistory(ctx context.Context, uuid string) (json.RawMessage, error) {
-	var out json.RawMessage
-	err := c.call(ctx, request{method: http.MethodGet, procedure: "task/rodin_agentic_history", query: url.Values{"uuid": {uuid}}}, &out)
-	return out, err
-}
-
 // BangRequest names the geometry draft version (and, to split one part of
-// an earlier Bang result, its version and part) a Bang call works on.
+// an earlier Bang result, that result and the part) a Bang call works on.
 type BangRequest struct {
 	UUID         string
 	ModelVersion string // geometry version, v1 ...
-	BangVersion  string // optional
+	BangVersion  string // the Bang result the part belongs to (with ComponentID)
 	ComponentID  string // optional part name
 }
 
+// body is {uuid, model_version}, plus bang_version and bang_component_id
+// for one part: the web's plan call and plan picture read (main.fmt.js:
+// 14416-14431, 92127-92136, 92269-92275; the whole-model read sends no
+// bang_component_id).
 func (r BangRequest) body() map[string]any {
 	b := map[string]any{"uuid": r.UUID, "model_version": r.ModelVersion}
-	if r.BangVersion != "" {
-		b["bang_version"] = r.BangVersion
-	}
 	if r.ComponentID != "" {
-		b["bang_component_id"] = r.ComponentID
+		b["bang_version"], b["bang_component_id"] = r.BangVersion, r.ComponentID
 	}
 	return b
 }
@@ -145,24 +136,21 @@ func (c *Client) BangPlan(ctx context.Context, r BangRequest, components int) (*
 // BangPlanResult calls task/bang_plan_result: the address of the plan's
 // picture. No plan yet answers NO_SUCH_A_PLAN.
 func (c *Client) BangPlanResult(ctx context.Context, r BangRequest) (string, error) {
-	b := r.body()
-	if r.ComponentID == "" { // the web's whole-model read sends a null part
-		b["bang_component_id"] = nil
-	}
 	var out struct {
 		URL string `json:"url"`
 	}
-	if err := c.postJSON(ctx, "task/bang_plan_result", b, &out); err != nil {
+	if err := c.postJSON(ctx, "task/bang_plan_result", r.body(), &out); err != nil {
 		return "", err
 	}
 	return out.URL, nil
 }
 
-// BangGenerate calls task/bang_generate: splits the draft by its plan (the
-// web's "Bang to Parts"; it sends no plan_version and no settings).
-func (c *Client) BangGenerate(ctx context.Context, r BangRequest) (*BangReply, error) {
+// BangGenerate calls task/bang_generate: splits the draft by its latest
+// plan (the web's "Bang to Parts"). Both web call sites send only uuid and
+// model_version, also after a part's plan (main.fmt.js:14559, 29989).
+func (c *Client) BangGenerate(ctx context.Context, uuid, modelVersion string) (*BangReply, error) {
 	var out BangReply
-	if err := c.postJSON(ctx, "task/bang_generate", r.body(), &out); err != nil {
+	if err := c.postJSON(ctx, "task/bang_generate", map[string]any{"uuid": uuid, "model_version": modelVersion}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

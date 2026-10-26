@@ -80,6 +80,7 @@ type TextureRef struct {
 
 // Node is a scene node.
 type Node struct {
+	Name        string    `json:"name"`
 	Mesh        *int      `json:"mesh"`
 	Children    []int     `json:"children"`
 	Matrix      []float64 `json:"matrix"`
@@ -383,6 +384,37 @@ func (f *File) indices(ai int) ([]uint32, error) {
 		}
 	}
 	return out, nil
+}
+
+// MeshNodeNames lists the names of the default scene's nodes that carry a
+// mesh, in the order three.js traverses them (depth first, children in
+// order): the part names of a Bang result as the web reads them
+// (userData.name).
+func (f *File) MeshNodeNames() []string {
+	var out []string
+	var walk func(n, depth int)
+	walk = func(n, depth int) {
+		if n < 0 || n >= len(f.Doc.Nodes) || depth > 64 {
+			return
+		}
+		nd := f.Doc.Nodes[n]
+		if nd.Mesh != nil {
+			out = append(out, nd.Name)
+		}
+		for _, c := range nd.Children {
+			walk(c, depth+1)
+		}
+	}
+	if len(f.Doc.Scenes) > 0 {
+		s := 0
+		if f.Doc.Scene != nil && *f.Doc.Scene >= 0 && *f.Doc.Scene < len(f.Doc.Scenes) {
+			s = *f.Doc.Scene
+		}
+		for _, r := range f.Doc.Scenes[s].Nodes {
+			walk(r, 0)
+		}
+	}
+	return out
 }
 
 // LoadMesh flattens the default scene into one world-space mesh. Draco

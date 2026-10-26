@@ -142,6 +142,27 @@ var Settings = []Setting{
 	{Name: "material", Stage: "export_model", Web: "material", Type: "enum", Values: "pbr, shaded, all", Default: "all", Notes: "Material packs only; a mesh pack sends no material, as the web does."},
 	{Name: "align_ground", Stage: "export_model", Web: "align_ground", Type: "bool", Default: "true (model on the ground)"},
 	{Name: "height", Stage: "export_model", Web: "height", Type: "number", Notes: "Custom real-world size."},
+	// confirm_geometry of a split draft
+	{Name: "bang_version", Stage: "confirm_geometry", Web: "bang_version + model_multi_udim", Type: "Bang result id", Notes: "Confirms the parts of a split_parts result; all parts go in one UV group, as the web confirms parts nobody regrouped."},
+	// generate_agentic
+	{Name: "images", Stage: "generate_agentic", Web: "images[]", Type: "list of paths", Values: "1-5 images", Gate: "2 or more images: RodinUseMultiImage", Notes: "No view tags or weights: Agentic takes none."},
+	{Name: "budget", Stage: "generate_agentic", Web: "budget_tier", Type: "enum", Values: "basic (about 3 min), standard (about 5), pro (about 10)", Default: "standard on the web; required here"},
+	{Name: "ngons", Stage: "generate_agentic", Web: "route (none, or rodin when off)", Type: "bool", Default: "true", Notes: "Off asks for the high-poly producer, whose result is an ordinary Rodin draft."},
+	// split_parts
+	{Name: "strength", Stage: "split_parts", Web: "settings.bang_component_num", Type: "integer", Values: "1-12", Default: "5", Gate: "above 5: RodinBangGenerateAdvancedQuality"},
+	{Name: "step", Stage: "split_parts", Web: "bang_plan, bang_generate", Type: "enum", Values: "both, plan, generate", Default: "both"},
+	{Name: "bang_version + part", Stage: "split_parts", Web: "bang_version, bang_component_id", Type: "Bang result id + part name", Notes: "Splits one part of an earlier result again."},
+	// rig_model and animate_model
+	{Name: "template", Stage: "rig_model", Web: "rodinrig_template + rodinrig_hierarchy", Type: "enum", Values: "human (Mixamo, 52 bones), quadruped, bird, kaiju (33 bones), dragon (39 bones)", Default: "human"},
+	{Name: "skeleton", Stage: "rig_model", Web: "rodinrig_hierarchy (template custom)", Type: "text", Notes: "One bone per line, depth by leading - characters."},
+	{Name: "description", Stage: "rig_model", Web: "rodinrig_description, rigging_mode generate", Type: "text", Notes: "Hyper3D plans the bones from words."},
+	{Name: "skinning", Stage: "rig_model", Web: "skinning_method", Type: "enum", Values: "core (human template only), shell", Default: "core for human, else shell"},
+	{Name: "presets", Stage: "animate_model", Web: "rodinrig_animations[]", Type: "list", Values: "<category>/<name> from list_animation_presets", Gate: "more than 5 per export: GatewayContentGenerationForFree"},
+	{Name: "animation_files", Stage: "animate_model", Web: "rodinrig_animation_files[]", Type: "list of paths", Values: ".fbx, one clip, at most 25 MiB each"},
+	{Name: "format", Stage: "animate_model", Web: "geometry_file_format", Type: "enum", Values: "fbx, glb, usdz", Default: "glb"},
+	// texture_model
+	{Name: "model_path", Stage: "texture_model", Web: "models[]", Type: "path", Values: "glb gltf fbx obj dae stl ply, at most 150 MB"},
+	{Name: "images", Stage: "texture_model", Web: "images[] (image_label all ?, model_reference_rotation identity)", Type: "list of paths", Values: "1-5 images", Default: "a render of the model's front (glb, gltf, obj, stl)"},
 }
 
 // ViewTags in the order of the web's direction bar.
@@ -172,4 +193,5 @@ var Privileges = []Privilege{
 	{"RodinHighRedoCount", "50 geometry and 15 material redos"},
 	{"RodinMediumRedoCount", "20 geometry and 6 material redos"},
 	{"UnlimitedPrivateModel", "private tasks without a quota"},
+	{"GatewayContentGenerationForFree", "up to 10 animations per animate_model export (else 5)"},
 }

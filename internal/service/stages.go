@@ -162,7 +162,7 @@ func (s *Service) ConfirmGeometry(ctx context.Context, in ConfirmGeometryInput) 
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{SmartLowPoly: in.SmartLowPoly}
+	pin := price.Input{SmartLowPoly: in.SmartLowPoly, Mesh: strings.ToLower(strings.TrimSpace(in.Mesh))}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "confirm_geometry", uuid, pin, in.Expected, true)
 	if err != nil {
@@ -254,10 +254,9 @@ func confirmSettings(in ConfirmGeometryInput, card *rodin.Card, info *rodin.User
 	}
 
 	if mesh == "" {
-		mesh = "quad"
-		if info.HasPrivilege("RodinMeshAdditionalFeatures") {
-			mesh = "raw" // every confirmed task in the owner's history is Raw (Triangle)
-		}
+		// The quote used the same default (confirm_geometry's price
+		// depends on the mesh).
+		mesh = price.DefaultMesh(price.Account{Privileges: info.Meta.Privileges})
 	}
 	gen := stage.Model(card.Setting("generation_mode"))
 	tier := stage.Tier(card.Setting("brilliant_mode"))
@@ -480,7 +479,11 @@ func (s *Service) GenerateTexture(ctx context.Context, in TextureInput) (Result,
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("reference_image %q is not an input image of the task.", ref),
 			"Pass ALL, one of "+orNone(names)+", or the absolute path of a new image.")
 	}
-	pin := price.Input{Operation: "generate_texture", TextureMode: in.TextureMode}
+	// The options as textureSettings sends them for a first texture (unset
+	// is off); the price depends on them.
+	on := func(p *bool) bool { return p != nil && *p }
+	pin := price.Input{Operation: "generate_texture", TextureMode: in.TextureMode,
+		HD: on(in.HD), Sharp: on(in.Sharp), FaceEnhance: on(in.FaceEnhance), Delight: on(in.Delight)}
 	pinFromCard(&pin, card)
 	if pin.Model == "gen-1.5" {
 		pin.TextureMode = "legacy"
@@ -627,7 +630,7 @@ func (s *Service) ConfirmMaterial(ctx context.Context, in ConfirmMaterialInput) 
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{}
+	pin := price.Input{Operation: "confirm_material"} // pinFromCard reads the texture tier for it
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "confirm_material", uuid, pin, in.Expected, true)
 	if err != nil {
@@ -690,10 +693,7 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	}
 	bad := func(msg, hint string) error { return fail(render.CodeInvalidInput, msg, hint) }
 	typ := strings.ToLower(strings.TrimSpace(in.Type))
-	want := "mesh"
-	if st.Stage == stage.Material {
-		want = "material"
-	}
+	want := packType(st)
 	if typ == "" {
 		typ = want
 	}
@@ -724,6 +724,7 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 		body["height"] = *in.Height
 	}
 	resolution := strings.ToLower(strings.TrimSpace(in.Resolution))
+	material := ""
 	if typ == "material" {
 		if resolution == "" {
 			resolution = "2k"
@@ -738,7 +739,7 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 		if (resolution == "6k" || resolution == "12k") && card.Setting("texture_mode") != "extreme-high" {
 			return Result{}, bad(resolution+" packs exist only for texture_mode extreme-high.", "Pass 2k (or 4k with the Business plan).")
 		}
-		material := strings.ToLower(strings.TrimSpace(in.Material))
+		material = strings.ToLower(strings.TrimSpace(in.Material))
 		if material == "" {
 			material = "all"
 		}
@@ -750,7 +751,7 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	} else if resolution != "" || in.Material != "" {
 		return Result{}, bad("resolution and material apply to a textured task's pack.", "Leave them out for a geometry pack.")
 	}
-	pin := price.Input{Resolution: resolution, Geometry: geometry}
+	pin := price.Input{PackType: typ, Resolution: resolution, Geometry: geometry, Format: format, Material: material}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "export_model", uuid, pin, in.Expected, true)
 	if err != nil {

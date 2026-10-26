@@ -119,7 +119,7 @@ var Settings = []Setting{
 	{Name: "mesh", Stage: "confirm_geometry", Web: "mesh_export_type", Type: "enum", Values: "raw (Triangle), quad", Gate: "raw: RodinMeshAdditionalFeatures"},
 	{Name: "quality", Stage: "confirm_geometry", Web: "quality + quality_override", Type: "enum", Values: "extra-low 4000, low 8000, medium 18000, high 50000 faces", Default: "medium", Notes: "Quad mesh."},
 	{Name: "faces", Stage: "confirm_geometry", Web: "quality_override", Type: "integer", Values: "gen-2.5 high and extreme-high: 20000-2000000; other gen-2.5 tiers: 500-1000000; gen-1.5: 500-200000", Notes: "Raw mesh with Simplify; under 20000 the web warns of a low-poly model."},
-	{Name: "smart_low_poly", Stage: "confirm_geometry", Web: "task/rodin_polygen", Type: "bool + density", Values: "density low, medium, high; type raw or quad", Gate: "RodinRemeshAdditionalFeatures", Notes: "Confirm costs 2 credits in this mode."},
+	{Name: "smart_low_poly", Stage: "confirm_geometry", Web: "task/rodin_polygen", Type: "bool + density", Values: "density low, medium, high; type raw or quad", Gate: "RodinRemeshAdditionalFeatures", Notes: "The web labels Confirm 2 Credits in this mode (not measured)."},
 	{Name: "bake_normal", Stage: "confirm_geometry", Web: "quad_normal", Type: "bool", Notes: "Raw mesh: only with Simplify and at most 20000 faces."},
 	{Name: "symmetric", Stage: "confirm_geometry", Web: "symmetric", Type: "bool", Default: "true"},
 	{Name: "smooth", Stage: "confirm_geometry", Web: "mesh_smooth", Type: "bool", Notes: "Quad mesh."},

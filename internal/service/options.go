@@ -199,11 +199,17 @@ type QuoteInput struct {
 	Tier         string
 	TextureMode  string
 	SmartLowPoly bool
-	Resolution   string
-	Geometry     string
-	Budget       string
-	Batch        int
-	ForkStage    string
+	Mesh         string
+	// generate_texture options (unset is off, as the tool sends them).
+	HD, Sharp, FaceEnhance, Delight bool
+	PackType                        string // export_model type; default the task's stage
+	Resolution                      string
+	Geometry                        string
+	Format                          string
+	Material                        string
+	Budget                          string
+	Batch                           int
+	ForkStage                       string
 }
 
 type permissionFront struct {
@@ -234,7 +240,9 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	}
 	pin := price.Input{
 		Operation: in.Operation, Model: in.Model, Tier: in.Tier, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
-		Resolution: in.Resolution, Geometry: in.Geometry, Budget: in.Budget, Batch: in.Batch, ForkStage: in.ForkStage,
+		Mesh: in.Mesh, HD: in.HD, Sharp: in.Sharp, FaceEnhance: in.FaceEnhance, Delight: in.Delight, PackType: in.PackType,
+		Resolution: in.Resolution, Geometry: in.Geometry, Format: in.Format, Material: in.Material, Budget: in.Budget, Batch: in.Batch,
+		ForkStage: in.ForkStage,
 	}
 	var task *TaskFront
 	if strings.TrimSpace(in.TaskID) != "" {
@@ -274,11 +282,12 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	var b strings.Builder
 	switch {
 	case q.Known && *q.Credits == 0:
-		fmt.Fprintf(&b, "%s costs nothing: %s.", in.Operation, q.FreeReason)
+		fmt.Fprintf(&b, "%s costs nothing: %s. Source: %s.", in.Operation, q.FreeReason, q.Basis)
 	case q.Known:
-		fmt.Fprintf(&b, "%s costs %s credits (%s).", in.Operation, num(*q.Credits), q.ChargedAt)
+		fmt.Fprintf(&b, "%s costs %s credits (%s). Source: %s.", in.Operation, num(*q.Credits), q.ChargedAt, q.Basis)
 	default:
-		fmt.Fprintf(&b, "The price of %s is not known: %s.", in.Operation, q.Basis)
+		fmt.Fprintf(&b, "The price of %s is not known: %s. To run it anyway, show the user that the price is not known and pass expected_credits %g.",
+			in.Operation, q.Basis, UnknownPrice)
 	}
 	if q.FrozenAtSubmit != nil {
 		fmt.Fprintf(&b, " The server was seen to freeze %s credits at submit; confirm_geometry took them, and a draft left unconfirmed kept them frozen for over an hour.", num(*q.FrozenAtSubmit))

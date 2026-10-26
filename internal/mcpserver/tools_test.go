@@ -409,7 +409,10 @@ func TestDownload(t *testing.T) {
 func TestQuote(t *testing.T) {
 	f := newFixture(t, true, false)
 	r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry", "task_id": fakehyper.DraftID})
-	if r.res.IsError || get(r.front, "quote", "credits") != 0.5 || r.front["affordable"] != true || get(r.front, "permission", "value") != "deny" {
+	// The draft is gen-2.5 high and the plan allows raw: the measured raw
+	// confirm after a high submit took nothing.
+	if r.res.IsError || get(r.front, "quote", "credits") != 0 || get(r.front, "quote", "measured") != true || r.front["affordable"] != nil ||
+		get(r.front, "permission", "value") != "deny" {
 		t.Fatalf("confirm: %s", r.text)
 	}
 	r = f.call("quote_cost", map[string]any{"operation": "generate_model", "settings": map[string]any{"tier": "medium"}})
@@ -496,12 +499,14 @@ func TestQuoteRefusesTheEightKPack(t *testing.T) {
 func TestQuoteAffordableCountsFrozenCredits(t *testing.T) {
 	f := newFixture(t, true, false)
 	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 533 }) // 0.2 available, 53.3 frozen
-	r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry"})
+
+	high := map[string]any{"operation": "generate_model", "settings": map[string]any{"tier": "high"}} // 0.5 credits
+	r := f.call("quote_cost", high)
 	if r.res.IsError || r.front["affordable"] != false || num(get(r.front, "wallet", "frozen")) != 53.3 {
 		t.Fatalf("frozen: %s", r.text)
 	}
 	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 0 })
-	if r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry"}); r.front["affordable"] != true {
+	if r := f.call("quote_cost", high); r.front["affordable"] != true {
 		t.Fatalf("unfrozen: %s", r.text)
 	}
 	// An unknown price has no affordable at all.

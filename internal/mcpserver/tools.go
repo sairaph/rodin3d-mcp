@@ -62,12 +62,20 @@ type optionsInput struct {
 }
 
 type quoteSettings struct {
-	Model        *string `json:"model,omitempty" jsonschema:"generate_model: gen-2.5 (default) or gen-1.5"`
-	Tier         *string `json:"tier,omitempty" jsonschema:"generate_model and export_model: the Gen-2.5 tier (taken from the task when task_id is given)"`
-	TextureMode  *string `json:"texture_mode,omitempty" jsonschema:"generate_texture: the texture tier (default high, the web default)"`
+	Model        *string `json:"model,omitempty" jsonschema:"gen-2.5 (default) or gen-1.5 (taken from the task when task_id is given)"`
+	Tier         *string `json:"tier,omitempty" jsonschema:"the Gen-2.5 tier: generate_model's tier, or the task's for the other operations (taken from the task when task_id is given)"`
+	TextureMode  *string `json:"texture_mode,omitempty" jsonschema:"the texture tier: generate_texture's (default high, the web default), redo_material's (default the task's); confirm_material reads it from the task"`
 	SmartLowPoly *bool   `json:"smart_low_poly,omitempty" jsonschema:"confirm_geometry: confirm in smart low-poly mode"`
+	Mesh         *string `json:"mesh,omitempty" jsonschema:"confirm_geometry: raw or quad, as passed to confirm_geometry (default the same as confirm_geometry's)"`
+	HDTexture    *bool   `json:"hd_texture,omitempty" jsonschema:"generate_texture: the hd_texture option as passed to generate_texture"`
+	Sharp        *bool   `json:"sharp,omitempty" jsonschema:"generate_texture: the sharp option as passed to generate_texture"`
+	FaceEnhance  *bool   `json:"face_enhance,omitempty" jsonschema:"generate_texture: the face_enhance option as passed to generate_texture"`
+	Delight      *bool   `json:"delight,omitempty" jsonschema:"generate_texture: the delight option as passed to generate_texture"`
+	Type         *string `json:"type,omitempty" jsonschema:"export_model: mesh or material pack (default the task's stage)"`
 	Resolution   *string `json:"resolution,omitempty" jsonschema:"export_model: pack texture resolution"`
 	Geometry     *string `json:"geometry,omitempty" jsonschema:"export_model: pack geometry"`
+	Format       *string `json:"format,omitempty" jsonschema:"export_model: pack file format (default obj)"`
+	Material     *string `json:"material,omitempty" jsonschema:"export_model: material pack maps (default all)"`
 	Budget       *string `json:"budget,omitempty" jsonschema:"generate_agentic: the Agentic budget"`
 	Batch        *int    `json:"batch,omitempty" jsonschema:"generate_model: drafts per submit (more than 1 needs the Business plan)"`
 	Stage        *string `json:"stage,omitempty" jsonschema:"fork_task: the stage to fork from (default material, the priced one)"`
@@ -152,17 +160,22 @@ func (s *Server) registerTools() {
 	withEnum(settings, "model", "gen-2.5", "gen-1.5")
 	withEnum(settings, "tier", "extreme-low", "low", "medium", "high", "extreme-high")
 	withEnum(settings, "texture_mode", "extreme-low", "low", "medium", "high", "extreme-high")
+	withEnum(settings, "mesh", "raw", "quad")
+	withEnum(settings, "type", "mesh", "material")
 	withEnum(settings, "resolution", "1k", "2k", "4k", "6k", "12k")
 	withEnum(settings, "geometry", "base", "lod", "high_poly")
+	withEnum(settings, "format", "obj", "fbx", "glb", "usdz", "stl")
+	withEnum(settings, "material", "all", "pbr", "shaded")
 	withEnum(settings, "budget", "basic", "standard", "pro")
 	withRange(settings, 1, 10, "batch")
 	withEnum(settings, "stage", "geometry", "material")
 	addTool(s, "quote_cost", "Price of an operation",
-		"Quote what an operation costs before it is run: credits, when they are taken, why it may be free, and where the number comes from "+
-			"(the web app shows fixed price labels and the server freezes the real amount; operations without a label say the price is not "+
-			"known). Also returns the wallet, whether the account can afford it, and the operation's permission key and value in config.toml. "+
-			"Pass task_id to price an operation on that task (its tier and age are read from it). Answers forbidden when the account's plan "+
-			"does not allow the operation or option.",
+		"Quote what an operation costs before it is run: credits, when they are taken, why it may be free, where the number comes from "+
+			"and whether it was measured (the web app shows fixed price labels and the server decides the real amount; a price is known only "+
+			"where a web label or a recorded wallet change names it for that exact case, otherwise the quote says it is not known). Also "+
+			"returns the wallet, whether the account can afford it, and the operation's permission key and value in config.toml. Pass "+
+			"task_id to price an operation on that task (its model, tier, texture tier, stage and age are read from it) and the same "+
+			"settings the call will get. Answers forbidden when the account's plan does not allow the operation or option.",
 		readTool, nonNull(quote), s.quoteCost)
 
 	list := nonNull(inputSchema[listInput](nil))
@@ -249,6 +262,10 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 	if st := in.Settings; st != nil {
 		q.Model, q.Tier, q.TextureMode = optString(st.Model), optString(st.Tier), optString(st.TextureMode)
 		q.SmartLowPoly = optBool(st.SmartLowPoly, false)
+		q.Mesh = optString(st.Mesh)
+		q.HD, q.Sharp = optBool(st.HDTexture, false), optBool(st.Sharp, false)
+		q.FaceEnhance, q.Delight = optBool(st.FaceEnhance, false), optBool(st.Delight, false)
+		q.PackType, q.Format, q.Material = optString(st.Type), optString(st.Format), optString(st.Material)
 		q.Resolution, q.Geometry, q.Budget = optString(st.Resolution), optString(st.Geometry), optString(st.Budget)
 		q.Batch = optInt(st.Batch, 0)
 		q.ForkStage = optString(st.Stage)

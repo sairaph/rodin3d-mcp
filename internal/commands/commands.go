@@ -91,7 +91,7 @@ func Register(reg *command.Registry, env Env) {
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			return s.Options(ctx, a.arg(0))
 		})})
-	reg.Register(command.Handler{Name: "quote", Description: "Quote the price of an operation", Usage: "quote <operation> [task=<id>] [tier=..] [model=..] [texture_mode=..] [smart_low_poly=true] [resolution=..] [geometry=..] [budget=..] [batch=N] [json]",
+	reg.Register(command.Handler{Name: "quote", Description: "Quote the price of an operation", Usage: "quote <operation> [task=<id>] [tier=..] [model=..] [texture_mode=..] [smart_low_poly=true] [mesh=raw|quad] [hd_texture=true] [sharp=true] [face_enhance=true] [delight=true] [type=mesh|material] [resolution=..] [geometry=..] [format=..] [material=..] [budget=..] [batch=N] [stage=..] [json]",
 		Run: run(quote)})
 	reg.Register(command.Handler{Name: "tasks", Description: "List the generations from the local index", Usage: "tasks [query] [stage=..] [state=..] [page=N] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
@@ -219,15 +219,19 @@ func quote(ctx context.Context, s *service.Service, a args) (service.Result, err
 	if err != nil {
 		return service.Result{}, err
 	}
-	smart := false
-	if v := a.opts["smart_low_poly"]; v != "" {
-		if smart, err = strconv.ParseBool(v); err != nil {
-			return service.Result{}, usage("smart_low_poly must be true or false")
+	flags := map[string]bool{}
+	for _, k := range []string{"smart_low_poly", "hd_texture", "sharp", "face_enhance", "delight"} {
+		b, err := boolOpt(a, k)
+		if err != nil {
+			return service.Result{}, err
 		}
+		flags[k] = b != nil && *b
 	}
 	return s.Quote(ctx, service.QuoteInput{
 		Operation: a.arg(0), TaskID: a.opts["task"], Model: a.opts["model"], Tier: a.opts["tier"], TextureMode: a.opts["texture_mode"],
-		SmartLowPoly: smart, Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Budget: a.opts["budget"], Batch: batch, ForkStage: a.opts["stage"],
+		SmartLowPoly: flags["smart_low_poly"], Mesh: a.opts["mesh"], HD: flags["hd_texture"], Sharp: flags["sharp"], FaceEnhance: flags["face_enhance"],
+		Delight: flags["delight"], PackType: a.opts["type"], Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Format: a.opts["format"],
+		Material: a.opts["material"], Budget: a.opts["budget"], Batch: batch, ForkStage: a.opts["stage"],
 	})
 }
 

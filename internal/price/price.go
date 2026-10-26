@@ -1,8 +1,10 @@
 // Package price quotes what an operation costs. The web app has no price
 // function: every cost it shows is a fixed button label, and the server
-// decides and freezes the real amount (notes 14, section 4). The quotes here
-// are those labels plus the wallet deltas measured so far (notes 10, 13);
-// where neither exists the quote says it is not known.
+// decides and freezes the real amount (notes 14, section 4). A quote is
+// known only where a web label names the price for that exact case or a
+// wallet delta of that exact case was recorded (notes 35); everything else
+// says it is not known, so expected_credits never accepts a price on a
+// guess.
 package price
 
 import (
@@ -39,19 +41,25 @@ func PermissionKey(operation string) (string, bool) {
 	return "", false
 }
 
-// Input is what a quote depends on. Empty fields are unknown; Task fills the
-// ones a task's card answers.
+// Input is what a quote depends on. Empty fields are unknown or the tool's
+// default; Task fills the ones a task's card answers.
 type Input struct {
 	Operation    string
 	Model        string // gen-2.5 (default) | gen-1.5
 	Tier         string // extreme-low low medium high extreme-high (Gen-2.5)
-	TextureMode  string // extreme-low .. extreme-high
+	TextureMode  string // extreme-low .. extreme-high, legacy (Gen-1.5)
 	SmartLowPoly bool
-	Resolution   string // 1k 2k 4k 6k 12k (pack resolutions; 8K is the sharp_texture option)
-	Geometry     string // base | lod | high_poly
-	Budget       string // basic standard pro (Agentic)
-	Batch        int
-	ForkStage    string // geometry | material (fork_task)
+	Mesh         string // confirm_geometry: raw | quad; empty: DefaultMesh
+	// generate_texture options; false is the tool's default.
+	HD, Sharp, FaceEnhance, Delight bool
+	PackType                        string // export_model: mesh | material
+	Resolution                      string // 1k 2k 4k 6k 12k (pack resolutions; 8K is the sharp_texture option)
+	Geometry                        string // base (default) | lod | high_poly
+	Format                          string // obj (default) fbx glb usdz stl
+	Material                        string // all (default) | pbr | shaded (material packs)
+	Budget                          string // basic standard pro (Agentic)
+	Batch                           int
+	ForkStage                       string // geometry | material (fork_task)
 	// TaskCreated is the creation time of the task an operation acts on, for
 	// the 30-day fork rule; zero when not known.
 	TaskCreated time.Time
@@ -59,11 +67,14 @@ type Input struct {
 
 // Quote is the price of one call.
 type Quote struct {
-	Credits    *float64 `yaml:"credits"`               // nil: not known
-	Known      bool     `yaml:"known"`                 // Credits is set
-	ChargedAt  string   `yaml:"charged_at,omitempty"`  // when the amount is taken
-	FreeReason string   `yaml:"free_reason,omitempty"` // why it costs nothing
-	Basis      string   `yaml:"basis"`                 // where the number comes from
+	Credits *float64 `yaml:"credits"` // nil: not known
+	Known   bool     `yaml:"known"`   // Credits is set
+	// Measured is true when a wallet delta of this exact case was recorded;
+	// a known quote that is not measured rests on the web's label alone.
+	Measured   bool   `yaml:"measured"`
+	ChargedAt  string `yaml:"charged_at,omitempty"`  // when the amount is taken
+	FreeReason string `yaml:"free_reason,omitempty"` // why it costs nothing
+	Basis      string `yaml:"basis"`                 // where the number comes from
 	// FrozenAtSubmit is an amount the server was seen to freeze at submit
 	// although the label says free; nil when none was measured.
 	FrozenAtSubmit *float64 `yaml:"frozen_at_submit,omitempty"`
@@ -96,7 +107,32 @@ func (a Account) has(p string) bool {
 	return false
 }
 
+// DefaultMesh is the mesh confirm_geometry uses when none is given: raw
+// (Triangle) when the plan allows it, as every confirmed task in the
+// owner's history is, else quad.
+func DefaultMesh(acct Account) string {
+	if acct.has("RodinMeshAdditionalFeatures") {
+		return "raw"
+	}
+	return "quad"
+}
+
 func credits(v float64) *float64 { return &v }
+
+// label is a price the web's label names and no wallet delta of a call of
+// this tool confirmed.
+func label(c float64, chargedAt, basis string) Quote {
+	return Quote{Credits: credits(c), Known: true, ChargedAt: chargedAt, Basis: basis + " (the web's label; not measured through this tool)"}
+}
+
+// measured is a price a recorded wallet delta of this exact case shows.
+func measured(c float64, chargedAt, basis string) Quote {
+	return Quote{Credits: credits(c), Known: true, Measured: true, ChargedAt: chargedAt, Basis: basis}
+}
+
+func unknown(why string) Quote {
+	return Quote{Known: false, Basis: why}
+}
 
 var tiers = []string{"extreme-low", "low", "medium", "high", "extreme-high"}
 
@@ -109,89 +145,94 @@ func oneOf(v string, set []string) bool {
 	return false
 }
 
+// task names the model and tier of a quote for the texts.
+func task(model, tier string) string {
+	if tier == "" {
+		return model
+	}
+	return model + " " + tier
+}
+
 // For returns the quote of in for account, a *Gate when the account's plan
 // refuses the operation, or an *InvalidInput.
 func For(in Input, acct Account) (Quote, error) {
+	model := strings.ToLower(in.Model)
+	if model == "" {
+		model = "gen-2.5"
+	}
+	tier := strings.ToLower(in.Tier)
 	switch in.Operation {
 	case "generate_model":
 		return generate(in, acct)
 	case "redo_geometry":
-		if strings.ToLower(in.Tier) == "extreme-high" {
-			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit", Basis: `web hover label "2 Credits" on Redo of an Extreme-High draft`}, nil
+		if tier == "extreme-high" {
+			return label(2, "submit", `web hover label "2 Credits" on Redo of an extreme-high draft`), nil
 		}
-		return Quote{Credits: credits(0), Known: true, FreeReason: "geometry redos are free below the extreme-high tier; the plan limits their number (redo_left)",
-			Basis: `web Redo button with its counter and no price ("Redos are free, but confirmation costs credits")`}, nil
+		q := measured(0, "", `measured free on a gen-2.5 extreme-low draft (2026-10-26); the web shows Redo with its counter and no price on extreme-low and high drafts, and its tip says "Redos are free, but confirmation costs credits"`)
+		q.FreeReason = "geometry redos are free below the extreme-high tier; the plan limits their number (redo_left)"
+		if model != "gen-2.5" || tier != "extreme-low" {
+			q.Measured = false
+		}
+		return q, nil
 	case "redo_material":
 		if strings.ToLower(in.TextureMode) == "extreme-high" {
-			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit", Basis: `web hover label "2 Credits" on material Redo at the Extreme High texture tier`}, nil
+			return label(2, "submit", `web hover label "2 Credits" on material Redo at the extreme-high texture tier`), nil
 		}
-		return Quote{Credits: credits(0), Known: true, FreeReason: "material redos are free below the extreme-high texture tier; the plan limits their number (redo_left)",
-			Basis: "web material Redo button with its counter and no price"}, nil
+		q := measured(0, "", `measured free at texture_mode high on a gen-2.5 high task (2026-10-26); the web's tip says "Redos are free, but confirmation costs credits"`)
+		q.FreeReason = "material redos are free below the extreme-high texture tier; the plan limits their number (redo_left)"
+		if model != "gen-2.5" || tier != "high" || strings.ToLower(in.TextureMode) != "high" {
+			q.Measured = false
+		}
+		return q, nil
 	case "select_candidate":
-		return Quote{Credits: credits(0), Known: true, FreeReason: "picking one draft of a batch changes nothing that is charged",
-			Basis: "web batch view: the pick has no price label"}, nil
+		q := measured(0, "", "measured free on a gen-2.5 extreme-low draft (2026-10-26); the web's batch view shows no price for the pick")
+		q.FreeReason = "picking one draft of a batch changes nothing that is charged"
+		q.Measured = model == "gen-2.5" && tier == "extreme-low"
+		return q, nil
 	case "confirm_geometry":
-		if in.SmartLowPoly {
-			if !acct.has("RodinRemeshAdditionalFeatures") {
-				return Quote{}, &Gate{"smart low-poly needs the RodinRemeshAdditionalFeatures privilege (Creator plan or higher)"}
-			}
-			return Quote{Credits: credits(2), Known: true, ChargedAt: "confirm", Basis: `web label "2 Credits" on Confirm in Smart Low-poly mode`}, nil
-		}
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "confirm",
-			Basis: `web label "0.5 Credits" on Confirm (seen on High and Extreme-Low drafts); measured 2026-10-26: an Extreme-Low confirm took the 0.5 frozen at submit, a High confirm took nothing more after the 0.5 of its submit`}, nil
+		return confirmGeometry(in, acct, model, tier)
 	case "generate_texture":
-		mode := strings.ToLower(in.TextureMode)
-		if mode == "" {
-			mode = "high" // the web panel's default tier
-		}
-		if mode == "legacy" || strings.ToLower(in.Model) == "gen-1.5" {
-			return unknown("the web shows no price for a Gen-1.5 (legacy) texture and it has not been measured"), nil
-		}
-		if !oneOf(mode, tiers) {
-			return Quote{}, &InvalidInput{fmt.Sprintf("texture_mode %q is not one of %s", in.TextureMode, strings.Join(tiers, ", "))}
-		}
-		switch mode {
-		case "extreme-high":
-			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit (frozen), taken on completion", Basis: `web label "2 Credits" for the Extreme High texture tier`}, nil
-		case "low":
-			// Two measurements disagree; the higher one is quoted.
-			return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit (frozen), taken on completion",
-				Basis: "wallet deltas of texture_mode low runs (the web shows no label): 0.5 on 2026-10-07, 0 on 2026-10-26; the higher one is quoted"}, nil
-		case "high":
-			return Quote{Credits: credits(0), Known: true, FreeReason: "a texture_mode high run took no credits (measured once, 2026-10-26)",
-				Basis: "wallet delta of a texture_mode high run on 2026-10-26 (the web shows no label)"}, nil
-		}
-		return unknown("the web shows no price for texture tier " + mode + " and it has not been measured"), nil
+		return texture(in, model, tier)
 	case "confirm_material":
-		return Quote{Credits: credits(0), Known: true, FreeReason: "material confirms took no credits (measured twice, 2026-10-26)",
-			Basis: "wallet deltas of material confirms on an Extreme-Low and a High task, 2026-10-26 (the web shows no label)"}, nil
+		mode := strings.ToLower(in.TextureMode)
+		if model == "gen-2.5" && ((tier == "extreme-low" && mode == "low") || (tier == "high" && mode == "high")) {
+			q := measured(0, "", fmt.Sprintf("wallet delta of a material confirm on a gen-2.5 %s task with texture_mode %s, 2026-10-26 (the web shows no price)", tier, mode))
+			q.FreeReason = "this material confirm took no credits"
+			return q, nil
+		}
+		return unknown(fmt.Sprintf("the web shows no price for confirm_material, and it was measured only on a gen-2.5 extreme-low task with texture_mode low and a gen-2.5 high task with texture_mode high (both free); this task is %s with texture_mode %s",
+			task(model, tier), orNone(mode))), nil
 	case "export_model":
-		return export(in, acct)
+		return export(in, acct, model, tier)
 	case "fork_task":
 		if !in.TaskCreated.IsZero() && time.Since(in.TaskCreated) > 30*24*time.Hour {
 			return Quote{}, &Gate{"the web offers fork only for tasks younger than 30 days"}
 		}
 		switch strings.ToLower(in.ForkStage) {
 		case "geometry":
-			return Quote{Credits: credits(0), Known: true, FreeReason: "a geometry fork took no credits (measured 2026-10-26)",
-				Basis: `wallet delta of a geometry fork on 2026-10-26; the web's fork menu shows "0.5 Credits" only on Material and checks the balance only for it`}, nil
+			if model == "gen-2.5" && tier == "extreme-low" {
+				q := measured(0, "", "wallet deltas of two geometry forks of a gen-2.5 extreme-low task, 2026-10-26")
+				q.FreeReason = "a geometry fork of this tier took no credits"
+				return q, nil
+			}
+			return unknown("a geometry fork was measured only on a gen-2.5 extreme-low task (free), and the web's fork menu does not settle the price for " + task(model, tier)), nil
 		case "material", "":
 		default:
 			return Quote{}, &InvalidInput{fmt.Sprintf("fork stage %q is not geometry or material", in.ForkStage)}
 		}
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit", Basis: `web label "0.5 Credits" on the Material fork ("Revert to branch. (0.5 Credits)")`}, nil
+		return label(0.5, "submit", `web label "0.5 Credits" on the Material fork ("Revert to branch. (0.5 Credits)")`), nil
 	case "generate_agentic":
 		switch strings.ToLower(in.Budget) {
 		case "basic", "":
-			return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit (frozen), taken during the run", Basis: "web Agentic timer: basic ~3 min, 0.5 credits (same amount measured on an official-MCP run, 2026-10-26)"}, nil
+			return label(0.5, "submit (frozen), taken during the run", "web Agentic timer: basic ~3 min, 0.5 credits; an official-MCP run took the same amount (2026-10-26)"), nil
 		case "standard":
-			return Quote{Credits: credits(1), Known: true, ChargedAt: "submit (frozen), taken during the run", Basis: "web Agentic timer: standard ~5 min, 1 credit"}, nil
+			return label(1, "submit (frozen), taken during the run", "web Agentic timer: standard ~5 min, 1 credit"), nil
 		case "pro":
-			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit (frozen), taken during the run", Basis: "web Agentic timer: pro ~10 min, 2 credits"}, nil
+			return label(2, "submit (frozen), taken during the run", "web Agentic timer: pro ~10 min, 2 credits"), nil
 		}
 		return Quote{}, &InvalidInput{fmt.Sprintf("budget %q is not one of basic, standard, pro", in.Budget)}
 	case "split_parts":
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit (frozen), taken on completion", Basis: `web label "0.5 Credits" on Bang to Parts (same amount measured on an official-MCP run, 2026-10-26)`}, nil
+		return label(0.5, "submit (frozen), taken on completion", `web label "0.5 Credits" on Bang to Parts; an official-MCP run took the same amount (2026-10-26)`), nil
 	case "rig_model":
 		return unknown("the web shows no price for rigging and it has not been measured"), nil
 	case "animate_model":
@@ -206,8 +247,11 @@ func For(in Input, acct Account) (Quote, error) {
 	return Quote{}, &InvalidInput{fmt.Sprintf("operation %q is not one of %s", in.Operation, strings.Join(names, ", "))}
 }
 
-func unknown(why string) Quote {
-	return Quote{Known: false, Basis: why}
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 func generate(in Input, acct Account) (Quote, error) {
@@ -224,11 +268,14 @@ func generate(in Input, acct Account) (Quote, error) {
 	if model == "" {
 		model = "gen-2.5"
 	}
+	// The Free Preview label was seen to hide a freeze on extreme-low, so a
+	// label-only Free Preview says so.
+	const freeze = `; on extreme-low the same label still froze 0.5 at submit`
 	switch model {
 	case "gen-1.5":
-		return Quote{Credits: credits(0), Known: true, ChargedAt: "confirm_geometry",
-			FreeReason: "Free Preview: the Gen-1.5 draft is free; confirming the geometry costs credits",
-			Basis:      `web label "Free Preview" on GENERATE for all four Gen-1.5 modes`}, nil
+		q := label(0, "confirm_geometry", `web label "Free Preview" on GENERATE for all four Gen-1.5 modes`+freeze)
+		q.FreeReason = "Free Preview: the Gen-1.5 draft is free; confirming the geometry costs credits"
+		return q, nil
 	case "gen-2.5":
 	default:
 		return Quote{}, &InvalidInput{fmt.Sprintf("model %q is not gen-2.5 or gen-1.5", in.Model)}
@@ -238,29 +285,103 @@ func generate(in Input, acct Account) (Quote, error) {
 		return Quote{}, &InvalidInput{"a Gen-2.5 quote needs tier: one of " + strings.Join(tiers, ", ")}
 	}
 	switch tier {
-	case "extreme-low", "low", "medium":
-		q := Quote{Credits: credits(0), Known: true, ChargedAt: "confirm_geometry",
-			FreeReason: "Free Preview: the draft is free; confirming the geometry costs credits",
-			Basis:      `web label "Free Preview" on GENERATE for tier ` + tier}
-		if tier == "extreme-low" {
-			// The web froze 0.5 at an Extreme-Low submit (2026-10-07, again
-			// 2026-10-26); confirm_geometry took it, and an unconfirmed draft
-			// kept it frozen for over an hour (notes 35).
-			q.FrozenAtSubmit = credits(0.5)
-		}
+	case "extreme-low":
+		// The web froze 0.5 at an Extreme-Low submit (2026-10-07, again
+		// 2026-10-26); confirm_geometry took it, and an unconfirmed draft
+		// kept it frozen for over an hour (notes 35).
+		q := measured(0, "confirm_geometry", `web label "Free Preview" on GENERATE for tier extreme-low; measured 2026-10-26: nothing taken at submit, 0.5 frozen and taken by confirm_geometry`)
+		q.FreeReason = "Free Preview: the draft is free; confirming the geometry costs credits"
+		q.FrozenAtSubmit = credits(0.5)
+		return q, nil
+	case "low", "medium":
+		q := label(0, "confirm_geometry", `web label "Free Preview" on GENERATE for tier `+tier+freeze)
+		q.FreeReason = "Free Preview: the draft is free; confirming the geometry costs credits"
 		return q, nil
 	case "high":
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit", Basis: `web label "0.5 Credits" on GENERATE for tier high`}, nil
+		return measured(0.5, "submit", `web label "0.5 Credits" on GENERATE for tier high; measured 2026-10-26: 0.5 frozen at submit, taken when the draft finished`), nil
 	case "extreme-high":
 		if !acct.has("RodinUseAdditionalImage") {
 			return Quote{}, &Gate{"tier extreme-high needs the RodinUseAdditionalImage privilege (Creator plan or higher)"}
 		}
-		return Quote{Credits: credits(1), Known: true, ChargedAt: "submit", Basis: `web label "1 Credits" on GENERATE for tier extreme-high`}, nil
+		return label(1, "submit", `web label "1 Credits" on GENERATE for tier extreme-high`), nil
 	}
 	return Quote{}, &InvalidInput{fmt.Sprintf("tier %q is not one of %s", in.Tier, strings.Join(tiers, ", "))}
 }
 
-func export(in Input, acct Account) (Quote, error) {
+func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) {
+	if in.SmartLowPoly {
+		if !acct.has("RodinRemeshAdditionalFeatures") {
+			return Quote{}, &Gate{"smart low-poly needs the RodinRemeshAdditionalFeatures privilege (Creator plan or higher)"}
+		}
+		return label(2, "confirm", `web label "2 Credits" on Confirm in Smart Low-poly mode`), nil
+	}
+	mesh := strings.ToLower(in.Mesh)
+	if mesh == "" {
+		mesh = DefaultMesh(acct)
+	}
+	if mesh != "raw" && mesh != "quad" {
+		return Quote{}, &InvalidInput{fmt.Sprintf("mesh %q is not raw or quad", in.Mesh)}
+	}
+	if model == "gen-2.5" {
+		switch {
+		case tier == "extreme-low" && mesh == "raw":
+			return measured(0.5, "confirm (it takes the 0.5 frozen at submit)",
+				`web label "0.5 Credits" on Confirm of an extreme-low draft; measured 2026-10-26: a raw confirm took the 0.5 frozen at submit`), nil
+		case tier == "extreme-low":
+			return label(0.5, "confirm (it takes the 0.5 frozen at submit)",
+				`web label "0.5 Credits" on Confirm of an extreme-low draft; a raw confirm there took the 0.5 frozen at submit, a quad confirm has not been measured`), nil
+		case tier == "high" && mesh == "raw":
+			q := measured(0, "", `wallet delta of a raw confirm of a high draft, 2026-10-26 (the web's Confirm label reads "0.5 Credits")`)
+			q.FreeReason = "the 0.5 of the high-tier submit covers it: a raw confirm took nothing more"
+			return q, nil
+		case tier == "high":
+			return unknown(`the web labels Confirm "0.5 Credits" on a high draft, but a raw confirm there took nothing more after the submit; a quad confirm has not been measured`), nil
+		}
+	}
+	return unknown(`the web's Confirm label ("0.5 Credits") was read and the price measured only on gen-2.5 extreme-low and high drafts; not on ` + task(model, tier)), nil
+}
+
+func texture(in Input, model, tier string) (Quote, error) {
+	mode := strings.ToLower(in.TextureMode)
+	if mode == "" {
+		mode = "high" // the web panel's default tier
+	}
+	if mode == "legacy" || model == "gen-1.5" {
+		return unknown("the web shows no price for a Gen-1.5 (legacy) texture and it has not been measured"), nil
+	}
+	if !oneOf(mode, tiers) {
+		return Quote{}, &InvalidInput{fmt.Sprintf("texture_mode %q is not one of %s", in.TextureMode, strings.Join(tiers, ", "))}
+	}
+	if mode == "extreme-high" {
+		// hd_texture, sharp and face_enhance do not apply at this tier.
+		return label(2, "submit (frozen), taken on completion", `web label "2 Credits" for the extreme-high texture tier`), nil
+	}
+	var opts []string
+	for _, o := range []struct {
+		on   bool
+		name string
+	}{{in.HD, "hd_texture"}, {in.Sharp, "sharp"}, {in.FaceEnhance, "face_enhance"}, {in.Delight, "delight"}} {
+		if o.on {
+			opts = append(opts, o.name)
+		}
+	}
+	options := "no options"
+	if len(opts) > 0 {
+		options = strings.Join(opts, ", ")
+	}
+	switch {
+	case model == "gen-2.5" && tier == "high" && mode == "high" && options == "face_enhance":
+		q := measured(0, "", "wallet delta of a texture_mode high run with face_enhance on a gen-2.5 high task, 2026-10-26 (the web shows no price)")
+		q.FreeReason = "this texture run took no credits"
+		return q, nil
+	case mode == "low" && len(opts) == 0:
+		return unknown("texture_mode low with no options was measured twice with different results: 0.5 taken on 2026-10-07, nothing on 2026-10-26 (the web shows no price)"), nil
+	}
+	return unknown(fmt.Sprintf("the web shows no price for texture_mode %s, and texture runs were measured only for texture_mode high with face_enhance on a gen-2.5 high task (free) and texture_mode low with no options (0.5 once, 0 once); this is %s on a %s task",
+		mode, options, task(model, tier))), nil
+}
+
+func export(in Input, acct Account, model, tier string) (Quote, error) {
 	res := strings.ToLower(in.Resolution)
 	high := false
 	switch res {
@@ -275,7 +396,9 @@ func export(in Input, acct Account) (Quote, error) {
 	}
 	geo := strings.ToLower(in.Geometry)
 	switch geo {
-	case "", "base", "lod":
+	case "", "base":
+		geo = "base"
+	case "lod":
 	case "high_poly":
 		high = true
 	default:
@@ -284,14 +407,40 @@ func export(in Input, acct Account) (Quote, error) {
 	if high && !acct.has("RodinPackHighResolution") {
 		return Quote{}, &Gate{"4K and 12K packs and high-poly geometry need the RodinPackHighResolution privilege (Business plan); use 2k (or 6k for extreme-high textures) with base geometry"}
 	}
-	switch strings.ToLower(in.Tier) {
-	case "extreme-low", "low":
-		return Quote{Credits: credits(0), Known: true, FreeReason: "downloads of Gen-2.5 Extreme-Low and Low models are free",
-			Basis: "web pack tip (i18n TIP_PACK_TITLE_3)"}, nil
+	format := strings.ToLower(in.Format)
+	if format == "" {
+		format = "obj" // the tool's default, as the web's
 	}
-	if !high {
-		return Quote{Credits: credits(0), Known: true, FreeReason: "a Basic pack of a Gen-2.5 High task took no credits (measured 2026-10-26)",
-			Basis: "wallet delta of a 2k obj pack of a Gen-2.5 High task on 2026-10-26 (the web shows no price on the pack panel)"}, nil
+	material := strings.ToLower(in.Material)
+	if material == "" {
+		material = "all"
 	}
-	return unknown("the web shows no price for High packs and they need the Business plan; not measured"), nil
+	typ := strings.ToLower(in.PackType)
+	if model == "gen-2.5" && (tier == "extreme-low" || tier == "low") {
+		q := label(0, "", "web pack tip (i18n TIP_PACK_TITLE_3): downloads of Gen-2.5 extreme-low and low models are free")
+		if tier == "extreme-low" && typ == "material" && !high && geo == "base" && format == "glb" && material == "all" {
+			q = measured(0, "", "web pack tip (i18n TIP_PACK_TITLE_3); measured 2026-10-26: a 2k glb material pack of a gen-2.5 extreme-low task took nothing")
+		}
+		q.FreeReason = "downloads of Gen-2.5 extreme-low and low models are free"
+		return q, nil
+	}
+	if model == "gen-2.5" && tier == "high" && typ == "material" && !high && geo == "base" && format == "obj" && material == "all" {
+		q := measured(0, "", "wallet delta of a 2k obj material pack (base geometry, all maps) of a gen-2.5 high task, 2026-10-26 (the web shows no price on the pack panel)")
+		q.FreeReason = "this pack took no credits"
+		return q, nil
+	}
+	desc := fmt.Sprintf("geometry %s, %s", geo, format)
+	switch typ {
+	case "material":
+		if res == "" {
+			res = "default"
+		}
+		desc = fmt.Sprintf("material pack (resolution %s, %s, maps %s)", res, desc, material)
+	case "mesh":
+		desc = "mesh pack (" + desc + ")"
+	default:
+		desc = "pack of an unknown type (" + desc + ")"
+	}
+	return unknown(fmt.Sprintf("the web shows no price on the pack panel, and packs were measured only for gen-2.5 extreme-low tasks (free by the web's tip, as low is) and one 2k obj material pack with base geometry and all maps of a gen-2.5 high task (free); this is a %s of a %s task",
+		desc, task(model, tier))), nil
 }

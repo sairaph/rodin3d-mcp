@@ -146,7 +146,7 @@ func TestCommandsAgainstTheFake(t *testing.T) {
 	}
 
 	out.Reset()
-	if _, code := reg.Dispatch(ctx, "quote", []string{"confirm_geometry", "json"}); code != 0 {
+	if _, code := reg.Dispatch(ctx, "quote", []string{"confirm_geometry", "tier=extreme-low", "mesh=raw", "json"}); code != 0 {
 		t.Fatalf("quote: %d %s", code, errOut)
 	}
 	var q map[string]any

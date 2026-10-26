@@ -74,7 +74,7 @@ type confirmGeometryArgs struct {
 	Hyper           *bool   `json:"hyper,omitempty" jsonschema:"use_hyper (default true, like the web)"`
 	Smooth          *bool   `json:"smooth,omitempty" jsonschema:"smooth a quad mesh"`
 	Version         *string `json:"version,omitempty" jsonschema:"the draft version to confirm (default the newest; get_task lists versions)"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for confirm_geometry on this task (with smart_low_poly when used); -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for confirm_geometry on this task with the same mesh and smart_low_poly; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the confirmed geometry (default true)"`
 }
 
@@ -89,7 +89,7 @@ type textureArgs struct {
 	ReferenceScale  *float64 `json:"reference_scale,omitempty" jsonschema:"reference strength 0-1, gen-1.5 only (default 1)"`
 	ReferenceImage  *string  `json:"reference_image,omitempty" jsonschema:"the input image the texture follows: an input name from get_task, ALL (every input), or the absolute path of a new image; default ALL with several inputs, else the input"`
 	Prompt          *string  `json:"prompt,omitempty" jsonschema:"texture prompt"`
-	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for generate_texture on this task with the same texture_mode; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for generate_texture on this task with the same texture_mode, hd_texture, sharp, face_enhance and delight; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool    `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the material draft (default true)"`
 }
 
@@ -124,7 +124,7 @@ type exportArgs struct {
 	Material        *string  `json:"material,omitempty" jsonschema:"material pack maps: all (default), pbr or shaded"`
 	AlignGround     *bool    `json:"align_ground,omitempty" jsonschema:"stand the model on the ground plane (default true)"`
 	Height          *float64 `json:"height,omitempty" jsonschema:"real-world height to scale the model to"`
-	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for export_model on this task with the same resolution and geometry; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for export_model on this task with the same type, format, resolution, geometry and material; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool    `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the pack (default true)"`
 }
 
@@ -229,9 +229,9 @@ func (s *Server) registerFlowTools() {
 	withRange(conf, 500, 2000000, "faces")
 	addTool(s, "confirm_geometry", "Confirm the geometry",
 		"Confirm a geometry draft version (default the newest) as the model's mesh: raw (Triangle) simplified to faces or full, quad with a "+
-			"quality or face count, or smart low-poly. This is where the draft is paid for. Needs [permission] confirm_geometry = \"allow\" and "+
-			"expected_credits from quote_cost (operation confirm_geometry, task_id, smart_low_poly when used). Returns the task at stage "+
-			"geometry; next generate_texture or export_model.",
+			"quality or face count, or smart low-poly. An extreme-low draft is paid for here (a high draft paid at its submit); quote_cost "+
+			"gives the price. Needs [permission] confirm_geometry = \"allow\" and expected_credits from quote_cost (operation "+
+			"confirm_geometry, task_id, mesh, smart_low_poly when used). Returns the task at stage geometry; next generate_texture or export_model.",
 		paidTool, conf, s.confirmGeometry)
 
 	tex := nonNullDeep(inputSchema[textureArgs](map[string]string{"wait": "true", "escore": "7"}))
@@ -239,7 +239,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "generate_texture", "Texture the model",
 		"Generate the material draft of a confirmed geometry (stage geometry): texture tier, HD, sharp (the web's 8K chip), de-light, face "+
 			"restore, PBR temperature and the reference image. Needs [permission] generate_texture = \"allow\" and expected_credits from "+
-			"quote_cost (operation generate_texture, task_id, texture_mode). Returns the task at stage material_draft; next redo_material or "+
+			"quote_cost (operation generate_texture, task_id, texture_mode and the options). Returns the task at stage material_draft; next redo_material or "+
 			"confirm_material.",
 		paidTool, tex, s.generateTexture)
 
@@ -266,7 +266,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "export_model", "Pack the model files",
 		"Pack a task's files for download: the confirmed mesh (stage geometry) or the textured model with its maps (stage material), in "+
 			"one format, texture size, geometry level and material set. Needs [permission] export = \"allow\" and expected_credits from "+
-			"quote_cost (operation export_model, task_id, resolution, geometry). Returns the task (packed once done) and the packed file "+
+			"quote_cost (operation export_model, task_id, format, resolution, geometry, material). Returns the task (packed once done) and the packed file "+
 			"names; next download_model.",
 		paidTool, exp, s.exportModel)
 

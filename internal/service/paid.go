@@ -403,8 +403,9 @@ func (s *Service) finishFlow(ctx context.Context, sp *spend, set *settled, lead 
 }
 
 // pinFromCard fills the price inputs a task's card answers and the caller
-// left empty: model, tier, the texture tier a material redo repeats, and
-// the task's age (fork rule).
+// left empty: model, tier, the texture tier a material redo repeats and a
+// material confirm confirms, the pack type of the task's stage, and the
+// task's age (fork rule). pin.Operation must be set for the last three.
 func pinFromCard(pin *price.Input, card *rodin.Card) {
 	if pin.Model == "" {
 		pin.Model = stage.Model(card.Setting("generation_mode"))
@@ -412,12 +413,24 @@ func pinFromCard(pin *price.Input, card *rodin.Card) {
 	if pin.Tier == "" {
 		pin.Tier = stage.Tier(card.Setting("brilliant_mode"))
 	}
-	if pin.TextureMode == "" && pin.Operation == "redo_material" {
+	if pin.TextureMode == "" && (pin.Operation == "redo_material" || pin.Operation == "confirm_material") {
 		pin.TextureMode = card.Setting("texture_mode")
+	}
+	if pin.PackType == "" && pin.Operation == "export_model" {
+		pin.PackType = packType(stage.Of(card.Step, card.UserState, int(card.PendingJobs)))
 	}
 	if ts, err := time.Parse(time.RFC3339, card.Time); err == nil {
 		pin.TaskCreated = ts
 	}
+}
+
+// packType is the pack export_model makes at status st: the textured model
+// once the material is confirmed, else the confirmed mesh.
+func packType(st stage.Status) string {
+	if st.Stage == stage.Material {
+		return "material"
+	}
+	return "mesh"
 }
 
 // assetsOf lists the server images on a card (no history read).

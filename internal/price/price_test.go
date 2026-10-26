@@ -31,18 +31,18 @@ func TestLabelTable(t *testing.T) {
 		{Input{Operation: "generate_model", Tier: "high"}, 0.5},
 		{Input{Operation: "generate_model", Tier: "extreme-high"}, 1},
 		{Input{Operation: "generate_model", Model: "gen-1.5"}, 0},
-		{Input{Operation: "confirm_geometry"}, 0.5},
+		{Input{Operation: "confirm_geometry", Tier: "extreme-low", Mesh: "raw"}, 0.5},
+		{Input{Operation: "confirm_geometry", Tier: "high", Mesh: "raw"}, 0},
 		{Input{Operation: "confirm_geometry", SmartLowPoly: true}, 2},
 		{Input{Operation: "generate_texture", TextureMode: "extreme-high"}, 2},
-		{Input{Operation: "generate_texture", TextureMode: "low"}, 0.5},
-		{Input{Operation: "generate_texture", TextureMode: "high"}, 0},
-		{Input{Operation: "confirm_material"}, 0},
+		{Input{Operation: "generate_texture", Tier: "high", TextureMode: "high", FaceEnhance: true}, 0},
+		{Input{Operation: "confirm_material", Tier: "high", TextureMode: "high"}, 0},
 		{Input{Operation: "fork_task"}, 0.5},
-		{Input{Operation: "fork_task", ForkStage: "geometry"}, 0},
+		{Input{Operation: "fork_task", ForkStage: "geometry", Tier: "extreme-low"}, 0},
 		{Input{Operation: "generate_agentic", Budget: "pro"}, 2},
 		{Input{Operation: "split_parts"}, 0.5},
 		{Input{Operation: "export_model", Tier: "low"}, 0},
-		{Input{Operation: "export_model", Tier: "high"}, 0},
+		{Input{Operation: "export_model", Tier: "high", PackType: "material"}, 0},
 		{Input{Operation: "redo_geometry", Tier: "extreme-high"}, 2},
 		{Input{Operation: "redo_material"}, 0},
 		{Input{Operation: "select_candidate"}, 0},
@@ -60,6 +60,7 @@ func TestLabelTable(t *testing.T) {
 func TestUnknownPrices(t *testing.T) {
 	for _, in := range []Input{
 		{Operation: "generate_texture", TextureMode: "medium"}, {Operation: "generate_texture", Model: "gen-1.5"},
+		{Operation: "generate_texture", TextureMode: "low"}, {Operation: "confirm_geometry"}, {Operation: "confirm_material"},
 		{Operation: "rig_model"}, {Operation: "animate_model"}, {Operation: "texture_model"},
 	} {
 		q, err := For(in, creator)

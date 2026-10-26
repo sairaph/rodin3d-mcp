@@ -414,7 +414,8 @@ func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result,
 //     its loop may still close and save, so viewer.ExitWait.
 //
 // So close_viewer answers within about 23 s in every case (3 s for the call
-// + 20 s, or 15 s + 8 s), also when the window's socket does not answer.
+// + 20 s, or 15 s + 8 s), also when the window's socket accepts and stays
+// silent or its connect blocks (closeCall abandons the call at 3 s).
 const (
 	closeCallWait = viewer.TakeWait + time.Second
 	closeWait     = viewer.SaveWait + 5*time.Second
@@ -431,10 +432,7 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 	if !viewer.Running(s.paths) {
 		return Result{Front: front, Body: "No viewer window was open."}, nil
 	}
-	var rep viewer.StateReply
-	cctx, cancel := context.WithTimeout(ctx, closeCallWait)
-	err := s.viewerCall(cctx, viewer.MethodClose, nil, &rep)
-	cancel()
+	rep, err := s.closeCall(ctx)
 	if errors.Is(err, context.Canceled) {
 		return Result{}, err
 	}
@@ -461,6 +459,37 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 			"Close the window on the screen; "+s.paths.ViewerLog+" has the window's log.")
 	}
 	return Result{Front: front, Body: fmt.Sprintf("The viewer window did not answer, so its process (%d) was stopped; its last cameras of this session may not be kept.", pid)}, nil
+}
+
+// closeCall sends the close call and waits at most closeCallWait for its
+// answer. The call runs on its own goroutine and is abandoned at that bound,
+// so a connect that blocks (the socket's Dial takes no context: N19) holds
+// close_viewer no longer than an answer that does not come; the abandoned
+// call ends within viewerCallTimeout on its own. An abandoned call is
+// context.DeadlineExceeded, which the stop path treats like a silent window;
+// a caller's cancel is context.Canceled.
+func (s *Service) closeCall(ctx context.Context) (viewer.StateReply, error) {
+	type answer struct {
+		rep viewer.StateReply
+		err error
+	}
+	cctx, cancel := context.WithTimeout(ctx, closeCallWait)
+	defer cancel()
+	done := make(chan answer, 1) // the abandoned goroutine never blocks
+	go func() {
+		var a answer
+		a.err = s.viewerCall(cctx, viewer.MethodClose, nil, &a.rep)
+		done <- a
+	}()
+	select {
+	case a := <-done:
+		return a.rep, a.err
+	case <-cctx.Done():
+		if err := ctx.Err(); err != nil {
+			return viewer.StateReply{}, err
+		}
+		return viewer.StateReply{}, context.DeadlineExceeded
+	}
 }
 
 // waitViewerGone waits up to d for the viewer lock to be free.

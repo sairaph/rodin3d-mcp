@@ -489,29 +489,50 @@ func (s *uiState) drawWidget(dst *ebiten.Image, w widget) {
 	s.textIn(dst, w.label, f, w.r, c)
 }
 
+// paneLook is what drawPane shows for p in mode: whether the pane's last
+// picture is drawn, and the message of its bar ("" for none; failed for an
+// error; loading for a message that gets animated dots).
+type paneLook struct {
+	picture bool
+	msg     string
+	failed  bool
+	loading bool
+}
+
+func lookOf(p *pane, mode string) paneLook {
+	merr := mapsError(p, mode)
+	// A mode whose maps did not load shows no picture of another mode.
+	l := paneLook{picture: p.img != nil && merr == ""}
+	switch {
+	case p.status == "loading":
+		l.msg, l.loading = "Loading the "+p.what, true
+	case p.status == "error":
+		l.msg, l.failed = "Cannot show this: "+p.err, true
+	case p.renderErr != "":
+		l.msg, l.failed = "Cannot draw "+p.renderErr, true
+	case merr != "":
+		l.msg, l.failed = "Cannot draw "+merr, true
+	case p.mapsWanted && modeNeedsMaps(mode):
+		l.msg, l.loading = "Loading the textures", true
+	}
+	return l
+}
+
 func (s *uiState) drawPane(a *App, dst *ebiten.Image, p *pane) {
 	r := s.panes[p.index]
 	s.fill(dst, r, colPane)
-	// A mode whose maps did not load shows no picture of another mode.
-	if p.img != nil && mapsError(p, a.mode) == "" {
+	look := lookOf(p, a.mode)
+	if look.picture {
 		s.image(dst, p.img, r, 1)
 	} else if poster := a.posterThumb(); poster != nil && p.kind == viewer.KindTask && len(a.panes) == 1 {
 		s.image(dst, poster.img, fitRect(r.Inset(s.px(40)), poster.w, poster.h), 0.45)
 	}
-	msg, col := "", colText
-	switch {
-	case p.status == "loading":
-		dots := strings.Repeat(".", int(time.Now().UnixMilli()/300%4))
-		msg = "Loading the " + p.what + dots
-	case p.status == "error":
-		msg, col = "Cannot show this: "+p.err, colErr
-	case p.renderErr != "":
-		msg, col = "Cannot draw "+p.renderErr, colErr
-	case mapsError(p, a.mode) != "":
-		msg, col = "Cannot draw "+mapsError(p, a.mode), colErr
-	case p.mapsWanted && modeNeedsMaps(a.mode):
-		dots := strings.Repeat(".", int(time.Now().UnixMilli()/300%4))
-		msg = "Loading the textures" + dots
+	msg, col := look.msg, colText
+	if look.failed {
+		col = colErr
+	}
+	if look.loading {
+		msg += strings.Repeat(".", int(time.Now().UnixMilli()/300%4))
 	}
 	if msg != "" {
 		box := image.Rect(r.Min.X, r.Max.Y-s.px(34), r.Max.X, r.Max.Y)

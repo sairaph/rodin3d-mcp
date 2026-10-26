@@ -492,7 +492,8 @@ func (s *uiState) drawWidget(dst *ebiten.Image, w widget) {
 func (s *uiState) drawPane(a *App, dst *ebiten.Image, p *pane) {
 	r := s.panes[p.index]
 	s.fill(dst, r, colPane)
-	if p.img != nil {
+	// A mode whose maps did not load shows no picture of another mode.
+	if p.img != nil && mapsError(p, a.mode) == "" {
 		s.image(dst, p.img, r, 1)
 	} else if poster := a.posterThumb(); poster != nil && p.kind == viewer.KindTask && len(a.panes) == 1 {
 		s.image(dst, poster.img, fitRect(r.Inset(s.px(40)), poster.w, poster.h), 0.45)

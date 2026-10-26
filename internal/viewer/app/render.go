@@ -21,8 +21,8 @@ import (
 // The tracer mode's quick frames are one sample per pixel; at rest it is
 // traced progressively (plan 2.11 Modes, M15): at most tracePixels pixels
 // (scaled into the pane), shown after 1, 2, 4, ... samples per pixel, full
-// quality at traceFull, then refined up to traceMax while no other pane
-// waits for the renderer.
+// quality at traceFull, then refined up to traceMax until any other job
+// is submitted.
 const (
 	settleDelay     = 150 * time.Millisecond
 	simplifyTarget  = 200000
@@ -73,10 +73,13 @@ type renderer struct {
 	mu      sync.Mutex
 	queue   []*renderJob
 	running *renderJob
-	cancel  chan struct{}
-	wake    chan struct{}
-	out     chan renderDone
-	quit    chan struct{}
+	// runningFull: the running job is a trace past its full quality,
+	// refining; any newer job may cancel it.
+	runningFull bool
+	cancel      chan struct{}
+	wake        chan struct{}
+	out         chan renderDone
+	quit        chan struct{}
 }
 
 func newRenderer() *renderer {
@@ -103,9 +106,9 @@ func (r *renderer) submit(j *renderJob) {
 	}
 	r.queue = append(kept, j)
 	// A full render in flight gives way to any quick job (the user moves
-	// the view) and to a newer job of its own pane (its picture is no
-	// longer wanted).
-	if r.running != nil && !r.running.key.interactive && r.cancel != nil && (j.key.interactive || r.running.p == j.p) {
+	// the view), to a newer job of its own pane (its picture is no longer
+	// wanted), and to any job while it only refines a full trace.
+	if r.running != nil && !r.running.key.interactive && r.cancel != nil && (j.key.interactive || r.running.p == j.p || r.runningFull) {
 		close(r.cancel)
 		r.cancel = nil
 	}
@@ -161,7 +164,7 @@ func (r *renderer) next() (*renderJob, chan struct{}) {
 	}
 	j := r.queue[pick]
 	r.queue = append(r.queue[:pick], r.queue[pick+1:]...)
-	r.running = j
+	r.running, r.runningFull = j, false
 	r.cancel = make(chan struct{})
 	return j, r.cancel
 }
@@ -180,7 +183,7 @@ func (r *renderer) loop() {
 			}
 			res := r.run(j, cancel)
 			r.mu.Lock()
-			r.running = nil
+			r.running, r.runningFull = nil, false
 			r.mu.Unlock()
 			// A cancelled render is dropped; a cancelled trace is reported, as
 			// its pane may show a partial picture that must be traced again.
@@ -249,8 +252,9 @@ func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 
 // trace draws a tracer picture progressively: each pass doubles the
 // samples per pixel and is shown; the picture is full at traceFull and is
-// refined up to traceMax unless another pane waits for the renderer. The
-// last picture is returned; a pass the caller cancels ends it.
+// refined up to traceMax until any other job is submitted (it then
+// cancels the refining pass; the full picture stays shown). The last
+// picture is returned; a pass the caller cancels ends it.
 func (r *renderer) trace(j *renderJob, o render3d.Options) renderDone {
 	t, err := render3d.NewTrace(j.mesh, j.maps, o)
 	if err != nil {
@@ -261,7 +265,7 @@ func (r *renderer) trace(j *renderJob, o render3d.Options) renderDone {
 			return renderDone{job: j, err: err}
 		}
 		res := renderDone{job: j, img: t.Image(), full: t.Samples() >= traceFull}
-		if t.Samples() >= traceMax || (res.full && r.othersWait()) {
+		if t.Samples() >= traceMax || (res.full && r.refining()) {
 			return res
 		}
 		select {
@@ -272,9 +276,12 @@ func (r *renderer) trace(j *renderJob, o render3d.Options) renderDone {
 	}
 }
 
-// othersWait reports queued jobs.
-func (r *renderer) othersWait() bool {
+// refining marks the running trace as past its full quality, so a job
+// submitted from now on cancels it, and reports whether jobs already wait
+// (then the trace ends here).
+func (r *renderer) refining() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.runningFull = true
 	return len(r.queue) > 0
 }

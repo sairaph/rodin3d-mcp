@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,7 +147,7 @@ type listFront struct {
 const listTokenBudget = 6000
 
 // firstSyncWait bounds how long list_tasks waits for the first history sync.
-const firstSyncWait = 45 * time.Second
+const firstSyncWait = 25 * time.Second // stays inside a 30 s client tool timeout
 
 // ListTasks is list_tasks: the task index from the store, filtered, newest
 // first, paginated by token budget.
@@ -159,19 +160,23 @@ func (s *Service) ListTasks(ctx context.Context, in ListInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if state.LastSync.IsZero() {
-		if _, err := s.signedIn(ctx); err != nil {
-			return Result{}, err
-		}
-		s.EnsureDaemon(ctx)
-		state = s.waitFirstSync(ctx, st, state)
-	} else {
-		s.EnsureDaemon(ctx)
-	}
-
-	tasks, err := st.Tasks()
+	// The index is shown only to the account it belongs to: signed out, or
+	// signed in as someone the daemon has not synced yet, it is not current.
+	creds, err := s.signedIn(ctx)
 	if err != nil {
 		return Result{}, err
+	}
+	s.EnsureDaemon(ctx)
+	if !syncedFor(state, creds.UserUUID) {
+		state = s.waitFirstSync(ctx, st, state, creds.UserUUID)
+	}
+	var tasks []store.Task
+	if syncedFor(state, creds.UserUUID) {
+		if tasks, err = st.Tasks(); err != nil {
+			return Result{}, err
+		}
+	} else {
+		state.LastSync = time.Time{} // reported as "first sync not finished"
 	}
 	q := strings.ToLower(strings.TrimSpace(in.Query))
 	var rows []listRow
@@ -229,7 +234,7 @@ func (s *Service) ListTasks(ctx context.Context, in ListInput) (Result, error) {
 
 // waitFirstSync waits (bounded) for the running daemon's first history
 // sync, so the first list after a login is not empty.
-func (s *Service) waitFirstSync(ctx context.Context, st *store.Store, state store.SyncState) store.SyncState {
+func (s *Service) waitFirstSync(ctx context.Context, st *store.Store, state store.SyncState, user string) store.SyncState {
 	if !s.DaemonRunning() {
 		return state
 	}
@@ -245,11 +250,16 @@ func (s *Service) waitFirstSync(ctx context.Context, st *store.Store, state stor
 			return state
 		}
 		state = next
-		if !state.LastSync.IsZero() || state.Phase == store.PhaseError || state.Phase == store.PhaseNeedsLogin {
+		if syncedFor(state, user) || state.Phase == store.PhaseError || state.Phase == store.PhaseNeedsLogin {
 			return state
 		}
 	}
 	return state
+}
+
+// syncedFor reports whether the index holds a completed sync of user.
+func syncedFor(state store.SyncState, user string) bool {
+	return !state.LastSync.IsZero() && state.UserUUID == user
 }
 
 func clip(s string, n int) string {
@@ -387,10 +397,20 @@ func compactValue(v any) any {
 		if len(x) > 24 {
 			return fmt.Sprintf("(%d items)", len(x))
 		}
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = compactValue(e) // nested addresses are hidden too
+		}
+		return out
 	case map[string]any:
 		if len(x) > 24 {
 			return fmt.Sprintf("(%d entries)", len(x))
 		}
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = compactValue(e)
+		}
+		return out
 	}
 	return v
 }
@@ -455,7 +475,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 				r.Geometry = &n
 			}
 			if d.status.Stage == stage.MaterialDraft && d.hist.Material != nil {
-				n := stage.RedosLeft(matLimit, len(d.hist.Material[card.Setting("reference_image")]))
+				n := stage.RedosLeft(matLimit, len(d.hist.Material[assets.MaterialRef(card, d.hist)]))
 				r.Material = &n
 			}
 			if r.Geometry != nil || r.Material != nil {
@@ -469,7 +489,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 	for n := range card.Info.MeshInputImages {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	sortInputNames(names)
 	labels, _ := card.Settings["image_label"].([]any)
 	weights, _ := card.Settings["view_weights"].([]any)
 	for i, n := range names {
@@ -520,6 +540,11 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 				front.Files.Pack = append(front.Files.Pack, it.Name)
 			}
 		}
+		if len(front.Files.Pack) == 0 {
+			// Hyper3D lists no file for this pack (seen on a material
+			// draft marked DoneBasic): there is nothing to download.
+			front.Task.Actions = without(front.Task.Actions, "download_model")
+		}
 	}
 	front.Files.Videos = videoNames(card)
 	if st, err := s.Store(); err == nil {
@@ -553,6 +578,28 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 		res.Images = append(res.Images, img)
 	}
 	return res, nil
+}
+
+// sortInputNames orders input image names the way they were uploaded: the
+// service names them by upload index, zero-padded (0000.webp, 0001.webp,
+// seen live on single- and multi-image cards), so the number before the
+// extension is the position image_label and view_weights refer to. Names
+// without a number sort after, by name.
+func sortInputNames(names []string) {
+	index := func(n string) int {
+		base := strings.TrimSuffix(n, filepath.Ext(n))
+		if i, err := strconv.Atoi(base); err == nil {
+			return i
+		}
+		return 1 << 30
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		a, b := index(names[i]), index(names[j])
+		if a != b {
+			return a < b
+		}
+		return names[i] < names[j]
+	})
 }
 
 func keysOf[V any](m map[string]V) []string {
@@ -698,4 +745,15 @@ func (s *Service) WaitTask(ctx context.Context, id string, timeout time.Duration
 		}
 	}
 	return res, nil
+}
+
+// without returns list without name.
+func without(list []string, name string) []string {
+	out := []string{}
+	for _, v := range list {
+		if v != name {
+			out = append(out, v)
+		}
+	}
+	return out
 }

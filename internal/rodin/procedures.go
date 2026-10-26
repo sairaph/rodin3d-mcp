@@ -187,6 +187,10 @@ func (c *Client) ImageProcess(ctx context.Context, filename, mimeType string, da
 	return &out, nil
 }
 
+// FetchPrefix starts the procedure name of every Fetch error ("fetch from
+// <host>").
+const FetchPrefix = "fetch from "
+
 // ErrTooLarge means a fetched file passed the size limit given to Fetch.
 var ErrTooLarge = errors.New("file larger than the limit")
 
@@ -194,40 +198,76 @@ var ErrTooLarge = errors.New("file larger than the limit")
 // returns the bytes written and the reply's content type. Errors never carry
 // the URL, whose query is the signature; they name the host only.
 func (c *Client) Fetch(ctx context.Context, signedURL string, w io.Writer, limit int64) (int64, string, error) {
+	r, err := c.FetchIf(ctx, signedURL, w, limit, "")
+	return r.Bytes, r.ContentType, err
+}
+
+// FetchResult is what FetchIf learned.
+type FetchResult struct {
+	Bytes       int64
+	ContentType string
+	// Validator identifies the file version: its ETag, else its
+	// Last-Modified prefixed with "lm:"; empty when the host sends neither.
+	Validator   string
+	NotModified bool // the validator still matches: nothing was written
+}
+
+// FetchIf is Fetch with a conditional request: given the validator of a
+// stored copy, a host that still holds the same file answers 304 and
+// nothing is written.
+func (c *Client) FetchIf(ctx context.Context, signedURL string, w io.Writer, limit int64, validator string) (FetchResult, error) {
+	var res FetchResult
 	u, err := url.Parse(signedURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return 0, "", errors.New("fetch: not an http(s) file address")
+		return res, errors.New("fetch: not an http(s) file address")
 	}
 	host := u.Host
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
 	if err != nil {
-		return 0, "", fmt.Errorf("fetch from %s: build request", host)
+		return res, fmt.Errorf("%s%s: build request", FetchPrefix, host)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
+	switch {
+	case strings.HasPrefix(validator, "lm:"):
+		req.Header.Set("If-Modified-Since", strings.TrimPrefix(validator, "lm:"))
+	case validator != "":
+		req.Header.Set("If-None-Match", validator)
+	}
 	resp, err := c.files.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return 0, "", &NetError{Procedure: "fetch from " + host, Err: err}
+		return res, &NetError{Procedure: FetchPrefix + host, Err: err}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && validator != "" {
+		res.NotModified, res.Validator = true, validator
+		return res, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, "", &HTTPError{Procedure: "fetch from " + host, Status: resp.StatusCode}
+		return res, &HTTPError{Procedure: FetchPrefix + host, Status: resp.StatusCode}
+	}
+	if et := resp.Header.Get("ETag"); et != "" {
+		res.Validator = et
+	} else if lm := resp.Header.Get("Last-Modified"); lm != "" {
+		res.Validator = "lm:" + lm
 	}
 	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	res.Bytes = n
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return n, "", &NetError{Procedure: "fetch from " + host, Err: err}
+		return res, &NetError{Procedure: FetchPrefix + host, Err: err}
 	}
 	if n > limit {
-		return n, "", fmt.Errorf("fetch from %s: %w (%d bytes)", host, ErrTooLarge, limit)
+		return res, fmt.Errorf("%s%s: %w (%d bytes)", FetchPrefix, host, ErrTooLarge, limit)
 	}
-	return n, resp.Header.Get("Content-Type"), nil
+	res.ContentType = resp.Header.Get("Content-Type")
+	return res, nil
 }
 
 // StripSignatures returns raw JSON with the query and fragment removed from

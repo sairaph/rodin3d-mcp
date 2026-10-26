@@ -35,7 +35,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 	// Pragmas go in the DSN so every pooled connection gets them.
-	dsn := "file:" + filepath.ToSlash(path) +
+	// The path is a URI path: %, ? and # in it are escaped, or the driver
+	// would read them as an escape, the query or a fragment.
+	dsn := "file:" + uriPath(path) +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
@@ -112,6 +114,7 @@ CREATE TABLE IF NOT EXISTS files (
   bytes      INTEGER NOT NULL,
   sha256     TEXT NOT NULL,
   source_key TEXT NOT NULL DEFAULT '', -- hash of the source address without its signature
+  validator  TEXT NOT NULL DEFAULT '', -- ETag or Last-Modified of the fetched file
   at_ms      INTEGER NOT NULL,
   PRIMARY KEY (uuid, kind, path)
 );
@@ -433,22 +436,23 @@ type File struct {
 	Bytes     int64
 	SHA256    string
 	SourceKey string
+	Validator string // ETag or "lm:"+Last-Modified of a cached file
 	At        time.Time
 }
 
 // RecordFile stores (or replaces) a file row.
 func (s *Store) RecordFile(f File) error {
-	_, err := s.db.Exec(`INSERT INTO files (uuid, kind, path, bytes, sha256, source_key, at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO files (uuid, kind, path, bytes, sha256, source_key, validator, at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uuid, kind, path) DO UPDATE SET bytes = excluded.bytes, sha256 = excluded.sha256,
-		  source_key = excluded.source_key, at_ms = excluded.at_ms`,
-		f.UUID, f.Kind, f.Path, f.Bytes, f.SHA256, f.SourceKey, nowMS())
+		  source_key = excluded.source_key, validator = excluded.validator, at_ms = excluded.at_ms`,
+		f.UUID, f.Kind, f.Path, f.Bytes, f.SHA256, f.SourceKey, f.Validator, nowMS())
 	return err
 }
 
 // Files returns the files of a task; kind filters by exact kind or, ending
 // in ":", by prefix ("" returns all).
 func (s *Store) Files(uuid, kind string) ([]File, error) {
-	q := `SELECT uuid, kind, path, bytes, sha256, source_key, at_ms FROM files WHERE uuid = ?`
+	q := `SELECT uuid, kind, path, bytes, sha256, source_key, validator, at_ms FROM files WHERE uuid = ?`
 	args := []any{uuid}
 	switch {
 	case strings.HasSuffix(kind, ":"):
@@ -467,7 +471,7 @@ func (s *Store) Files(uuid, kind string) ([]File, error) {
 	for rows.Next() {
 		var f File
 		var ms int64
-		if err := rows.Scan(&f.UUID, &f.Kind, &f.Path, &f.Bytes, &f.SHA256, &f.SourceKey, &ms); err != nil {
+		if err := rows.Scan(&f.UUID, &f.Kind, &f.Path, &f.Bytes, &f.SHA256, &f.SourceKey, &f.Validator, &ms); err != nil {
 			return nil, err
 		}
 		f.At = time.UnixMilli(ms)
@@ -584,4 +588,9 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// uriPath escapes a file path for a SQLite file: URI.
+func uriPath(path string) string {
+	return strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(filepath.ToSlash(path))
 }

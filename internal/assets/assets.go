@@ -118,17 +118,10 @@ func Index(card *rodin.Card, hist History) []Asset {
 	}
 
 	// Material (draft or confirmed).
-	ref := card.Setting("reference_image")
+	ref := MaterialRef(card, hist)
 	matVersion := ""
 	var mv rodin.MaterialVersion
-	if versions := hist.Material[ref]; len(versions) > 0 || ref == "" {
-		if ref == "" {
-			// No reference recorded: take the only one there is.
-			for r, v := range hist.Material {
-				ref, versions = r, v
-				break
-			}
-		}
+	if versions := hist.Material[ref]; len(versions) > 0 {
 		matVersion = firstNonEmpty(card.Confirmed("texture_version"), LatestVersion(keys(versions)))
 		mv = versions[matVersion]
 	}
@@ -153,6 +146,22 @@ func Index(card *rodin.Card, hist History) []Asset {
 	pick("normal", card.Preview["texture_normal"], mv.TextureNormal)
 	pick("shaded", card.Preview["texture_shaded"], mv.TextureShaded)
 	return out
+}
+
+// MaterialRef is the material history reference a card's material belongs
+// to: its reference_image setting ("ALL" or an input image name); when that
+// is empty and the history has exactly one reference, that one. Index and
+// the redo counter both use it, so they never disagree.
+func MaterialRef(card *rodin.Card, hist History) string {
+	if ref := card.Setting("reference_image"); ref != "" {
+		return ref
+	}
+	if len(hist.Material) == 1 {
+		for r := range hist.Material {
+			return r
+		}
+	}
+	return ""
 }
 
 // Find returns the asset for stage and mode.
@@ -265,21 +274,28 @@ func (c *Cache) Path(uuid string, a Asset) string {
 	return filepath.Join(c.dir, unsafeName.Replace(uuid), dir, a.Mode+a.Ext())
 }
 
-// Get returns the cached file of asset a, fetching it when it is missing or
-// its source changed. fetched reports a download.
+// Get returns the file of asset a, fetching it when it is missing, its
+// source changed, or the host reports a newer version: a stored copy is
+// revalidated with a conditional request (its ETag or Last-Modified), so a
+// file rewritten at the same address is noticed. When the host cannot be
+// reached a stored copy is returned as it is. fetched reports a download.
 func (c *Cache) Get(ctx context.Context, uuid string, a Asset) (file string, fetched bool, err error) {
 	file = c.Path(uuid, a)
 	key := sourceKey(a)
+	cached, validator := false, ""
 	if rows, err := c.store.Files(uuid, kind(a)); err == nil {
 		for _, f := range rows {
 			if f.Path == file && f.SourceKey == key {
 				if fi, err := os.Stat(file); err == nil && fi.Size() == f.Bytes {
-					return file, false, nil
+					cached, validator = true, f.Validator
 				}
 			}
 		}
 	}
 	if a.URL == "" {
+		if cached {
+			return file, false, nil
+		}
 		return "", false, errors.New("the asset has no address")
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
@@ -291,17 +307,23 @@ func (c *Cache) Get(ctx context.Context, uuid string, a Asset) (file string, fet
 	}
 	defer os.Remove(tmp.Name())
 	h := sha256.New()
-	n, _, err := c.client.Fetch(ctx, a.URL, io.MultiWriter(tmp, h), maxAsset)
+	res, err := c.client.FetchIf(ctx, a.URL, io.MultiWriter(tmp, h), maxAsset, validator)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
+	switch {
+	case err != nil && cached:
+		return file, false, nil // offline or a passing failure: the stored copy serves
+	case err != nil:
 		return "", false, fmt.Errorf("download the %s %s image: %w", a.Stage, a.Mode, err)
+	case res.NotModified:
+		return file, false, nil
 	}
 	if err := domain.ReplaceFile(tmp.Name(), file); err != nil {
 		return "", false, err
 	}
-	if err := c.store.RecordFile(store.File{UUID: uuid, Kind: kind(a), Path: file, Bytes: n, SHA256: hex.EncodeToString(h.Sum(nil)), SourceKey: key}); err != nil {
+	if err := c.store.RecordFile(store.File{UUID: uuid, Kind: kind(a), Path: file, Bytes: res.Bytes,
+		SHA256: hex.EncodeToString(h.Sum(nil)), SourceKey: key, Validator: res.Validator}); err != nil {
 		return "", false, err
 	}
 	return file, true, nil

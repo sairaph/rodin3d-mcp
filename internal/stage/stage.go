@@ -71,16 +71,23 @@ func Actions(s Status) []string {
 		}
 		return []string{"wait_task"}
 	}
+	if s.State == Unknown {
+		// A state this build does not know (a failed task is one, not yet
+		// seen live): only looking is safe.
+		return []string{"get_preview"}
+	}
 	var out []string
 	switch s.Stage {
 	case GeometryDraft:
-		out = []string{"get_preview", "redo_geometry", "confirm_geometry", "select_candidate"}
+		// Bang (split_parts) works on the draft only: on a confirmed task
+		// its calls answer TASK_ALREADY_CONFIRMED (notes 14 section 5).
+		out = []string{"get_preview", "redo_geometry", "confirm_geometry", "select_candidate", "split_parts"}
 	case Geometry:
-		out = []string{"get_preview", "generate_texture", "export_model", "fork_task", "split_parts", "rig_model"}
+		out = []string{"get_preview", "generate_texture", "export_model", "fork_task", "rig_model"}
 	case MaterialDraft:
 		out = []string{"get_preview", "redo_material", "confirm_material", "fork_task"}
 	case Material:
-		out = []string{"get_preview", "export_model", "fork_task", "split_parts", "rig_model"}
+		out = []string{"get_preview", "export_model", "fork_task", "rig_model"}
 	}
 	if s.State == Packed {
 		out = append(out, "download_model")

@@ -484,17 +484,24 @@ func (a *App) applyShow(p *prepared, params viewer.ShowParams) viewer.StateReply
 		}
 	}
 	a.layout = defaultLayout(p.kind)
-	switch {
-	case cam != nil:
-		a.cam, a.viewName = *cam, params.View
-	default:
-		a.cam, a.viewName = a.cameraFor(), "three_quarter"
-	}
+	a.showCamera(cam, params.View)
 	a.turntable = false
 	a.setTitle()
 	a.bump()
 	a.startLoads(p)
 	return viewer.StateReply{State: a.snapshot(), PID: os.Getpid()}
+}
+
+// showCamera sets the camera of newly shown content: the named view asked
+// for, else the remembered camera of the task (cameraFor), named when it is
+// exactly a named view and custom otherwise.
+func (a *App) showCamera(cam *camState, view string) {
+	if cam != nil {
+		a.cam, a.viewName = *cam, view
+		return
+	}
+	a.cam = a.cameraFor()
+	a.viewName = viewNamed(a.cam)
 }
 
 // cameraFor returns the remembered camera of the shown task, or the default.

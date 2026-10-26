@@ -355,3 +355,36 @@ func TestMissingMaps(t *testing.T) {
 		t.Errorf("mapCount %d, want 2", n)
 	}
 }
+
+// TestShowCamera (N14): a show without a view uses the task's remembered
+// camera and names it as it is: the named view it equals, else custom; a
+// show with a view uses that view.
+func TestShowCamera(t *testing.T) {
+	front, _ := namedCam("front")
+	orbited := camState{Az: 10, El: 5, Zoom: 1.4}
+	for _, tc := range []struct {
+		name     string
+		kind     string
+		cameras  map[string]camState
+		cam      *camState
+		view     string
+		wantCam  camState
+		wantName string
+	}{
+		{"remembered custom camera", viewer.KindTask, map[string]camState{"t1": orbited}, nil, "", orbited, "custom"},
+		{"remembered named camera", viewer.KindTask, map[string]camState{"t1": front}, nil, "", front, "front"},
+		{"nothing remembered", viewer.KindTask, map[string]camState{}, nil, "", defaultCam(), "three_quarter"},
+		{"a model file", viewer.KindModelFile, map[string]camState{"t1": orbited}, nil, "", defaultCam(), "three_quarter"},
+		{"a view asked for", viewer.KindTask, map[string]camState{"t1": orbited}, &front, "front", front, "front"},
+	} {
+		p := &pane{kind: tc.kind}
+		if tc.kind == viewer.KindTask {
+			p.vt = &service.ViewTask{UUID: "t1"}
+		}
+		a := &App{kind: tc.kind, panes: []*pane{p}, cameras: tc.cameras, cam: orbited, viewName: "custom"}
+		a.showCamera(tc.cam, tc.view)
+		if a.cam != tc.wantCam || a.viewName != tc.wantName {
+			t.Errorf("%s: camera %v named %s, want %v named %s", tc.name, a.cam, a.viewName, tc.wantCam, tc.wantName)
+		}
+	}
+}

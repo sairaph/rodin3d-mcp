@@ -535,12 +535,13 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 	}
 
 	if d.status.State == stage.Packed {
-		if items, err := s.client.GetDownload(ctx, uuid); err == nil {
-			for _, it := range items {
-				front.Files.Pack = append(front.Files.Pack, it.Name)
-			}
+		items, err := s.client.GetDownload(ctx, uuid)
+		for _, it := range items {
+			front.Files.Pack = append(front.Files.Pack, it.Name)
 		}
-		if len(front.Files.Pack) == 0 {
+		// Only an answer that lists nothing removes the action; a failed call
+		// says nothing about the pack.
+		if err == nil && len(front.Files.Pack) == 0 {
 			// Hyper3D lists no file for this pack (seen on a material
 			// draft marked DoneBasic): there is nothing to download.
 			front.Task.Actions = without(front.Task.Actions, "download_model")

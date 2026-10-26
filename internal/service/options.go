@@ -276,7 +276,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		Operation: in.Operation, Quote: q, Wallet: WalletOf(info), Task: task,
 		Permission: permissionFront{Key: key, Value: value, File: s.paths.Config},
 	}
-	if q.Known && q.Credits != nil {
+	if q.Known && q.Credits != nil && *q.Credits > 0 { // a free operation needs no balance
 		// Frozen credits are counted as spent: whether prepaid_available already
 		// excludes them is not measured, and erring low never overspends.
 		ok := front.Wallet.Available-front.Wallet.Frozen >= *q.Credits

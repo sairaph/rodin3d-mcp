@@ -4,6 +4,7 @@ data/
 tmp/
 .env
 src/rodin-bridge/
+.claude/
 # build outputs
 /rodin3d-mcp
 /rodin3d-mcp.exe

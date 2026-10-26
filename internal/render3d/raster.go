@@ -17,6 +17,8 @@ type Mesh struct {
 	Nrm [][3]float32 // nil: flat shading only
 	UV  [][2]float32 // nil: no texture coordinates
 	Idx []uint32
+
+	accel *bvh // the path tracer's hierarchy, built on first trace (bvhMu)
 }
 
 type vec3 [3]float64

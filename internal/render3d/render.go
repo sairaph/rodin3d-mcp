@@ -170,6 +170,9 @@ type Options struct {
 	WireOverlay bool
 	// Cancel, when closed, ends the render early with ErrCanceled.
 	Cancel <-chan struct{}
+	// Samples is the samples per pixel of a ModeTracer picture; 0 means
+	// TracerSamples, and an Interactive one takes 1.
+	Samples int
 }
 
 // canceled reports whether o.Cancel is closed.
@@ -204,56 +207,11 @@ func (e *InputError) Error() string { return fmt.Sprintf("mode %s %s", e.Mode, e
 // use.
 func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	var st Stats
-	def, ok := modeDefs[o.Mode]
-	if !ok {
-		return nil, st, fmt.Errorf("render3d: unknown mode %q", o.Mode)
-	}
-	if m == nil {
-		return nil, st, errors.New("render3d: no mesh")
-	}
-	if err := m.Validate(); err != nil {
+	def, frame, c, err := prepare(m, maps, &o)
+	if err != nil {
 		return nil, st, err
 	}
-	if o.Width > 0 || o.Height > 0 {
-		if o.Width < 16 || o.Width > 4096 || o.Height < 16 || o.Height > 4096 {
-			return nil, st, fmt.Errorf("render3d: size %dx%d out of range", o.Width, o.Height)
-		}
-		if o.View == ViewGrid {
-			return nil, st, errors.New("render3d: a grid is square; give Size, not Width and Height")
-		}
-	} else if o.Size < 16 || o.Size > 2048 {
-		return nil, st, fmt.Errorf("render3d: size %d out of range", o.Size)
-	}
-	if (def.useMaps || def.copper || def.needUV) && m.UV == nil {
-		return nil, st, &InputError{Mode: o.Mode, Reason: "needs texture coordinates, and this mesh has none"}
-	}
-	if def.useMaps {
-		need := maps != nil && maps.Diffuse != nil
-		if o.Mode == ModeShaded {
-			need = maps != nil && (maps.Shaded != nil || maps.Diffuse != nil)
-		}
-		if !need {
-			return nil, st, &InputError{Mode: o.Mode, Reason: "needs the material textures"}
-		}
-	}
-	if o.View == "" {
-		o.View = ViewThreeQuarter
-	}
-	frame := FrameOf(m)
-	if o.Frame != nil {
-		frame = *o.Frame
-	}
-	if o.Camera != nil {
-		if o.View == ViewGrid {
-			return nil, st, errors.New("render3d: a grid has its own cameras")
-		}
-		return render(m, maps, def, o, frame, *o.Camera)
-	}
-	if o.View != ViewGrid {
-		c, ok := o.View.Camera()
-		if !ok {
-			return nil, st, fmt.Errorf("render3d: unknown view %q", o.View)
-		}
+	if o.View != ViewGrid || o.Camera != nil {
 		return render(m, maps, def, o, frame, c)
 	}
 	cell := o.Size / 2
@@ -280,6 +238,65 @@ func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	return out, st, nil
 }
 
+// prepare checks o against the mesh and maps and returns the mode, the
+// framed box and the camera (o.Camera, else o.View's; none for ViewGrid,
+// whose cells have their own). It sets o.View to its default.
+func prepare(m *Mesh, maps *Maps, o *Options) (modeDef, Frame, Camera, error) {
+	def, ok := modeDefs[o.Mode]
+	if !ok {
+		return def, Frame{}, Camera{}, fmt.Errorf("render3d: unknown mode %q", o.Mode)
+	}
+	if m == nil {
+		return def, Frame{}, Camera{}, errors.New("render3d: no mesh")
+	}
+	if err := m.Validate(); err != nil {
+		return def, Frame{}, Camera{}, err
+	}
+	if o.Width > 0 || o.Height > 0 {
+		if o.Width < 16 || o.Width > 4096 || o.Height < 16 || o.Height > 4096 {
+			return def, Frame{}, Camera{}, fmt.Errorf("render3d: size %dx%d out of range", o.Width, o.Height)
+		}
+		if o.View == ViewGrid {
+			return def, Frame{}, Camera{}, errors.New("render3d: a grid is square; give Size, not Width and Height")
+		}
+	} else if o.Size < 16 || o.Size > 2048 {
+		return def, Frame{}, Camera{}, fmt.Errorf("render3d: size %d out of range", o.Size)
+	}
+	if (def.useMaps || def.copper || def.needUV) && m.UV == nil {
+		return def, Frame{}, Camera{}, &InputError{Mode: o.Mode, Reason: "needs texture coordinates, and this mesh has none"}
+	}
+	if def.useMaps {
+		need := maps != nil && maps.Diffuse != nil
+		if o.Mode == ModeShaded {
+			need = maps != nil && (maps.Shaded != nil || maps.Diffuse != nil)
+		}
+		if !need {
+			return def, Frame{}, Camera{}, &InputError{Mode: o.Mode, Reason: "needs the material textures"}
+		}
+	}
+	if o.View == "" {
+		o.View = ViewThreeQuarter
+	}
+	frame := FrameOf(m)
+	if o.Frame != nil {
+		frame = *o.Frame
+	}
+	if o.Camera != nil {
+		if o.View == ViewGrid {
+			return def, frame, Camera{}, errors.New("render3d: a grid has its own cameras")
+		}
+		return def, frame, *o.Camera, nil
+	}
+	if o.View == ViewGrid {
+		return def, frame, Camera{}, nil
+	}
+	c, ok := o.View.Camera()
+	if !ok {
+		return def, frame, Camera{}, fmt.Errorf("render3d: unknown view %q", o.View)
+	}
+	return def, frame, c, nil
+}
+
 // render draws one picture from camera c.
 func render(m *Mesh, maps *Maps, def modeDef, o Options, frame Frame, c Camera) (*image.NRGBA, Stats, error) {
 	var st Stats
@@ -291,6 +308,26 @@ func render(m *Mesh, maps *Maps, def modeDef, o Options, frame Frame, c Camera) 
 	w, h := o.Size, o.Size
 	if o.Width > 0 && o.Height > 0 {
 		w, h = o.Width, o.Height
+	}
+	if def.mat == matTracer {
+		t, err := newTrace(m, maps, def, o, frame, c, w, h)
+		if err != nil {
+			return nil, st, err
+		}
+		n := o.Samples
+		if n <= 0 {
+			n = TracerSamples
+		}
+		if o.Interactive {
+			n = 1
+		}
+		if err := t.Add(n); err != nil {
+			return nil, st, err
+		}
+		img := t.Image()
+		st.Shade = time.Since(t0)
+		st.Total = st.Shade
+		return img, st, nil
 	}
 	W, H := w*ss, h*ss
 

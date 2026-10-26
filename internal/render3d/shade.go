@@ -133,19 +133,26 @@ func (s *shadeCtx) shadeAll() {
 				if !ok {
 					continue
 				}
-				if s.wire != nil && !f.ground {
-					for k := 0; k < 3; k++ {
-						fw := math.Abs(f.db[k][0]) + math.Abs(f.db[k][1])
-						if fw > 0 && f.b[k]/fw < 0.5 {
-							s.wire[o] = 1
-						}
-					}
+				if s.wire != nil && !f.ground && onEdge(&f) {
+					s.wire[o] = 1
 				}
 				c, a := s.shade(&f)
 				s.col[o*4], s.col[o*4+1], s.col[o*4+2], s.col[o*4+3] = float32(c[0]), float32(c[1]), float32(c[2]), float32(a)
 			}
 		}
 	})
+}
+
+// onEdge reports whether the sample lies within half an output pixel of
+// one of its triangle's edges (the wire overlay's 1 px lines).
+func onEdge(f *frag) bool {
+	for k := 0; k < 3; k++ {
+		fw := math.Abs(f.db[k][0]) + math.Abs(f.db[k][1])
+		if fw > 0 && f.b[k]/fw < 0.5 {
+			return true
+		}
+	}
+	return false
 }
 
 func sat(x float64) float64 { return math.Max(0, math.Min(1, x)) }
@@ -222,7 +229,10 @@ func (s *shadeCtx) normalMap(f *frag, N vec3) vec3 {
 	if det == 0 {
 		return N
 	}
-	sc := 1 / math.Sqrt(det)
+	// three.js takes dFdy with window y up; the derivatives here run with
+	// pixel rows (y down), which turns T and B round (getTangentFrame does
+	// not divide by the frame's determinant), so they are negated.
+	sc := -1 / math.Sqrt(det)
 	T, B = T.mul(sc*f.face), B.mul(sc*f.face)
 	c := s.maps.Normal.Sample(f.uv[0], f.uv[1])
 	mn := vec3{float64(c[0])*2 - 1, float64(c[1])*2 - 1, float64(c[2])*2 - 1}

@@ -20,26 +20,27 @@ const (
 	ModePBR       Mode = "pbr"        // web PBR
 	ModeShaded    Mode = "shaded"     // web Shaded
 	ModeToon      Mode = "toon"       // web Toon
+	ModeTracer    Mode = "tracer"     // web Tracer (a path tracer; trace.go)
 	ModeDepth     Mode = "depth"      // local only: view depth, near white
 	ModeUVChecker Mode = "uv_checker" // local only: a checker over the texture coordinates
 )
 
 // AllModes lists every mode.
-var AllModes = []Mode{ModeNormal, ModeRaw, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeWireframe, ModeGeometry, ModePBR, ModeShaded, ModeToon, ModeDepth, ModeUVChecker}
+var AllModes = []Mode{ModeNormal, ModeRaw, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeWireframe, ModeGeometry, ModePBR, ModeShaded, ModeToon, ModeTracer, ModeDepth, ModeUVChecker}
 
 // ModesFor lists the modes a stage mesh can be drawn in, in display order.
 // A geometry draft (a .drc mesh: positions only, no normals or texture
 // coordinates) gets the web's Gen-2.5 set without Copper, whose maps need
 // texture coordinates, plus wireframe and depth. A GLB (confirmed geometry or
 // material) adds copper and geometry; textured adds the material modes
-// pbr, shaded and toon in front.
+// pbr, shaded, toon and tracer in front.
 func ModesFor(draft, textured bool) []Mode {
 	if draft {
 		return []Mode{ModeNormal, ModeClassic, ModeGlossy, ModeMetal, ModeAO, ModeRaw, ModeWireframe, ModeDepth}
 	}
 	geo := []Mode{ModeNormal, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeRaw, ModeGeometry, ModeWireframe, ModeDepth, ModeUVChecker}
 	if textured {
-		return append([]Mode{ModePBR, ModeShaded, ModeToon}, geo...)
+		return append([]Mode{ModePBR, ModeShaded, ModeToon, ModeTracer}, geo...)
 	}
 	return geo
 }
@@ -80,6 +81,8 @@ func (m Mode) Describe() string {
 		return "the shaded texture, unlit (web Shaded)"
 	case ModeToon:
 		return "toon shading with outlines (web Toon)"
+	case ModeTracer:
+		return "path traced PBR textures under an interior environment, two bounces (web Tracer)"
 	case ModeDepth:
 		return "distance from the camera, near white (local)"
 	case ModeUVChecker:
@@ -98,6 +101,7 @@ const (
 	matToon                    // MeshToonMaterial
 	matDepth                   // local depth map
 	matChecker                 // local UV checker
+	matTracer                  // path traced PBR material (trace.go)
 )
 
 type lightKind int
@@ -228,6 +232,10 @@ var modeDefs = map[Mode]modeDef{
 		bg: bgColor, bgColor: defaultBackground, outputPass: true},
 	ModeToon: {web: "Toon", mat: matToon, color: white(1), useMaps: true, lights: defaultLights,
 		bg: bgColor, bgColor: defaultBackground, outputPass: true, outline: true},
+	// Tracer: MuTracer's scene (trace.go); env lights the model, bgEnv
+	// blurred is its background, Neutral tone mapping.
+	ModeTracer: {web: "Tracer", mat: matTracer, color: white(1), metal: 1, rough: 1, useMaps: true,
+		env: envRoom, envIntensity: tracerEnvIntensity, bg: bgEnv, bgEnv: envRoom, bgBlur: tracerBgBlur, outputPass: true},
 	ModeDepth:     {web: "-", mat: matDepth, bg: bgColor},
 	ModeUVChecker: {web: "-", mat: matChecker, needUV: true, bg: bgColor, bgColor: defaultBackground, outputPass: true},
 }

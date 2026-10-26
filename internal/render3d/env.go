@@ -10,7 +10,8 @@ import (
 // a few roughness levels (a stand-in for three.js PMREM). Built on first use
 // and shared read-only by every render.
 type envMap struct {
-	levels []envLevel // roughness 0, .2, .4, .6, .8, 1
+	levels []envLevel  // roughness 0, .2, .4, .6, .8, 1
+	samp   *envSampler // the path tracer's importance sampler (samplerMu)
 }
 
 type envLevel struct {

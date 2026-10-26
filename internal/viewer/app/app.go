@@ -72,8 +72,13 @@ func Run(ctx context.Context, svc *service.Service, version string) int {
 	if err := os.WriteFile(paths.ViewerPID, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err == nil {
 		defer os.Remove(paths.ViewerPID)
 	}
+	// Serve releases the lock when its context ends; the stop signal must
+	// not do that, as the window lives on while it closes and saves. The
+	// lock is held until Run returns (srv.Close) or the process exits, so
+	// close_viewer sees the window end and no second window starts beside
+	// it.
 	go func() {
-		if err := srv.Serve(ctx); err != nil {
+		if err := srv.Serve(context.WithoutCancel(ctx)); err != nil {
 			log.Printf("control socket: %v", err)
 		}
 	}()

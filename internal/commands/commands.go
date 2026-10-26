@@ -17,10 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sairaph/mcp-wizard/command"
 	"github.com/sairaph/mcp-wizard/render"
 	"github.com/sairaph/mcp-wizard/tui"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
 	"github.com/sairaph/rodin3d-mcp/internal/assets"
@@ -336,6 +338,33 @@ func loginArgs(raw []string) (a args, open bool, address string, err error) {
 	return a, open, address, nil
 }
 
+// terminalColumns is the width of the terminal w writes to, 0 when w is not
+// a terminal or its size cannot be read.
+func terminalColumns(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return cols
+}
+
+// textWidth is the widest line of s in characters (the QR's block
+// characters are one column each).
+func textWidth(s string) int {
+	w := 0
+	for _, line := range strings.Split(s, "\n") {
+		w = max(w, utf8.RuneCountInString(line))
+	}
+	return w
+}
+
+// fitsWidth reports whether every line of s fits in cols columns.
+func fitsWidth(s string, cols int) bool { return cols > 0 && textWidth(s) <= cols }
+
 // Login is the login command. With an address it finishes the pending
 // sign-in. Without one it starts a sign-in, prints the link and a QR code,
 // opens the local browser unless no-browser is given, and waits up to ten
@@ -361,8 +390,13 @@ func Login(ctx context.Context, env Env, raw []string) int {
 	fmt.Fprintln(out, "  "+started.AuthorizeURL)
 	fmt.Fprintln(out)
 	if tui.IsInteractive() {
+		// A QR wider than the terminal wraps into noise no phone can read.
 		if qr := service.QRText(started.AuthorizeURL); qr != "" {
-			fmt.Fprintln(out, qr)
+			if fitsWidth(qr, terminalColumns(out)) {
+				fmt.Fprintln(out, qr)
+			} else {
+				fmt.Fprintf(out, "(A terminal at least %d columns wide also shows a QR code of the link.)\n\n", textWidth(qr))
+			}
 		}
 	}
 	if started.Listening {

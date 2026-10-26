@@ -1,0 +1,25 @@
+Third-party code in draco_decoder.wasm
+
+draco_decoder.wasm is a WebAssembly (wasm32-wasip1) build of the mesh
+decoder of Google Draco 1.5.7 (https://github.com/google/draco; copyright
+Google Inc. and other contributors, per its AUTHORS file). It is compiled
+from the unmodified Draco 1.5.7 sources plus the wrapper
+tools/draco-wasm/draco_wasi.cc by tools/draco-wasm/build-draco-wasm.sh,
+which pins and checksums every input.
+
+Draco is licensed under the Apache License, Version 2.0. Its license file
+is LICENSE-draco in this directory, copied unchanged from the Draco 1.5.7
+source tree; its last section covers a documentation script of the Draco
+repository that is not part of the decoder. Draco ships no NOTICE file.
+
+The module also contains the parts of the wasi-sdk 34 sysroot it links
+(wasi-libc and the LLVM C++ runtime). The wasi-sdk 34 release archive
+carries no license files, and their license texts are not reproduced here
+yet.
+
+internal/draco runs the module with wazero (github.com/tetratelabs/wazero
+v1.12.0, Apache License, Version 2.0), a Go module dependency compiled into
+the rodin3d-mcp binary. wazero's NOTICE file reads:
+
+    wazero
+    Copyright 2020-2023 wazero authors

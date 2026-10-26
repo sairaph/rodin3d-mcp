@@ -8,23 +8,24 @@ type Mode string
 
 // The modes.
 const (
-	ModeNormal    Mode = "normal"    // web NormalPreview (draft)
-	ModeRaw       Mode = "raw"       // web Raw
-	ModeClassic   Mode = "classic"   // web Classic
-	ModeGlossy    Mode = "glossy"    // web Glossy
-	ModeCopper    Mode = "copper"    // web Copper
-	ModeMetal     Mode = "metal"     // web Metal
-	ModeAO        Mode = "ao"        // web AO
-	ModeWireframe Mode = "wireframe" // web Wireframe
-	ModeGeometry  Mode = "geometry"  // web Geometry
-	ModePBR       Mode = "pbr"       // web PBR
-	ModeShaded    Mode = "shaded"    // web Shaded
-	ModeToon      Mode = "toon"      // web Toon
-	ModeDepth     Mode = "depth"     // local only: view depth, near white
+	ModeNormal    Mode = "normal"     // web NormalPreview (draft)
+	ModeRaw       Mode = "raw"        // web Raw
+	ModeClassic   Mode = "classic"    // web Classic
+	ModeGlossy    Mode = "glossy"     // web Glossy
+	ModeCopper    Mode = "copper"     // web Copper
+	ModeMetal     Mode = "metal"      // web Metal
+	ModeAO        Mode = "ao"         // web AO
+	ModeWireframe Mode = "wireframe"  // web Wireframe
+	ModeGeometry  Mode = "geometry"   // web Geometry
+	ModePBR       Mode = "pbr"        // web PBR
+	ModeShaded    Mode = "shaded"     // web Shaded
+	ModeToon      Mode = "toon"       // web Toon
+	ModeDepth     Mode = "depth"      // local only: view depth, near white
+	ModeUVChecker Mode = "uv_checker" // local only: a checker over the texture coordinates
 )
 
 // AllModes lists every mode.
-var AllModes = []Mode{ModeNormal, ModeRaw, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeWireframe, ModeGeometry, ModePBR, ModeShaded, ModeToon, ModeDepth}
+var AllModes = []Mode{ModeNormal, ModeRaw, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeWireframe, ModeGeometry, ModePBR, ModeShaded, ModeToon, ModeDepth, ModeUVChecker}
 
 // ModesFor lists the modes a stage mesh can be drawn in, in display order.
 // A geometry draft (a .drc mesh: positions only, no normals or texture
@@ -36,7 +37,7 @@ func ModesFor(draft, textured bool) []Mode {
 	if draft {
 		return []Mode{ModeNormal, ModeClassic, ModeGlossy, ModeMetal, ModeAO, ModeRaw, ModeWireframe, ModeDepth}
 	}
-	geo := []Mode{ModeNormal, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeRaw, ModeGeometry, ModeWireframe, ModeDepth}
+	geo := []Mode{ModeNormal, ModeClassic, ModeGlossy, ModeCopper, ModeMetal, ModeAO, ModeRaw, ModeGeometry, ModeWireframe, ModeDepth, ModeUVChecker}
 	if textured {
 		return append([]Mode{ModePBR, ModeShaded, ModeToon}, geo...)
 	}
@@ -81,6 +82,8 @@ func (m Mode) Describe() string {
 		return "toon shading with outlines (web Toon)"
 	case ModeDepth:
 		return "distance from the camera, near white (local)"
+	case ModeUVChecker:
+		return "a checker pattern over the texture coordinates, to show the UV layout and its seams (local)"
 	}
 	return string(m)
 }
@@ -94,6 +97,7 @@ const (
 	matBasic                   // MeshBasicMaterial (unlit)
 	matToon                    // MeshToonMaterial
 	matDepth                   // local depth map
+	matChecker                 // local UV checker
 )
 
 type lightKind int
@@ -136,6 +140,7 @@ type modeDef struct {
 	specular     vec3    // Phong
 	useMaps      bool    // PBR / Shaded / Toon textures
 	copper       bool
+	needUV       bool // reads texture coordinates (UV checker)
 	newGray      bool // 0.8*sqrt(colour) shader patch (zt)
 	forceFlat    bool // flat normals regardless of mesh normals (Wireframe, unbaked Geometry)
 	flatIfDraft  bool // flat for Draco drafts (ext drc)
@@ -223,5 +228,6 @@ var modeDefs = map[Mode]modeDef{
 		bg: bgColor, bgColor: defaultBackground, outputPass: true},
 	ModeToon: {web: "Toon", mat: matToon, color: white(1), useMaps: true, lights: defaultLights,
 		bg: bgColor, bgColor: defaultBackground, outputPass: true, outline: true},
-	ModeDepth: {web: "-", mat: matDepth, bg: bgColor},
+	ModeDepth:     {web: "-", mat: matDepth, bg: bgColor},
+	ModeUVChecker: {web: "-", mat: matChecker, needUV: true, bg: bgColor, bgColor: defaultBackground, outputPass: true},
 }

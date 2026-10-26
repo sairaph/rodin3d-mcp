@@ -26,7 +26,7 @@ import (
 
 // renderVersion is part of every cached render's key: bump it when a change
 // to render3d changes its pixels, so stale renders are not served.
-const renderVersion = "3"
+const renderVersion = "4"
 
 // meshVersion is part of every cached mesh file's name and render's key:
 // bump it when a change to the Draco or GLB reader (or meshOfDraco) changes

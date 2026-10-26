@@ -8,6 +8,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // Mesh is triangle geometry in glTF axes (Y up, front +Z).
@@ -232,9 +233,32 @@ func rasterTri(g *gbuf, p projected, idx []uint32, t int32, ylo, yhi int) {
 	}
 }
 
-// parallel runs f over [0,n) split across the CPUs.
+// parallel runs f over [0,n) on every CPU. The range is cut into blocks
+// about eight per CPU that the workers take in turn, so rows that cost more
+// (a ground plane, a model in the middle of the picture) do not leave the
+// other workers idle.
 func parallel(n int, f func(lo, hi int)) {
-	parallelChunks(n, runtime.NumCPU(), func(_ int, lo, hi int) { f(lo, hi) })
+	if n <= 0 {
+		return
+	}
+	workers := min(runtime.NumCPU(), n)
+	block := max(1, n/(workers*8))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				lo := int(next.Add(int64(block))) - block
+				if lo >= n {
+					return
+				}
+				f(lo, min(lo+block, n))
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func parallelChunks(n, chunks int, f func(c, lo, hi int)) {

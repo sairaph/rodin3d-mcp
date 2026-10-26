@@ -69,16 +69,120 @@ func (v View) Angles() (theta, phi float64, ok bool) {
 	return 0, 0, false
 }
 
+// Camera is an orbit camera round the framed model: the direction as
+// three.js spherical angles (Theta about +Y from +Z, Phi from +Y, radians),
+// a zoom (1 is the web viewer's framing distance, 2 half that distance) and
+// a pan that moves the look-at point from the model centre along the view's
+// right and up, in units of the framing size (Frame.Size).
+type Camera struct {
+	Theta, Phi float64
+	Zoom       float64 // 0 means 1
+	Pan        [2]float64
+}
+
+// Camera returns the view's direction as an orbit camera with zoom 1 and no
+// pan; ok is false for ViewGrid and unknown views.
+func (v View) Camera() (Camera, bool) {
+	theta, phi, ok := v.Angles()
+	return Camera{Theta: theta, Phi: phi, Zoom: 1}, ok
+}
+
+// Frame is the box the camera frames: a mesh's bounding box.
+type Frame struct {
+	Min, Max [3]float64
+}
+
+// FrameOf returns the bounding box of m.
+func FrameOf(m *Mesh) Frame {
+	mn, mx := bounds(m.Pos)
+	return Frame{Min: mn, Max: mx}
+}
+
+// Size is the framing size N of the web viewer (HomeScene._addModel): two
+// thirds of the box's half diagonal plus a third of its largest side. The
+// camera of zoom 1 stands 2.5 N from the look-at point.
+func (f Frame) Size() float64 {
+	size := vec3(f.Max).sub(vec3(f.Min))
+	return 2*size.length()/2/3 + math.Max(size[0], math.Max(size[1], size[2]))/3
+}
+
+// Pose returns where camera c stands and what it looks at, in model units,
+// and its vertical field of view in degrees.
+func (f Frame) Pose(c Camera, aspect float64) (eye, target [3]float64, fovDeg float64) {
+	cam, ok := f.camera(c, aspect)
+	if !ok {
+		return eye, target, 45
+	}
+	return cam.eye, cam.target, 45
+}
+
+// camera builds the render camera of c for frame f.
+func (f Frame) camera(c Camera, aspect float64) (camera, bool) {
+	center := vec3(f.Min).add(vec3(f.Max)).mul(0.5)
+	N := f.Size()
+	if !(N > 0) || math.IsInf(N, 0) {
+		return camera{}, false
+	}
+	zoom := c.Zoom
+	if !(zoom > 0) {
+		zoom = 1
+	}
+	dist := 2.5 * N / zoom
+	dir := vec3{math.Sin(c.Phi) * math.Sin(c.Theta), math.Cos(c.Phi), math.Sin(c.Phi) * math.Cos(c.Theta)}
+	cam := newCamera(center.add(dir.mul(dist)), center, 45, aspect)
+	if c.Pan != [2]float64{} {
+		target := center.add(cam.right.mul(c.Pan[0] * N)).add(cam.up.mul(c.Pan[1] * N))
+		cam = newCamera(target.add(dir.mul(dist)), target, 45, aspect)
+	}
+	return cam, true
+}
+
+// ErrCanceled is returned by Render when Options.Cancel closed before the
+// picture was finished.
+var ErrCanceled = errors.New("render3d: canceled")
+
 // Options select the mode and camera.
 type Options struct {
 	Mode Mode
 	View View // "" is ViewThreeQuarter
 	Size int  // square output in pixels, 16-2048; a grid's cells are Size/2
+	// Width and Height, when both are set, ask for a Width x Height picture
+	// (16-4096 each) instead of the Size square; not with ViewGrid. The
+	// vertical field of view stays 45 degrees.
+	Width, Height int
+	// Camera, when set, replaces the view's direction (not with ViewGrid).
+	Camera *Camera
+	// Frame, when set, is framed instead of the mesh's own box, so a
+	// simplified copy of a mesh is drawn from the same camera as the mesh.
+	Frame *Frame
 	// Draft marks a mesh decoded from a .drc geometry draft (web ext "drc":
 	// flat normals in NormalPreview, Raw and Metal).
 	Draft bool
 	// SS is the supersampling factor per axis; 0 means 2.
 	SS int
+	// Interactive skips the SAO pass, for quick frames while the camera
+	// moves.
+	Interactive bool
+	// Background, when set, replaces the mode's background with this
+	// display (sRGB) colour.
+	Background *[3]uint8
+	// WireOverlay draws the triangle edges over any mode.
+	WireOverlay bool
+	// Cancel, when closed, ends the render early with ErrCanceled.
+	Cancel <-chan struct{}
+}
+
+// canceled reports whether o.Cancel is closed.
+func (o *Options) canceled() bool {
+	if o.Cancel == nil {
+		return false
+	}
+	select {
+	case <-o.Cancel:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stats report the timing of a render.
@@ -110,10 +214,17 @@ func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	if err := m.Validate(); err != nil {
 		return nil, st, err
 	}
-	if o.Size < 16 || o.Size > 2048 {
+	if o.Width > 0 || o.Height > 0 {
+		if o.Width < 16 || o.Width > 4096 || o.Height < 16 || o.Height > 4096 {
+			return nil, st, fmt.Errorf("render3d: size %dx%d out of range", o.Width, o.Height)
+		}
+		if o.View == ViewGrid {
+			return nil, st, errors.New("render3d: a grid is square; give Size, not Width and Height")
+		}
+	} else if o.Size < 16 || o.Size > 2048 {
 		return nil, st, fmt.Errorf("render3d: size %d out of range", o.Size)
 	}
-	if (def.useMaps || def.copper) && m.UV == nil {
+	if (def.useMaps || def.copper || def.needUV) && m.UV == nil {
 		return nil, st, &InputError{Mode: o.Mode, Reason: "needs texture coordinates, and this mesh has none"}
 	}
 	if def.useMaps {
@@ -128,12 +239,22 @@ func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	if o.View == "" {
 		o.View = ViewThreeQuarter
 	}
+	frame := FrameOf(m)
+	if o.Frame != nil {
+		frame = *o.Frame
+	}
+	if o.Camera != nil {
+		if o.View == ViewGrid {
+			return nil, st, errors.New("render3d: a grid has its own cameras")
+		}
+		return render(m, maps, def, o, frame, *o.Camera)
+	}
 	if o.View != ViewGrid {
-		theta, phi, ok := o.View.Angles()
+		c, ok := o.View.Camera()
 		if !ok {
 			return nil, st, fmt.Errorf("render3d: unknown view %q", o.View)
 		}
-		return render(m, maps, def, o, theta, phi)
+		return render(m, maps, def, o, frame, c)
 	}
 	cell := o.Size / 2
 	if cell < 16 {
@@ -142,10 +263,10 @@ func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	t0 := time.Now()
 	out := image.NewNRGBA(image.Rect(0, 0, 2*cell, 2*cell))
 	for i, v := range GridViews {
-		theta, phi, _ := v.Angles()
+		c, _ := v.Camera()
 		co := o
 		co.Size = cell
-		img, s, err := render(m, maps, def, co, theta, phi)
+		img, s, err := render(m, maps, def, co, frame, c)
 		if err != nil {
 			return nil, st, err
 		}
@@ -159,33 +280,43 @@ func Render(m *Mesh, maps *Maps, o Options) (*image.NRGBA, Stats, error) {
 	return out, st, nil
 }
 
-// render draws one view.
-func render(m *Mesh, maps *Maps, def modeDef, o Options, theta, phi float64) (*image.NRGBA, Stats, error) {
+// render draws one picture from camera c.
+func render(m *Mesh, maps *Maps, def modeDef, o Options, frame Frame, c Camera) (*image.NRGBA, Stats, error) {
 	var st Stats
 	t0 := time.Now()
 	ss := o.SS
 	if ss <= 0 {
 		ss = 2
 	}
-	W := o.Size * ss
+	w, h := o.Size, o.Size
+	if o.Width > 0 && o.Height > 0 {
+		w, h = o.Width, o.Height
+	}
+	W, H := w*ss, h*ss
 
 	// Framing as HomeScene._addModel: centre on the bounding box, N = 2r/3 +
-	// maxSize/3 (r = half the box diagonal), camera at 2.5 N, fov 45.
-	bmin, bmax := bounds(m.Pos)
-	center := bmin.add(bmax).mul(0.5)
-	size := bmax.sub(bmin)
+	// maxSize/3 (r = half the box diagonal), camera at 2.5 N (zoom 1), fov 45.
+	center := vec3(frame.Min).add(vec3(frame.Max)).mul(0.5)
+	size := vec3(frame.Max).sub(vec3(frame.Min))
 	r := size.length() / 2
-	N := 2*r/3 + math.Max(size[0], math.Max(size[1], size[2]))/3
-	if !(N > 0) || math.IsInf(N, 0) {
+	N := frame.Size()
+	cam, ok := frame.camera(c, float64(w)/float64(h))
+	if !ok {
 		return nil, st, errors.New("render3d: the mesh has no extent")
 	}
-	dist := 2.5 * N
-	eye := center.add(vec3{dist * math.Sin(phi) * math.Sin(theta), dist * math.Cos(phi), dist * math.Sin(phi) * math.Cos(theta)})
-	cam := newCamera(eye, center, 45, 1)
+	dist := cam.eye.sub(cam.target).length()
 
-	s := &shadeCtx{m: m, maps: maps, def: def, cam: &cam, center: center, ss: ss, W: W, N: N,
-		flat: def.forceFlat || (def.flatIfDraft && o.Draft) || m.Nrm == nil, nModel: len(m.Idx) / 3}
-	s.depthNear, s.depthFar = dist-r, dist+r
+	s := &shadeCtx{m: m, maps: maps, def: def, cam: &cam, center: center, ss: ss, W: W, H: H, N: N,
+		flat: def.forceFlat || (def.flatIfDraft && o.Draft) || m.Nrm == nil, nModel: len(m.Idx) / 3,
+		cancel: o.canceled}
+	if o.Interactive {
+		s.shadowRes = 512
+	}
+	s.depthNear, s.depthFar = math.Max(dist-r, 1e-3), dist+r
+	if o.Background != nil {
+		bg := *o.Background
+		s.bgOverride = &vec3{float64(bg[0]) / 255, float64(bg[1]) / 255, float64(bg[2]) / 255}
+	}
 	// Only MeshStandardMaterial (the model or the ground) reads the
 	// environment (three r180); Glossy's Phong ignores the one it sets.
 	if def.envIntensity > 0 && (def.mat == matStandard || def.ground) {
@@ -222,9 +353,12 @@ func render(m *Mesh, maps *Maps, def modeDef, o Options, theta, phi float64) (*i
 		s.groundY = float64(gy)
 	}
 	s.pos, s.idx = pos, idx
-	s.g = newGbuf(W, W)
-	s.p = project(&cam, pos, W, W)
+	s.g = newGbuf(W, H)
+	s.p = project(&cam, pos, W, H)
 	rasterize(s.g, s.p, idx, float32(cam.near))
+	if o.canceled() {
+		return nil, st, ErrCanceled
+	}
 	if def.mat == matToon {
 		s.buildShadow()
 	}
@@ -244,21 +378,30 @@ func render(m *Mesh, maps *Maps, def modeDef, o Options, theta, phi float64) (*i
 	st.Raster = time.Since(t0)
 
 	t1 := time.Now()
-	s.col = make([]float32, W*W*4)
-	if def.wire {
-		s.wire = make([]uint8, W*W)
+	s.col = make([]float32, W*H*4)
+	if def.wire || o.WireOverlay {
+		s.wire = make([]uint8, W*H)
 	}
 	s.shadeAll()
 	st.Shade = time.Since(t1)
+	if o.canceled() {
+		return nil, st, ErrCanceled
+	}
 
 	t2 := time.Now()
-	if def.sao > 0 {
-		s.applySAO(def.sao, o.Size)
+	if def.sao > 0 && !o.Interactive {
+		s.applySAO(def.sao, w, h)
+		if o.canceled() {
+			return nil, st, ErrCanceled
+		}
 	}
 	if def.outline {
-		s.applyOutline(o.Size)
+		s.applyOutline()
 	}
-	img := s.finish(o.Size)
+	img := s.finish(w, h)
+	if o.canceled() {
+		return nil, st, ErrCanceled
+	}
 	st.Post = time.Since(t2)
 	st.Total = time.Since(t0)
 	return img, st, nil

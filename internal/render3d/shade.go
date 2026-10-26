@@ -11,10 +11,14 @@ type shadeCtx struct {
 	def    modeDef
 	cam    *camera
 	center vec3
-	ss, W  int
+	ss     int
+	W, H   int // sample buffer size (output size times ss)
 	N      float64
 	flat   bool
 	nModel int
+	cancel func() bool // true once the render is no longer wanted
+
+	bgOverride *vec3 // display colour replacing the mode's background; nil: none
 
 	env    *envMap // lighting of MeshStandardMaterial; nil: none
 	bgEnv  *envMap // bgEnv background
@@ -31,6 +35,7 @@ type shadeCtx struct {
 
 	depthNear, depthFar float64
 	shadow              *shadowMap
+	shadowRes           int // shadow map size (Toon); 2048, 512 for quick frames
 }
 
 // frag is what a pixel sees of its triangle.
@@ -117,8 +122,11 @@ func (s *shadeCtx) fragAt(o int) (frag, bool) {
 }
 
 func (s *shadeCtx) shadeAll() {
-	parallel(s.W, func(lo, hi int) {
+	parallel(s.H, func(lo, hi int) {
 		for y := lo; y < hi; y++ {
+			if s.cancel() {
+				return
+			}
 			for x := 0; x < s.W; x++ {
 				o := y*s.W + x
 				f, ok := s.fragAt(o)
@@ -158,6 +166,8 @@ func (s *shadeCtx) shade(f *frag) (vec3, float64) {
 	case matNormal:
 		n := s.cam.viewDir(f.N)
 		return vec3{n[0]*0.5 + 0.5, n[1]*0.5 + 0.5, n[2]*0.5 + 0.5}, 1
+	case matChecker:
+		return s.checker(f), 1
 	case matBasic:
 		t := s.maps.Shaded
 		if t == nil {
@@ -397,6 +407,20 @@ func (s *shadeCtx) toon(f *frag, diff vec3) vec3 {
 	return out
 }
 
+// checker is the UV checker: 16 x 16 squares over the unit UV square,
+// light and dark, tinted by position (red grows with u, green with v) so a
+// flipped or mirrored island shows, lit by a light at the camera.
+func (s *shadeCtx) checker(f *frag) vec3 {
+	u, v := f.uv[0]-math.Floor(f.uv[0]), f.uv[1]-math.Floor(f.uv[1])
+	base := 0.12
+	if (int(u*16)+int(v*16))%2 == 0 {
+		base = 0.75
+	}
+	tint := vec3{0.45 + 0.55*u, 0.45 + 0.55*v, 0.7}
+	lit := 0.3 + 0.7*sat(f.N.dot(f.V))
+	return tint.mul(base * lit)
+}
+
 // shadeGround is the ground plane's material: standard, roughness .5,
 // base colour .462 times a black texture (so black), alpha the contact
 // shadow (groundAlpha), alpha blended.
@@ -407,17 +431,17 @@ func (s *shadeCtx) shadeGround(f *frag) (vec3, float64) {
 
 // finish composites over the background, applies the output transform and
 // downsamples.
-func (s *shadeCtx) finish(size int) *image.NRGBA {
+func (s *shadeCtx) finish(w, h int) *image.NRGBA {
 	d := s.def
-	W, ss := s.W, s.ss
-	out := image.NewNRGBA(image.Rect(0, 0, size, size))
+	W, H, ss := s.W, s.H, s.ss
+	out := image.NewNRGBA(image.Rect(0, 0, w, h))
 	toDisplay := func(c vec3) vec3 {
 		switch {
 		case d.outputPass:
 			c = neutral(c)
-			return vec3{linearToSRGB(sat(c[0])), linearToSRGB(sat(c[1])), linearToSRGB(sat(c[2]))}
+			return vec3{encodeSRGB(c[0]), encodeSRGB(c[1]), encodeSRGB(c[2])}
 		case d.direct:
-			c = vec3{linearToSRGB(sat(c[0])), linearToSRGB(sat(c[1])), linearToSRGB(sat(c[2]))}
+			c = vec3{encodeSRGB(c[0]), encodeSRGB(c[1]), encodeSRGB(c[2])}
 			if d.newGray {
 				// zt() runs after the colour-space conversion when drawing straight
 				// to the screen.
@@ -430,9 +454,20 @@ func (s *shadeCtx) finish(size int) *image.NRGBA {
 	// LineMaterial #888888, tone mapped (Neutral) and sRGB encoded on the direct path.
 	lc := neutral(hexLinear(8947848))
 	lineDisplay := vec3{linearToSRGB(sat(lc[0])), linearToSRGB(sat(lc[1])), linearToSRGB(sat(lc[2]))}
-	parallel(size, func(lo, hi int) {
+	// CSS backgrounds are functions of the canvas position of a square
+	// canvas; a canvas that is not square shows them as CSS background-size
+	// cover does: scaled to its longer side, centred, the rest cut off.
+	L := float64(max(W, H))
+	bgU := func(px int) float64 { return 0.5 + (float64(px)+0.5-float64(W)/2)/L }
+	bgV := func(py int) float64 { return 0.5 + (float64(py)+0.5-float64(H)/2)/L }
+	// The clear colour of the direct path is only sRGB encoded.
+	directBg := vec3{linearToSRGB(d.bgColor[0]), linearToSRGB(d.bgColor[1]), linearToSRGB(d.bgColor[2])}
+	parallel(h, func(lo, hi int) {
 		for y := lo; y < hi; y++ {
-			for x := 0; x < size; x++ {
+			if s.cancel() {
+				return
+			}
+			for x := 0; x < w; x++ {
 				var acc vec3
 				for sy := 0; sy < ss; sy++ {
 					for sx := 0; sx < ss; sx++ {
@@ -441,20 +476,24 @@ func (s *shadeCtx) finish(size int) *image.NRGBA {
 						c := vec3{float64(s.col[o*4]), float64(s.col[o*4+1]), float64(s.col[o*4+2])}
 						a := float64(s.col[o*4+3])
 						var pix vec3
-						switch d.bg {
-						case bgColor:
+						switch {
+						case s.bgOverride != nil:
+							pix = *s.bgOverride
+							if a > 0 {
+								pix = toDisplay(c).mul(a).add(pix.mul(1 - a))
+							}
+						case d.bg == bgColor:
 							if d.direct {
 								// direct path: the clear colour is only sRGB encoded; the
 								// material patch (newGray) touches the mesh alone
-								bg := vec3{linearToSRGB(d.bgColor[0]), linearToSRGB(d.bgColor[1]), linearToSRGB(d.bgColor[2])}
-								pix = bg.mul(1 - a)
+								pix = directBg.mul(1 - a)
 								if a > 0 {
 									pix = pix.add(toDisplay(c).mul(a))
 								}
 							} else {
 								pix = toDisplay(c.mul(a).add(d.bgColor.mul(1 - a)))
 							}
-						case bgEnv:
+						case d.bg == bgEnv:
 							bc := vec3{}
 							if s.bgEnv != nil {
 								bc = s.bgEnv.radiance(s.rayDir(px, py), d.bgBlur)
@@ -463,7 +502,7 @@ func (s *shadeCtx) finish(size int) *image.NRGBA {
 						default:
 							under := vec3{0.5, 0.5, 0.5}
 							if d.bgImage != nil {
-								under = d.bgImage((float64(px)+0.5)/float64(W), (float64(py)+0.5)/float64(W))
+								under = d.bgImage(bgU(px), bgV(py))
 							}
 							if a > 0 {
 								pix = toDisplay(c).mul(a).add(under.mul(1 - a))
@@ -492,7 +531,7 @@ func (s *shadeCtx) finish(size int) *image.NRGBA {
 // rayDir is the world direction through a canvas pixel.
 func (s *shadeCtx) rayDir(px, py int) vec3 {
 	nx := ((float64(px)+0.5)/float64(s.W))*2 - 1
-	ny := 1 - ((float64(py)+0.5)/float64(s.W))*2
+	ny := 1 - ((float64(py)+0.5)/float64(s.H))*2
 	c := s.cam
 	return c.right.mul(nx * c.aspect / c.focal).add(c.up.mul(ny / c.focal)).add(c.f).norm()
 }

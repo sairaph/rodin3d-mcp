@@ -45,6 +45,33 @@ func linearToSRGB(c float64) float64 {
 	return 1.055*math.Pow(c, 0.41666) - 0.055
 }
 
+// srgbEncodeLUT holds linearToSRGB at 4096 even steps over [0, 1]; between
+// steps it is interpolated (error under 2e-5, a twentieth of an 8-bit level).
+var srgbEncodeLUT = func() []float64 {
+	t := make([]float64, srgbEncodeSteps+2)
+	for i := range t {
+		t[i] = linearToSRGB(math.Min(1, float64(i)/srgbEncodeSteps))
+	}
+	return t
+}()
+
+const srgbEncodeSteps = 4096
+
+// encodeSRGB is linearToSRGB of sat(c) from the table: the per-pixel output
+// transform, where math.Pow was a sixth of a frame's time.
+func encodeSRGB(c float64) float64 {
+	if !(c > 0) {
+		return 0
+	}
+	if c >= 1 {
+		return 1
+	}
+	x := c * srgbEncodeSteps
+	i := int(x)
+	f := x - float64(i)
+	return srgbEncodeLUT[i]*(1-f) + srgbEncodeLUT[i+1]*f
+}
+
 // maxTexturePixels bounds a decoded texture (8192 x 8192, 256 MiB as RGBA).
 const maxTexturePixels = 8192 * 8192
 

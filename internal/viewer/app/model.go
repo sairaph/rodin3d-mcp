@@ -100,7 +100,8 @@ type pane struct {
 
 	mesh, simple *render3d.Mesh
 	maps         *render3d.Maps
-	mapsWanted   bool // the stage has maps that are still loading
+	mapsWanted   bool              // the stage has maps that are still loading
+	mapsFailed   map[string]string // maps of the shown mode that failed to load: kind -> message (mapsError)
 	frame        render3d.Frame
 	draft        bool
 
@@ -714,7 +715,10 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 	if newStage != nil {
 		a.setStage(*newStage)
 	}
-	a.layout, a.mode = layout, mode
+	a.layout = layout
+	if c.Mode != nil || mode != a.mode {
+		a.setMode(mode) // a mode set again retries maps that failed
+	}
 	if cam != a.cam || view != a.viewName {
 		a.cam, a.viewName = cam, view
 		a.lastChange = time.Now()
@@ -792,12 +796,12 @@ func (a *App) setStage(st service.ViewStage) {
 	release(&p.img)
 	a.releaseThumbs(a.strip)
 	a.trimSoon()
-	p.mesh, p.simple, p.maps, p.mapsWanted, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, false, false, false, ""
+	p.mesh, p.simple, p.maps, p.mapsWanted, p.mapsFailed, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, false, nil, false, false, ""
 	a.flat = -1
 	a.loadPane(p)
 	a.loadStrip(p.vt, st)
 	if !slices.Contains(p.modes, a.mode) {
-		a.mode = defaultMode(p.modes)
+		a.setMode(defaultMode(p.modes))
 	}
 }
 
@@ -918,7 +922,7 @@ func (a *App) quality() string {
 		if p.status == "loading" || p.mapsWanted && modeNeedsMaps(a.mode) {
 			return viewer.QualityInteractive
 		}
-		if p.status == "ready" && p.renderErr == "" && (!p.hasShown || p.shown.interactive || !p.shownFull || p.shown != a.fullKey(p)) {
+		if p.status == "ready" && p.renderErr == "" && mapsError(p, a.mode) == "" && (!p.hasShown || p.shown.interactive || !p.shownFull || p.shown != a.fullKey(p)) {
 			return viewer.QualityInteractive
 		}
 	}
@@ -975,6 +979,9 @@ func (a *App) snapshot() viewer.State {
 		}
 		if p.renderErr != "" && ps.Error == "" {
 			ps.Error = p.renderErr
+		}
+		if e := mapsError(p, a.mode); e != "" && ps.Error == "" {
+			ps.Error = e
 		}
 		if p.vt != nil {
 			ps.TaskID, ps.Prompt, ps.Stage = p.vt.UUID, p.vt.Prompt, p.stage.Name

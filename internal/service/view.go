@@ -218,31 +218,9 @@ func (s *Service) ViewMesh(ctx context.Context, uuid string, st ViewStage) (*ren
 	return s.viewMesh(ctx, file, src, sum(src), st.Draft)
 }
 
-// ViewMaps downloads (when needed) and decodes the stage's texture maps of
-// the given kinds (diffuse, normal, pbr, shaded) that it has, for the
-// textured modes; nil when it has none of them. Like meshes, maps are shared
-// only while a caller holds them.
-func (s *Service) ViewMaps(ctx context.Context, uuid string, st ViewStage, kinds []string) (*render3d.Maps, error) {
-	var m *render3d.Maps
-	for _, a := range st.Maps {
-		kind := strings.TrimPrefix(a.Mode, "texture_")
-		if !slices.Contains(kinds, kind) {
-			continue
-		}
-		if m == nil {
-			m = &render3d.Maps{}
-		}
-		t, err := s.viewMap(ctx, uuid, a, kind)
-		if err != nil {
-			return nil, err
-		}
-		m.SetMap(kind, t)
-	}
-	return m, nil
-}
-
 // ViewMap downloads (when needed) and decodes one texture map of the stage
-// (diffuse, normal, pbr or shaded), for the textures panel.
+// (diffuse, normal, pbr or shaded), for a textured mode or the textures
+// panel. Like meshes, maps are shared only while a caller holds them.
 func (s *Service) ViewMap(ctx context.Context, uuid string, st ViewStage, kind string) (*render3d.Texture, error) {
 	for _, a := range st.Maps {
 		if a.Mode == "texture_"+kind {

@@ -148,6 +148,12 @@ func describe(st viewer.State) string {
 			fmt.Fprintf(&b, " Pane %d is still loading its mesh.", p.Index)
 		case "error":
 			fmt.Fprintf(&b, " Pane %d could not be drawn: %s", p.Index, p.Error)
+		default:
+			// Ready, but this mode cannot be drawn (a texture map that did not
+			// load, a render error); the other modes can.
+			if p.Error != "" {
+				fmt.Fprintf(&b, " Pane %d cannot draw %s", p.Index, strings.TrimSuffix(p.Error, ".")+".")
+			}
 		}
 		if p.Note != "" {
 			fmt.Fprintf(&b, " Pane %d: %s.", p.Index, p.Note)

@@ -59,12 +59,12 @@ func (a *App) startLoads(p *prepared) {
 	}
 }
 
-// Memory (notes 41, fix round 3): the window holds the meshes and maps of
-// the panes it shows and a GPU picture of what is on screen, nothing more.
-// A pane loads its texture maps only when its mode draws them; the textures
-// panel decodes and uploads only the selected map; pictures of content the
-// view left are freed at once and the freed memory goes back to the system
-// (trimSoon).
+// Memory (notes 41, fix rounds 3 and 4): the window holds the meshes and
+// maps of the panes it shows and a GPU picture of what is on screen, nothing
+// more. A task pane loads its texture maps only when its mode draws them and
+// keeps only those of the mode shown (setMode); the textures panel decodes
+// and uploads only the selected map; pictures of content the view left are
+// freed at once and the freed memory goes back to the system (trimSoon).
 
 // loadPane loads the pane's mesh in the background (a model file's maps
 // come with it; a task's are loaded by loadPaneMaps when a mode needs them).
@@ -110,7 +110,7 @@ func (a *App) loadPane(p *pane) {
 				if !slices.Contains(p.modes, a.mode) {
 					// a.mode is set before the load only when a show asked for it.
 					asked := a.mode
-					a.mode = defaultMode(p.modes)
+					a.setMode(defaultMode(p.modes))
 					if asked != "" {
 						p.note = fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
 					}
@@ -141,10 +141,10 @@ func (a *App) loadPane(p *pane) {
 	}()
 }
 
-// missingMaps lists the texture maps the mode samples that a task pane has
-// not loaded yet (a model file's maps came with it). Shaded draws the
-// diffuse map when the stage has no shaded one.
-func missingMaps(p *pane, mode string) []string {
+// sampledMaps lists the texture maps of a task pane's stage that mode
+// samples (Shaded draws the diffuse map when the stage has no shaded one);
+// nil for a model file, whose maps came with it.
+func sampledMaps(p *pane, mode string) []string {
 	if p.kind != viewer.KindTask {
 		return nil
 	}
@@ -156,15 +156,58 @@ func missingMaps(p *pane, mode string) []string {
 		if k == "shaded" && !has(k) {
 			k = "diffuse"
 		}
-		if has(k) && p.maps.Map(k) == nil && !slices.Contains(out, k) {
+		if has(k) && !slices.Contains(out, k) {
 			out = append(out, k)
 		}
 	}
 	return out
 }
 
-// mapCount is how many maps m holds (part of a render key: a pane's maps
-// only grow until its stage changes).
+// missingMaps lists the texture maps mode samples that a task pane has not
+// loaded yet.
+func missingMaps(p *pane, mode string) []string {
+	var out []string
+	for _, k := range sampledMaps(p, mode) {
+		if p.maps.Map(k) == nil {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// keepMaps is the set of maps of the kinds in keep, each from add when it
+// has one, else from old; old itself when that is what it holds, nil when
+// none. Maps are never changed in place: a render job keeps the set it was
+// given.
+func keepMaps(old, add *render3d.Maps, keep []string) *render3d.Maps {
+	out := &render3d.Maps{}
+	same, n := true, 0
+	for _, k := range render3d.MapKinds {
+		var t *render3d.Texture
+		if slices.Contains(keep, k) {
+			if t = add.Map(k); t == nil {
+				t = old.Map(k)
+			}
+		}
+		if t != nil {
+			out.SetMap(k, t)
+			n++
+		}
+		if t != old.Map(k) {
+			same = false
+		}
+	}
+	switch {
+	case same:
+		return old
+	case n == 0:
+		return nil
+	}
+	return out
+}
+
+// mapCount is how many maps m holds (part of a render key: the maps a pane
+// holds change only with the mode, the stage or a load).
 func mapCount(m *render3d.Maps) int {
 	n := 0
 	for _, k := range render3d.MapKinds {
@@ -175,47 +218,80 @@ func mapCount(m *render3d.Maps) int {
 	return n
 }
 
+// mapsError says why a ready task pane cannot draw mode: a map mode samples
+// failed to load ("" when none did). Only that mode and the others that
+// sample the map are affected; the mesh stays and every other mode draws.
+func mapsError(p *pane, mode string) string {
+	var why []string
+	for _, k := range missingMaps(p, mode) {
+		if msg, ok := p.mapsFailed[k]; ok {
+			if !strings.HasSuffix(msg, ".") {
+				msg += "."
+			}
+			why = append(why, "the "+k+" map did not load: "+msg)
+		}
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	return "mode " + mode + ": " + strings.Join(why, " ") + " Choose the mode again to retry."
+}
+
+// setMode shows mode m. Each task pane keeps only the maps m samples (the
+// maps of earlier modes are released; switching back reads them again), and
+// map failures are forgotten, so a textured mode chosen again (the same one
+// too) loads its missing maps again.
+func (a *App) setMode(m string) {
+	a.mapsTry++
+	for _, p := range a.panes {
+		p.mapsFailed = nil
+		if p.kind != viewer.KindTask {
+			continue
+		}
+		if kept := keepMaps(p.maps, nil, sampledMaps(p, m)); kept != p.maps {
+			p.maps = kept
+			a.trimSoon()
+		}
+	}
+	a.mode = m
+	a.dirty()
+}
+
 // loadPaneMaps loads the texture maps of kinds into a ready task pane whose
-// mode samples them; mapsWanted marks the load. A pane keeps the maps it
-// loaded until its stage or the content changes, so switching modes back
-// and forth reads each map once.
+// mode samples them; mapsWanted marks the load. The pane keeps the maps the
+// mode shown when the load ends samples; a map that fails is recorded in
+// mapsFailed (mapsError), unless the mode was chosen again meanwhile.
 func (a *App) loadPaneMaps(p *pane, kinds []string) {
 	if p.mapsWanted || p.status != "ready" {
 		return
 	}
-	gen, cgen := p.gen, a.contentGen
+	gen, cgen, try := p.gen, a.contentGen, a.mapsTry
 	p.mapsWanted = true
 	a.dirty()
 	uuid, stage := p.vt.UUID, p.stage
 	go func() {
-		t0 := time.Now()
-		maps, err := a.svc.ViewMaps(a.ctx, uuid, stage, kinds)
-		var msg string
-		if err != nil {
-			msg = service.Classify(err).Message
-		} else {
-			log.Printf("task %s %s: maps %s in %v", uuid[:8], stage.Name, strings.Join(kinds, ", "), time.Since(t0).Round(time.Millisecond))
+		loaded := &render3d.Maps{}
+		failed := map[string]string{}
+		for _, k := range kinds {
+			t0 := time.Now()
+			t, err := a.viewMap(a.ctx, uuid, stage, k)
+			if err != nil {
+				failed[k] = service.Classify(err).Message
+				log.Printf("task %s %s: %s map: %s", uuid[:8], stage.Name, k, failed[k])
+				continue
+			}
+			loaded.SetMap(k, t)
+			log.Printf("task %s %s: %s map in %v", uuid[:8], stage.Name, k, time.Since(t0).Round(time.Millisecond))
 		}
 		a.post(func() {
 			if a.contentGen != cgen || p.gen != gen {
 				return
 			}
 			p.mapsWanted = false
-			if err != nil {
-				p.status, p.err = "error", msg
-				a.dirty()
-				return
+			p.maps = keepMaps(p.maps, loaded, sampledMaps(p, a.mode))
+			if len(failed) > 0 && a.mapsTry == try {
+				p.mapsFailed = failed
 			}
-			merged := &render3d.Maps{}
-			if p.maps != nil {
-				*merged = *p.maps
-			}
-			for _, k := range kinds {
-				if t := maps.Map(k); t != nil {
-					merged.SetMap(k, t)
-				}
-			}
-			p.maps = merged
 			a.dirty()
 			a.trimSoon()
 		})
@@ -314,7 +390,7 @@ func (a *App) taskMaps(vt *service.ViewTask, st service.ViewStage, names []strin
 			continue
 		}
 		a.textures = append(a.textures, &thumb{kind: "map", name: name, src: func() (image.Image, error) {
-			t, err := a.svc.ViewMap(a.ctx, vt.UUID, st, name)
+			t, err := a.viewMap(a.ctx, vt.UUID, st, name)
 			if err != nil {
 				return nil, err
 			}

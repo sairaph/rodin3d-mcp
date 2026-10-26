@@ -506,6 +506,8 @@ func (s *uiState) drawPane(a *App, dst *ebiten.Image, p *pane) {
 		msg, col = "Cannot show this: "+p.err, colErr
 	case p.renderErr != "":
 		msg, col = "Cannot draw "+p.renderErr, colErr
+	case mapsError(p, a.mode) != "":
+		msg, col = "Cannot draw "+mapsError(p, a.mode), colErr
 	case p.mapsWanted && modeNeedsMaps(a.mode):
 		dots := strings.Repeat(".", int(time.Now().UnixMilli()/300%4))
 		msg = "Loading the textures" + dots

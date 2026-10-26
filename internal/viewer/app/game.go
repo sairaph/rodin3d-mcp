@@ -69,6 +69,11 @@ type App struct {
 	closeAt     time.Time
 	raiseStep   int
 	trimAt      time.Time // when to give freed memory back (trimSoon)
+	mapsTry     uint64    // bumps when the mode is chosen: map failures of older loads are not recorded
+
+	// viewMap reads one texture map of a task stage (Service.ViewMap; tests
+	// replace it).
+	viewMap func(ctx context.Context, uuid string, st service.ViewStage, kind string) (*render3d.Texture, error)
 
 	// Screen.
 	sw, sh       int
@@ -98,6 +103,7 @@ func newApp(ctx context.Context, svc *service.Service, version string) *App {
 		cam: defaultCam(), viewName: "three_quarter", scale: 1, lastTick: time.Now()}
 	a.loadCameras()
 	a.ui = newUI()
+	a.viewMap = svc.ViewMap
 	a.saver = newSetSaver(svc.SaveInputSet, func(id string, err error) {
 		log.Printf("save input set %s: %v", id, err)
 		a.post(func() {
@@ -249,7 +255,11 @@ func (a *App) scheduleRenders(now time.Time) {
 			continue
 		}
 		if miss := missingMaps(p, a.mode); len(miss) > 0 {
-			a.loadPaneMaps(p, miss)
+			// A map that failed is not read again until the mode is chosen
+			// again (mapsError says so); the pane draws nothing in this mode.
+			if mapsError(p, a.mode) == "" {
+				a.loadPaneMaps(p, miss)
+			}
 			continue
 		}
 		want := a.wantKey(p, now)

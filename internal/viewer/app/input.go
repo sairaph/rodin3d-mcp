@@ -263,9 +263,10 @@ func (a *App) userMoving() bool {
 
 func (a *App) userMode(m string) {
 	if a.mode == m {
+		a.setMode(m) // retries maps that failed
 		return
 	}
-	a.mode = m
+	a.setMode(m)
 	a.userAction("mode", m)
 }
 

@@ -328,23 +328,15 @@ func CheckInputSet(images []viewer.InputImage) error {
 	return CheckImageFiles(paths)
 }
 
-// CheckInputSetWeights checks the weights of an input set as generate_model
-// takes them: each above 0 and at most 1, on every image or on none.
+// CheckInputSetWeights checks the weights of an input set with
+// generate_model's own rule (checkWeights): each above 0 and at most 1, on
+// every image or on none.
 func CheckInputSetWeights(images []viewer.InputImage) error {
-	weighted := 0
+	ws := make([]*float64, len(images))
 	for i, im := range images {
-		if im.Weight == nil {
-			continue
-		}
-		if w := *im.Weight; !(w > 0 && w <= 1) {
-			return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the weight %g.", i, w), "Weights are above 0 and at most 1; they are normalised to sum 1.")
-		}
-		weighted++
+		ws[i] = im.Weight
 	}
-	if weighted != 0 && weighted != len(images) {
-		return fail(render.CodeInvalidInput, fmt.Sprintf("%d of %d images have a weight.", weighted, len(images)), "Give every image a weight, or none for the default weights.")
-	}
-	return nil
+	return checkWeights(ws, func(i int) string { return fmt.Sprintf("Image %d", i) })
 }
 
 // SaveInputSet stores an input set.

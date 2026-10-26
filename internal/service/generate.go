@@ -287,6 +287,13 @@ func prepareImages(list []GenerateImage) ([]preparedImage, error) {
 	if len(list) == 0 || len(list) > MaxImages {
 		return nil, fail(render.CodeInvalidInput, fmt.Sprintf("generate_model takes 1 to %d images; got %d.", MaxImages, len(list)), "Pass images as a list of {path, view, weight}, or input_set: the id of an input set arranged in the viewer.")
 	}
+	ws := make([]*float64, len(list))
+	for i, img := range list {
+		ws[i] = img.Weight
+	}
+	if err := checkWeights(ws, imageName); err != nil {
+		return nil, err
+	}
 	tags := map[string]bool{}
 	for _, t := range catalog.ViewTags {
 		tags[t.Tag] = true
@@ -304,9 +311,6 @@ func prepareImages(list []GenerateImage) ([]preparedImage, error) {
 		}
 		if !tags[view] {
 			return nil, fail(render.CodeInvalidInput, fmt.Sprintf("images[%d].view %q is not a view tag.", i, img.View), "Use one of F FL FR B BL BR L R U D ? (get_generation_options lists them).")
-		}
-		if img.Weight != nil && (*img.Weight <= 0 || *img.Weight > 1 || math.IsNaN(*img.Weight)) {
-			return nil, fail(render.CodeInvalidInput, fmt.Sprintf("images[%d].weight %g is outside (0, 1].", i, *img.Weight), "Pass weights above 0 and at most 1; they are normalised to sum 1.")
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -361,18 +365,43 @@ func uploadName(p, mime string) string {
 	return base + ext
 }
 
+// checkWeights is generate_model's rule for image weights, which input sets
+// follow too (CheckInputSetWeights): each above 0 and at most 1, on every
+// image or on none. name gives image i's name in the message.
+func checkWeights(ws []*float64, name func(int) string) error {
+	given := 0
+	for i, w := range ws {
+		if w == nil {
+			continue
+		}
+		if !(*w > 0 && *w <= 1) { // NaN fails too
+			return fail(render.CodeInvalidInput, fmt.Sprintf("%s has the weight %g, outside (0, 1].", name(i), *w), "Pass weights above 0 and at most 1; they are normalised to sum 1.")
+		}
+		given++
+	}
+	if given != 0 && given != len(ws) {
+		return fail(render.CodeInvalidInput, fmt.Sprintf("%d of %d images have a weight.", given, len(ws)), "Give every image a weight, or none for the default weights.")
+	}
+	return nil
+}
+
+func imageName(i int) string { return fmt.Sprintf("images[%d]", i) }
+
 // viewWeights returns the weights sent: the default table of the model when
-// none is given, else the given ones normalised to sum 1 the web's way
-// (rounded to 2 decimals, the last takes the remainder).
+// none is given, else the given ones normalised to sum 1 in hundredths, as
+// the web sends them. Each sent weight is at least 0.01, and the largest
+// takes the rounding remainder (the web gives it to the last image, which
+// could send 0 for a small last weight).
 func viewWeights(images []preparedImage, model string) ([]float64, error) {
 	n := len(images)
-	given := 0
-	for _, img := range images {
-		if img.weight != nil {
-			given++
-		}
+	ws := make([]*float64, n)
+	for i, img := range images {
+		ws[i] = img.weight
 	}
-	if given == 0 {
+	if err := checkWeights(ws, imageName); err != nil {
+		return nil, err
+	}
+	if n == 0 || ws[0] == nil {
 		for _, row := range catalog.DefaultWeights {
 			if row.Images == n {
 				if model == "gen-1.5" {
@@ -383,27 +412,29 @@ func viewWeights(images []preparedImage, model string) ([]float64, error) {
 		}
 		return nil, fmt.Errorf("no default weights for %d images", n)
 	}
-	if given != n {
-		return nil, fail(render.CodeInvalidInput, fmt.Sprintf("%d of %d images have a weight.", given, n), "Give every image a weight, or none for the default weights.")
-	}
 	sum := 0.0
-	for _, img := range images {
-		sum += *img.weight
+	for _, w := range ws {
+		sum += *w
 	}
-	out := make([]float64, n)
-	acc := 0.0
-	for i, img := range images {
-		if i == n-1 {
-			out[i] = round2(1 - acc)
-			break
+	// In hundredths: rounded shares, at least 1 each. The remainder (at
+	// most n/2 + n - 1 hundredths either way) goes to the largest share,
+	// which is at least 100/n, so it stays above 1.
+	cents := make([]int, n)
+	total, big := 0, 0
+	for i, w := range ws {
+		cents[i] = max(1, int(math.Round(*w/sum*100)))
+		total += cents[i]
+		if cents[i] > cents[big] {
+			big = i
 		}
-		out[i] = round2(*img.weight / sum)
-		acc += out[i]
+	}
+	cents[big] += 100 - total
+	out := make([]float64, n)
+	for i, c := range cents {
+		out[i] = float64(c) / 100
 	}
 	return out, nil
 }
-
-func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // checkPresets validates the presets against model and tier (the web shows
 // them only where they apply).

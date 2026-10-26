@@ -4,3 +4,4 @@
 *.jpg binary
 *.glb binary
 *.drc binary
+*.wasm binary

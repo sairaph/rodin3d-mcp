@@ -393,11 +393,24 @@ func (s *Service) ViewerState(ctx context.Context, in ViewerStateInput) (Result,
 	return Result{Front: front, Body: body, Images: images}, nil
 }
 
-// closeWait is how long close_viewer waits for the window to end, after
-// the close call and again after stopping its process: the window's own
-// bound (viewer.ExitWait, which covers saving its input sets) and 3 s for
-// the process to go.
-const closeWait = viewer.ExitWait + 3*time.Second
+// How long close_viewer waits for the window to end: the window's own
+// bound in each case and a few seconds for the process to go.
+//   - closeWait, after a close call the window took: its loop ends 200 ms
+//     after the reply, then the process saves queued input sets for at most
+//     viewer.SaveWait and (Unix) flushes its log for at most 2 s.
+//   - stopWait, after stopping a window that took the close call but did not
+//     end: its loop is stuck, so it exits within viewer.StopGrace of the
+//     signal (Windows: terminated at once).
+//   - stopBusyWait, after stopping a window that did not take the close call:
+//     its loop may still close and save, so viewer.ExitWait.
+//
+// So close_viewer answers within about 23 s in every case (2 s busy + 20 s,
+// or 15 s + 8 s).
+const (
+	closeWait    = viewer.SaveWait + 5*time.Second
+	stopWait     = viewer.StopGrace + 3*time.Second
+	stopBusyWait = viewer.ExitWait + 3*time.Second
+)
 
 // CloseViewer is close_viewer: close the window (a closed window is not an
 // error). A window that does not answer, or does not end after the close
@@ -413,11 +426,13 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 	if errors.Is(err, context.Canceled) {
 		return Result{}, err
 	}
+	afterStop := stopBusyWait
 	if err == nil {
 		front.Viewer.Revision = rep.State.Revision
 		if s.waitViewerGone(closeWait) {
 			return Result{Front: front, Body: "Closed the viewer window. Its last camera per task is kept for the next time a task is shown."}, nil
 		}
+		afterStop = stopWait
 	} else if !viewer.Running(s.paths) {
 		return Result{Front: front, Body: "No viewer window was open."}, nil
 	}
@@ -429,7 +444,7 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 		return Result{}, fail(render.CodeUnavailable, "The viewer window does not answer and could not be stopped: "+serr.Error()+".",
 			"Close the window on the screen; "+s.paths.ViewerLog+" has the window's log.")
 	}
-	if !s.waitViewerGone(closeWait) {
+	if !s.waitViewerGone(afterStop) {
 		return Result{}, fail(render.CodeUnavailable, fmt.Sprintf("The viewer window (process %d) does not answer and is still running after it was told to stop.", pid),
 			"Close the window on the screen; "+s.paths.ViewerLog+" has the window's log.")
 	}

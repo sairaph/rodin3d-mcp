@@ -19,10 +19,13 @@ const staleAge = time.Hour
 // caller chose earlier). It returns how many it removed.
 func Sweep(paths domain.Paths, now time.Time, outputDirs ...string) int {
 	removed := 0
-	stale := func(path string, fi os.FileInfo) bool {
+	// Our own folders get all four prefixes; a folder the caller chose only
+	// the one prefix download_model creates there, never a user's own file.
+	ours := []string{".fetch-", ".download-", ".credentials-", ".tmp-"}
+	stale := func(fi os.FileInfo, prefixes []string) bool {
 		name := fi.Name()
 		temp := false
-		for _, p := range []string{".fetch-", ".download-", ".credentials-", ".tmp-"} {
+		for _, p := range prefixes {
 			if len(name) > len(p) && name[:len(p)] == p {
 				temp = true
 			}
@@ -31,7 +34,7 @@ func Sweep(paths domain.Paths, now time.Time, outputDirs ...string) int {
 	}
 	for _, dir := range []string{paths.Cache, paths.Downloads} {
 		_ = filepath.Walk(dir, func(path string, fi os.FileInfo, err error) error {
-			if err == nil && stale(path, fi) && os.Remove(path) == nil {
+			if err == nil && stale(fi, ours) && os.Remove(path) == nil {
 				removed++
 			}
 			return nil
@@ -39,16 +42,20 @@ func Sweep(paths domain.Paths, now time.Time, outputDirs ...string) int {
 	}
 	// The data root and the folders earlier downloads went to (an output_dir
 	// the caller chose): their own files only, not their subfolders.
-	for _, dir := range append([]string{paths.Root}, outputDirs...) {
+	sweepDir := func(dir string, prefixes []string) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return
 		}
 		for _, e := range entries {
-			if fi, err := e.Info(); err == nil && stale(filepath.Join(dir, e.Name()), fi) && os.Remove(filepath.Join(dir, e.Name())) == nil {
+			if fi, err := e.Info(); err == nil && stale(fi, prefixes) && os.Remove(filepath.Join(dir, e.Name())) == nil {
 				removed++
 			}
 		}
+	}
+	sweepDir(paths.Root, ours)
+	for _, dir := range outputDirs {
+		sweepDir(dir, []string{".download-"})
 	}
 	return removed
 }

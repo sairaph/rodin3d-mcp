@@ -8,6 +8,7 @@
 package fakehyper
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -56,22 +57,35 @@ type Task struct {
 	Pack        []string // get_download names; nil: not packed (INVALID_REQUEST)
 	// Next states are applied one per card call, then the last one stays.
 	Next []State
+	// Type is the card type; empty is "Rodin".
+	Type string
+	// Bang: Planned is true once a Bang plan exists (bang_plan_result answers
+	// NO_SUCH_A_PLAN before); Bangs are the Bang results per geometry
+	// version, each with its parts file under <uuid>/bang-<result>.glb.
+	Planned bool
+	Bangs   map[string][]string
+	// Rig is the rodin_rigging_result template; empty: RIGGING_NOT_FOUND.
+	Rig string
 }
 
 // Server is the fake.
 type Server struct {
 	HTTP *httptest.Server
 
-	mu        sync.Mutex
-	tasks     map[string]*Task
-	order     []string
-	files     map[string][]byte // path under /files/ -> bytes
-	clients   map[string][]string
-	codes     map[string]grant
-	access    map[string]tokenInfo
-	refresh   map[string]string // refresh token -> grant id
-	revoked   map[string]bool   // grant ids
-	calls     map[string]int
+	mu      sync.Mutex
+	tasks   map[string]*Task
+	order   []string
+	files   map[string][]byte // path under /files/ -> bytes
+	clients map[string][]string
+	codes   map[string]grant
+	access  map[string]tokenInfo
+	refresh map[string]string // refresh token -> grant id
+	revoked map[string]bool   // grant ids
+	calls   map[string]int
+	bodies  map[string][]map[string]any // JSON bodies per procedure
+	// JobState is what GET scheduler answers for every job (default
+	// Succeeded).
+	JobState  string
 	refreshes int
 	revokes   int
 	// Switches set through their methods (under the lock).
@@ -115,7 +129,7 @@ func New() *Server {
 	s := &Server{
 		tasks: map[string]*Task{}, files: map[string][]byte{}, clients: map[string][]string{},
 		codes: map[string]grant{}, access: map[string]tokenInfo{}, refresh: map[string]string{},
-		revoked: map[string]bool{}, calls: map[string]int{}, AccessTTL: 3600,
+		revoked: map[string]bool{}, calls: map[string]int{}, bodies: map[string][]map[string]any{}, AccessTTL: 3600, JobState: "Succeeded",
 		User: User{
 			UUID: "u-0000-0000", Username: "owner", Email: "owner@example.com", Balance: 250, Subscription: 285, Plan: "Creator",
 			Privileges: []string{"RodinDownloadModel", "RodinUseMultiImage", "RodinUseAdditionalImage", "RodinMediumRedoCount",
@@ -158,6 +172,13 @@ func (s *Server) Calls(procedure string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls[procedure]
+}
+
+// Bodies returns the JSON bodies sent to procedure, in order.
+func (s *Server) Bodies(procedure string) []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]map[string]any(nil), s.bodies[procedure]...)
 }
 
 // Refreshes returns how many refresh grants were served.
@@ -484,7 +505,17 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 	body, _ := io.ReadAll(r.Body)
 	var in map[string]any
 	_ = json.Unmarshal(body, &in)
+	if in != nil {
+		s.bodies[name] = append(s.bodies[name], in)
+	}
 	str := func(k string) string { v, _ := in[k].(string); return v }
+	bangTask := func() (*Task, bool) {
+		t, ok := s.tasks[str("uuid")]
+		if !ok {
+			writeJSON(w, 201, map[string]any{"error": "NO_SUCH_TASK"})
+		}
+		return t, ok
+	}
 
 	switch {
 	case proc == "user/get_info":
@@ -591,6 +622,47 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 			return
 		}
 		writeJSON(w, 201, map[string]any{"prompt": "A figure. sharp edges", "height": 165, "allow_face_enhance": true, "default_face_enhance": false, "is_multiview": false, "num_multiview": 1})
+	case proc == "scheduler":
+		writeJSON(w, 200, map[string]any{"status": s.JobState})
+	case proc == "task/bang_plan":
+		if t, ok := bangTask(); ok {
+			t.Planned = true
+			writeJSON(w, 201, map[string]any{"jobs": map[string]any{"uuids": []string{"job-plan"}, "subscription_key": "k"}})
+		}
+	case proc == "task/bang_plan_result":
+		if t, ok := bangTask(); ok {
+			if !t.Planned {
+				writeJSON(w, 201, map[string]any{"error": "NO_SUCH_A_PLAN"})
+				return
+			}
+			writeJSON(w, 201, map[string]any{"url": s.fileURL(t.UUID + "/plan.png")})
+		}
+	case proc == "task/bang_generate":
+		if t, ok := bangTask(); ok {
+			if t.Bangs == nil {
+				t.Bangs = map[string][]string{}
+			}
+			v := str("model_version")
+			bv := fmt.Sprintf("b%d", len(t.Bangs[v])+1)
+			t.Bangs[v] = append(t.Bangs[v], bv)
+			writeJSON(w, 201, map[string]any{"jobs": map[string]any{"uuids": []string{"job-split"}, "subscription_key": "k"}, "version": bv})
+		}
+	case proc == "task/bang_history":
+		if t, ok := bangTask(); ok {
+			out := map[string]any{}
+			for _, bv := range t.Bangs[str("model_version")] {
+				out[bv] = map[string]any{"model": s.fileURL(t.UUID + "/bang-" + bv + ".glb"), "generation_time": "2026-10-27T10:00:00.000Z"}
+			}
+			writeJSON(w, 201, out)
+		}
+	case proc == "task/rodin_rigging_result":
+		if t, ok := bangTask(); ok {
+			if t.Rig == "" {
+				writeJSON(w, 201, map[string]any{"error": "RIGGING_NOT_FOUND"})
+				return
+			}
+			writeJSON(w, 201, map[string]any{"url": s.fileURL(t.UUID + "/model.glb.rigging.rodinrig"), "rodinrig_template": t.Rig, "skinning_method": "core"})
+		}
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})
 	}
@@ -615,7 +687,7 @@ func (s *Server) card(t *Task) map[string]any {
 		info["confirmation_metadata"] = t.Confirmed
 	}
 	return map[string]any{
-		"task_uuid": t.UUID, "type": "Rodin", "is_agentic_prepare": false, "prompt": t.Prompt, "num_like": 0, "is_like": false,
+		"task_uuid": t.UUID, "type": cmp.Or(t.Type, "Rodin"), "is_agentic_prepare": false, "prompt": t.Prompt, "num_like": 0, "is_like": false,
 		"time": t.Created, "author": map[string]any{"username": s.User.Username, "email": s.User.Email}, "is_private": t.Private, "is_hidden": false,
 		"step": t.Step, "pending_jobs": make([]string, t.Pending), "image_url": "", "video_url": "",
 		"settings": t.Settings, "rodin_generate_info": info, "card_poster_info": poster, "model_preview_info": preview,

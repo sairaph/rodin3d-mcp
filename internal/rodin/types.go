@@ -122,6 +122,11 @@ type TaskPage struct {
 	Data []TaskRow `json:"data"`
 }
 
+// TypeAgentic is the card type of a task made by the n-gons producer of
+// task/rodin_agentic (main.fmt.js:10736-10790); the high-poly producer
+// makes an ordinary "Rodin" task.
+const TypeAgentic = "RodinAgentic"
+
 // Card is the reply of task/card/<uuid>: the whole state of one task. Raw
 // keeps the reply as sent, so fields this type does not name are not lost.
 type Card struct {

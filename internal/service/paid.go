@@ -36,8 +36,9 @@ import (
 // reports as not known.
 const UnknownPrice = -1.0
 
-// FlowWait bounds how long a stage tool waits for its job (plan 2.6.3: 45 s).
-const FlowWait = 45 * time.Second
+// FlowWait bounds how long a stage tool waits for its job (plan 2.6.3: 45 s);
+// tests shorten it.
+var FlowWait = 45 * time.Second
 
 // permit returns the permission key of op, or forbidden when config.toml
 // does not allow it.
@@ -77,11 +78,17 @@ func (s *Service) actionCardAs(ctx context.Context, id, tool, action string) (st
 		return "", nil, stage.Status{}, err
 	}
 	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
+	front := s.taskFront(card)
+	if card.Type == rodin.TypeAgentic {
+		return "", nil, stage.Status{}, failFields(render.CodeConflict,
+			fmt.Sprintf("%s is not possible: the task is a %s task (the n-gons result of generate_agentic), which has its own versions and pack, and no tool here acts on it.", tool, card.Type),
+			"Allowed on it: get_task, wait_task and get_preview, which read its card.",
+			map[string]any{"type": card.Type, "actions": front.Actions})
+	}
 	actions := stage.Actions(st)
 	if st.State != stage.Running && contains(actions, action) {
 		return uuid, card, st, nil
 	}
-	front := s.taskFront(card)
 	hint := "Call wait_task with this id until the job finishes, then get_task for the actions."
 	if st.State != stage.Running {
 		hint = "Allowed now: " + orNone(front.Actions) + "."

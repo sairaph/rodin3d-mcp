@@ -70,7 +70,7 @@ func (s *Service) taskFront(card *rodin.Card) TaskFront {
 	sum := daemon.Summarize(card)
 	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
 	var actions []string
-	for _, a := range stage.Actions(st) {
+	for _, a := range taskActions(card, st) {
 		if registered(a) {
 			actions = append(actions, a)
 		}
@@ -84,6 +84,20 @@ func (s *Service) taskFront(card *rodin.Card) TaskFront {
 		Created: card.Time, Updated: card.GenerateTime, Actions: actions,
 		FilesDir: s.downloadDir(card.TaskUUID, card.Prompt),
 	}
+}
+
+// taskActions are the tools that act on the task of card at status st. A
+// RodinAgentic task (the n-gons producer of generate_agentic) has its own
+// versions and pack (agentic_pack) that no tool maps, so only reading it
+// is offered (plan P3-D4).
+func taskActions(card *rodin.Card, st stage.Status) []string {
+	if card.Type == rodin.TypeAgentic {
+		if st.State == stage.Running {
+			return []string{"wait_task"}
+		}
+		return []string{"get_preview"}
+	}
+	return stage.Actions(st)
 }
 
 var slugRE = regexp.MustCompile(`[^a-z0-9]+`)
@@ -556,11 +570,14 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 
 	// Bang results of the draft versions, and the rig of a confirmed task
 	// (animate_model needs one).
-	if d.status.Stage == stage.GeometryDraft {
-		front.Bang = s.bangVersions(ctx, uuid, d.hist.Geometry)
-	}
-	if front.Rig = s.rigState(ctx, uuid, d.status); front.Rig != nil && front.Rig.State == "done" && registered("animate_model") {
-		front.Task.Actions = append(front.Task.Actions, "animate_model")
+	// A RodinAgentic task has neither (no tool acts on it).
+	if card.Type != rodin.TypeAgentic {
+		if d.status.Stage == stage.GeometryDraft {
+			front.Bang = s.bangVersions(ctx, uuid, d.hist.Geometry)
+		}
+		if front.Rig = s.rigState(ctx, uuid, d.status); front.Rig != nil && front.Rig.State == "done" && registered("animate_model") {
+			front.Task.Actions = append(front.Task.Actions, "animate_model")
+		}
 	}
 
 	if d.status.State == stage.Packed {

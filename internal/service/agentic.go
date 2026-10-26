@@ -138,7 +138,7 @@ func (s *Service) GenerateAgentic(ctx context.Context, in AgenticInput) (Result,
 		res.Body += "\n\nThe high-poly producer makes an ordinary Rodin task: when the run ends it is a geometry draft like any other " +
 			"(wait_task follows it), and confirm_geometry, generate_texture and export_model take it from there."
 	case "n-gons":
-		res.Body += "\n\nThe n-gons producer makes a RodinAgentic task, which has no staged tools here: get_task shows its card."
+		res.Body += "\n\nThe n-gons producer makes a RodinAgentic task, which no tool here acts on: get_task, wait_task and get_preview read its card."
 	}
 	if privacyNote != "" {
 		res.Body += "\n\n" + privacyNote

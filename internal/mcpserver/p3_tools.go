@@ -28,7 +28,7 @@ type splitArgs struct {
 	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"split one part of this earlier Bang result again (with part)"`
 	Part            *string `json:"part,omitempty" jsonschema:"the part name of bang_version to split again (get_task and the earlier reply list part names)"`
 	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for split_parts on this task with the same step and strength; -1 accepts a price quote_cost reports as not known"`
-	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds in all (default true); false returns right after the request of step plan or generate, while step both always waits for its plan"`
+	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds in all (default true); false returns right after the request of step plan or generate; step both needs its finished plan, so it waits as with true"`
 }
 
 type rigArgs struct {

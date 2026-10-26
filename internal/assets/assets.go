@@ -34,21 +34,44 @@ const (
 // Stages in pipeline order.
 var Stages = []string{StageGeometryDraft, StageGeometry, StageMaterial}
 
+// Server image modes. The poster and the geometry and material images are
+// the server's renders of the model; the texture_* images are the material's
+// texture maps (flat UV atlases), not views of the model.
+const (
+	ModePoster         = "poster"
+	ModeGeometryImage  = "geometry_image"
+	ModeMaterialImage  = "material_image"
+	ModeTextureDiffuse = "texture_diffuse"
+	ModeTexturePBR     = "texture_pbr"
+	ModeTextureNormal  = "texture_normal"
+	ModeTextureShaded  = "texture_shaded"
+)
+
 // Modes of server images, per stage.
 var Modes = map[string][]string{
-	StageGeometryDraft: {"poster"},
-	StageGeometry:      {"poster", "geometry"},
-	StageMaterial:      {"poster", "geometry", "material", "diffuse", "pbr", "normal", "shaded"},
+	StageGeometryDraft: {ModePoster},
+	StageGeometry:      {ModePoster, ModeGeometryImage},
+	StageMaterial:      {ModePoster, ModeGeometryImage, ModeMaterialImage, ModeTextureDiffuse, ModeTexturePBR, ModeTextureNormal, ModeTextureShaded},
 }
 
 // AllModes lists every server image mode in display order.
-var AllModes = []string{"poster", "geometry", "material", "diffuse", "pbr", "normal", "shaded"}
+var AllModes = []string{ModePoster, ModeGeometryImage, ModeMaterialImage, ModeTextureDiffuse, ModeTexturePBR, ModeTextureNormal, ModeTextureShaded}
 
-// Asset is one server image of a task.
+// IsTextureMap reports whether a server image mode is a texture map.
+func IsTextureMap(mode string) bool { return strings.HasPrefix(mode, "texture_") }
+
+// Mesh files of a stage (Asset.Mode of MeshAsset): the geometry draft's
+// Draco file and the GLB of the confirmed geometry or the material.
+const (
+	MeshDraft = "draft_mesh"
+	MeshModel = "model_mesh"
+)
+
+// Asset is one server file of a task: an image, or a stage mesh.
 type Asset struct {
 	Stage   string // StageGeometryDraft | StageGeometry | StageMaterial
-	Mode    string // poster | geometry | material | diffuse | pbr | normal | shaded
-	Step    string // card step the image belongs to
+	Mode    string // a server image mode, MeshDraft or MeshModel
+	Step    string // card step the file belongs to
 	Version string // geometry version (v2) or material reference/version (ALL-v1)
 	URL     string // signed address; never shown
 }
@@ -98,10 +121,10 @@ func Index(card *rodin.Card, hist History) []Asset {
 	// Geometry draft.
 	switch st.Stage {
 	case stage.GeometryDraft:
-		add(StageGeometryDraft, "poster", rodin.StepModelGenerate, geoVersion, card.Poster["preview_image"])
+		add(StageGeometryDraft, ModePoster, rodin.StepModelGenerate, geoVersion, card.Poster["preview_image"])
 	default:
 		if v, ok := hist.Geometry[geoVersion]; ok {
-			add(StageGeometryDraft, "poster", rodin.StepModelGenerate, geoVersion, v.PreviewCover)
+			add(StageGeometryDraft, ModePoster, rodin.StepModelGenerate, geoVersion, v.PreviewCover)
 		}
 	}
 	if st.Stage == stage.GeometryDraft {
@@ -110,42 +133,95 @@ func Index(card *rodin.Card, hist History) []Asset {
 
 	// Geometry confirmed.
 	if st.Stage == stage.Geometry {
-		add(StageGeometry, "poster", rodin.StepModelRefine, geoVersion, card.Poster["preview_image"])
+		add(StageGeometry, ModePoster, rodin.StepModelRefine, geoVersion, card.Poster["preview_image"])
 	}
-	add(StageGeometry, "geometry", rodin.StepModelRefine, geoVersion, card.Poster["geometry_image"])
+	add(StageGeometry, ModeGeometryImage, rodin.StepModelRefine, geoVersion, card.Poster["geometry_image"])
 	if st.Stage == stage.Geometry {
 		return out
 	}
 
 	// Material (draft or confirmed).
+	m := materialOf(card, hist)
+	add(StageMaterial, ModePoster, m.step, m.cardTag, card.Poster["preview_image"])
+	add(StageMaterial, ModeGeometryImage, rodin.StepModelRefine, geoVersion, card.Poster["geometry_image"])
+	m.pick(add, ModeMaterialImage, card.Poster["material_image"], m.version.PreviewImage)
+	m.pick(add, ModeTextureDiffuse, card.Preview["texture_diffuse"], m.version.TextureDiffuse)
+	m.pick(add, ModeTexturePBR, card.Preview["texture_pbr"], m.version.TexturePBR)
+	m.pick(add, ModeTextureNormal, card.Preview["texture_normal"], m.version.TextureNormal)
+	m.pick(add, ModeTextureShaded, card.Preview["texture_shaded"], m.version.TextureShaded)
+	return out
+}
+
+// material is where a material-stage card's files come from.
+type material struct {
+	step             string // the card's step, for files on the card
+	cardTag, histTag string
+	version          rodin.MaterialVersion // the shown version from the history (zero without it)
+}
+
+// materialOf finds the card's material version. Files on the card are the
+// current ones (tag: the reference); files from the history carry their
+// version. The cache path then does not depend on whether the history was
+// read.
+func materialOf(card *rodin.Card, hist History) material {
 	ref := MaterialRef(card, hist)
+	m := material{step: card.Step, cardTag: ref}
 	matVersion := ""
-	var mv rodin.MaterialVersion
 	if versions := hist.Material[ref]; len(versions) > 0 {
 		matVersion = firstNonEmpty(card.Confirmed("texture_version"), LatestVersion(keys(versions)))
-		mv = versions[matVersion]
+		m.version = versions[matVersion]
 	}
-	// Images on the card are the current ones (tag: the reference); images
-	// from the history carry their version. The cache path then does not
-	// depend on whether the history was read.
-	step := card.Step
-	cardTag := ref
-	histTag := strings.Trim(ref+"-"+matVersion, "-")
-	pick := func(mode, fromCard, fromHist string) {
-		if fromCard != "" {
-			add(StageMaterial, mode, step, cardTag, fromCard)
-		} else {
-			add(StageMaterial, mode, rodin.StepTextureGenerate, histTag, fromHist)
+	m.histTag = strings.Trim(ref+"-"+matVersion, "-")
+	return m
+}
+
+// pick adds the material file from the card, or else from the history.
+func (m material) pick(add func(stg, mode, step, version, u string), mode, fromCard, fromHist string) {
+	if fromCard != "" {
+		add(StageMaterial, mode, m.step, m.cardTag, fromCard)
+	} else {
+		add(StageMaterial, mode, rodin.StepTextureGenerate, m.histTag, fromHist)
+	}
+}
+
+// MeshAsset returns the mesh file a stage is rendered from: for the geometry
+// draft its Draco file (the card's preview_sdf, or the confirmed version's
+// draft from hist on a later card); for the confirmed geometry and the
+// material the card's GLB (model). A card past the geometry stage carries
+// only the material GLB, which holds the confirmed geometry with texture
+// coordinates, so the geometry stage of such a card is rendered from it.
+func MeshAsset(card *rodin.Card, hist History, stg string) (Asset, bool) {
+	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
+	geoVersion := firstNonEmpty(card.Confirmed("model_version"), card.Setting("version"), LatestVersion(keys(hist.Geometry)))
+	ok := func(a Asset) (Asset, bool) { return a, a.URL != "" }
+	switch stg {
+	case StageGeometryDraft:
+		u := card.Preview["preview_sdf"]
+		if u == "" && st.Stage != stage.GeometryDraft {
+			u = hist.Geometry[geoVersion].PreviewDRC
 		}
+		return ok(Asset{Stage: stg, Mode: MeshDraft, Step: rodin.StepModelGenerate, Version: geoVersion, URL: u})
+	case StageGeometry:
+		switch st.Stage {
+		case stage.Geometry:
+			return ok(Asset{Stage: stg, Mode: MeshModel, Step: rodin.StepModelRefine, Version: geoVersion, URL: card.Preview["model"]})
+		case stage.MaterialDraft, stage.Material:
+			a, found := MeshAsset(card, hist, StageMaterial)
+			a.Stage = stg
+			return a, found
+		}
+	case StageMaterial:
+		if st.Stage != stage.MaterialDraft && st.Stage != stage.Material {
+			return Asset{}, false
+		}
+		var a Asset
+		m := materialOf(card, hist)
+		m.pick(func(_, mode, step, version, u string) {
+			a = Asset{Stage: stg, Mode: mode, Step: step, Version: version, URL: u}
+		}, MeshModel, card.Preview["model"], m.version.Model)
+		return ok(a)
 	}
-	add(StageMaterial, "poster", step, cardTag, card.Poster["preview_image"])
-	add(StageMaterial, "geometry", rodin.StepModelRefine, geoVersion, card.Poster["geometry_image"])
-	pick("material", card.Poster["material_image"], mv.PreviewImage)
-	pick("diffuse", card.Preview["texture_diffuse"], mv.TextureDiffuse)
-	pick("pbr", card.Preview["texture_pbr"], mv.TexturePBR)
-	pick("normal", card.Preview["texture_normal"], mv.TextureNormal)
-	pick("shaded", card.Preview["texture_shaded"], mv.TextureShaded)
-	return out
+	return Asset{}, false
 }
 
 // MaterialRef is the material history reference a card's material belongs

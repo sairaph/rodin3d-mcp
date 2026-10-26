@@ -8,7 +8,6 @@ import (
 
 	"github.com/sairaph/mcp-wizard/render"
 
-	"github.com/sairaph/rodin3d-mcp/internal/assets"
 	"github.com/sairaph/rodin3d-mcp/internal/catalog"
 	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/daemon"
@@ -77,9 +76,7 @@ func (s *Service) Options(ctx context.Context, model string) (Result, error) {
 		}
 		front.Settings = append(front.Settings, st)
 	}
-	for _, stg := range assets.Stages {
-		front.PreviewModes = append(front.PreviewModes, previewFront{Stage: stg, Modes: assets.Modes[stg]})
-	}
+	front.PreviewModes = previewModeCatalog()
 	for _, o := range price.Operations {
 		front.Operations = append(front.Operations, operationFront{Name: o.Name, Permission: o.Permission})
 	}
@@ -107,7 +104,7 @@ func (s *Service) Options(ctx context.Context, model string) (Result, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString("Settings per stage with their web field, range and default; view tags and default weights for multi-view inputs; the server image modes get_preview offers per stage.")
+	b.WriteString("Settings per stage with their web field, range and default; view tags and default weights for multi-view inputs; the modes get_preview offers per stage (server images, then local renders of the stage mesh).")
 	if info != nil {
 		fmt.Fprintf(&b, " Privileges show what the %s plan of this account allows.", orUnknown(front.Plan))
 	} else {

@@ -550,14 +550,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 		front.Confirmed = &c
 	}
 
-	for _, stg := range assets.Stages {
-		if modes := assets.Available(d.list, stg); len(modes) > 0 {
-			front.Previews = append(front.Previews, previewFront{Stage: stg, Modes: modes})
-		}
-	}
-	if front.Previews == nil {
-		front.Previews = []previewFront{}
-	}
+	front.Previews = previewModes(d)
 
 	if d.status.State == stage.Packed {
 		items, err := s.client.GetDownload(ctx, uuid)

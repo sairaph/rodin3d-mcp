@@ -320,11 +320,11 @@ func TestPreview(t *testing.T) {
 	}{
 		{fakehyper.DraftID, "current", "poster"},
 		{fakehyper.PackedID, "geometry_draft", "poster"},
-		{fakehyper.PackedID, "geometry", "geometry"},
-		{fakehyper.PackedID, "material", "material"},
-		{fakehyper.PackedID, "material", "diffuse"},
-		{fakehyper.MatDraftID, "material", "normal"},
-		{fakehyper.GeometryID, "current", "geometry"},
+		{fakehyper.PackedID, "geometry", "geometry_image"},
+		{fakehyper.PackedID, "material", "material_image"},
+		{fakehyper.PackedID, "material", "texture_diffuse"},
+		{fakehyper.MatDraftID, "material", "texture_normal"},
+		{fakehyper.GeometryID, "current", "geometry_image"},
 	}
 	for _, c := range cases {
 		r := f.call("get_preview", map[string]any{"task_id": c.id, "stage": c.stage, "mode": c.mode, "size": 256})
@@ -356,8 +356,8 @@ func TestPreview(t *testing.T) {
 	} else if _, err := os.Stat(out); err != nil {
 		t.Error(err)
 	}
-	if r := f.call("get_preview", map[string]any{"task_id": fakehyper.PackedID, "mode": "depth"}); r.code() != "invalid_input" {
-		t.Errorf("render mode: %s", r.text)
+	if r := f.call("get_preview", map[string]any{"task_id": fakehyper.PackedID, "mode": "sideways"}); r.code() != "invalid_input" {
+		t.Errorf("unknown mode: %s", r.text)
 	}
 	if f.fake.BearerOnFile {
 		t.Fatal("a file request carried the bearer token")
@@ -525,7 +525,7 @@ func TestMaterialReferenceFallback(t *testing.T) {
 		t.Fatalf("without the setting: %s", r.text)
 	}
 	// The history's only reference also gives the material images.
-	if r := f.call("get_preview", map[string]any{"task_id": fakehyper.MatDraftID, "stage": "material", "mode": "diffuse", "size": 256}); r.res.IsError {
+	if r := f.call("get_preview", map[string]any{"task_id": fakehyper.MatDraftID, "stage": "material", "mode": "texture_diffuse", "size": 256}); r.res.IsError {
 		t.Fatalf("material preview without the setting: %s", r.text)
 	}
 }
@@ -579,7 +579,7 @@ func TestDownloadRefusalsAndFileHostFailures(t *testing.T) {
 		args map[string]any
 	}{
 		{"download_model", map[string]any{"task_id": fakehyper.PackedID, "output_dir": t.TempDir()}},
-		{"get_preview", map[string]any{"task_id": fakehyper.PackedID, "stage": "material", "mode": "pbr"}},
+		{"get_preview", map[string]any{"task_id": fakehyper.PackedID, "stage": "material", "mode": "texture_pbr"}},
 	} {
 		r := f.call(c.tool, c.args)
 		if r.code() != "unavailable" || !strings.Contains(r.text, "fresh addresses") {

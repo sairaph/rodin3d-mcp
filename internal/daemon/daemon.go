@@ -415,7 +415,7 @@ func (d *Daemon) cacheImages(ctx context.Context, card *rodin.Card) {
 	}
 	for _, a := range assets.Index(card, assets.History{}) {
 		switch a.Mode {
-		case "poster", "geometry", "material":
+		case assets.ModePoster, assets.ModeGeometryImage, assets.ModeMaterialImage:
 		default:
 			continue
 		}

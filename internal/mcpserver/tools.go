@@ -97,9 +97,10 @@ type waitInput struct {
 
 type previewInput struct {
 	TaskID string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
-	Stage  *string `json:"stage,omitempty" jsonschema:"which stage's images: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
-	Mode   *string `json:"mode,omitempty" jsonschema:"which image: poster (the stage render), geometry, material, or a texture map (diffuse, pbr, normal, shaded)"`
-	Size   *int    `json:"size,omitempty" jsonschema:"longer edge of the PNG in pixels, 256-1024"`
+	Stage  *string `json:"stage,omitempty" jsonschema:"which stage: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
+	Mode   *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, or a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded) or a local render of the stage mesh (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, depth)"`
+	View   *string `json:"view,omitempty" jsonschema:"camera of a render (server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
+	Size   *int    `json:"size,omitempty" jsonschema:"edge of the PNG in pixels, 256-1024 (server images: the longer edge)"`
 	SaveTo *string `json:"save_to,omitempty" jsonschema:"absolute path of the PNG to write; default the previews folder of the data directory"`
 }
 
@@ -134,7 +135,7 @@ func (s *Server) registerTools() {
 	addTool(s, "get_generation_options", "Generation settings",
 		"Describe everything a Rodin image-to-3D generation can be told: the models (Gen-2.5 tiers, Gen-1.5 modes), every setting of each "+
 			"stage (generate, confirm geometry, texture, export) with its web field, values, default and plan gate, the image view tags and "+
-			"default weights for multi-view input, the server image modes get_preview offers per stage, which privileges this account's plan "+
+			"default weights for multi-view input, the modes get_preview offers per stage (server images and local renders), which privileges this account's plan "+
 			"has, the operations quote_cost prices with their permission keys, and the recipes found in the account's own history (setting "+
 			"combinations with example task ids to open with get_task).",
 		readTool, withEnum(inputSchema[optionsInput](nil), "model", "gen-2.5", "gen-1.5"), s.getOptions)
@@ -191,15 +192,21 @@ func (s *Server) registerTools() {
 			"job answers at once. After a time-out, call wait_task again.",
 		readTool, wait, s.waitTask)
 
-	prev := nonNull(inputSchema[previewInput](map[string]string{"stage": `"current"`, "mode": `"poster"`, "size": "512"}))
+	prev := nonNull(inputSchema[previewInput](map[string]string{"stage": `"current"`, "mode": `"poster"`, "view": `"three_quarter"`, "size": "512"}))
 	withEnum(prev, "stage", "current", assets.StageGeometryDraft, assets.StageGeometry, assets.StageMaterial)
-	withEnum(prev, "mode", assets.AllModes...)
+	withEnum(prev, "mode", service.PreviewModes()...)
+	withEnum(prev, "view", service.PreviewViews()...)
 	withRange(prev, service.PreviewMin, service.PreviewMax, "size")
 	addTool(s, "get_preview", "Preview image",
-		"Show one server image of a task as a PNG: the poster of a stage (geometry draft, confirmed geometry, material), the geometry and "+
-			"material renders, or a texture map (diffuse, pbr, normal, shaded) once textured. Earlier stages of a later task work too "+
-			"(stage geometry_draft shows the draft that was confirmed). The image is attached and saved to save_to or the previews folder. "+
-			"A mode the stage does not have answers conflict with the available stage and mode pairs; get_task lists them as previews.",
+		"Show a stage of a task as a PNG: a server image, or a local render of the stage's mesh in a mode of the Hyper3D web viewer. "+
+			"Server images: poster (the stage's own picture), geometry_image and material_image (the server's renders), and the texture "+
+			"maps texture_diffuse, texture_pbr, texture_normal and texture_shaded, which are flat UV atlases, not views of the model. "+
+			"Renders, drawn on this computer from the draft's Draco mesh or the GLB: normal, raw, classic, glossy, metal, ao, wireframe and "+
+			"depth on every stage with a mesh; copper and geometry from the confirmed geometry on; pbr, shaded and toon (the textured model) "+
+			"at the material stage. view picks the camera of a render; grid shows four views at once. The first render of a stage decodes "+
+			"its mesh (a few seconds, once); renders are kept, so a repeated call is instant. Earlier stages of a later task work too "+
+			"(stage geometry_draft shows the draft that was confirmed). The image is attached and saved to save_to or the previews "+
+			"folder. A mode the stage does not have answers conflict with the available stage and mode pairs; get_task lists them as previews.",
 		readTool, prev, s.getPreview)
 
 	addTool(s, "download_model", "Download model files",
@@ -264,7 +271,7 @@ func (s *Server) waitTask(ctx context.Context, _ *mcp.CallToolRequest, in waitIn
 
 func (s *Server) getPreview(ctx context.Context, _ *mcp.CallToolRequest, in previewInput) (*mcp.CallToolResult, any, error) {
 	return imageReply(s.svc.Preview(ctx, service.PreviewInput{
-		TaskID: in.TaskID, Stage: optString(in.Stage), Mode: optString(in.Mode), Size: optInt(in.Size, service.PreviewDefault), SaveTo: optString(in.SaveTo),
+		TaskID: in.TaskID, Stage: optString(in.Stage), Mode: optString(in.Mode), View: optString(in.View), Size: optInt(in.Size, service.PreviewDefault), SaveTo: optString(in.SaveTo),
 	})), nil, nil
 }
 

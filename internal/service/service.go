@@ -65,6 +65,8 @@ type Service struct {
 	mu    sync.Mutex
 	st    *store.Store
 	cache *assets.Cache
+
+	r3d renderState // get_preview's local renders
 }
 
 // New returns a service for opts.

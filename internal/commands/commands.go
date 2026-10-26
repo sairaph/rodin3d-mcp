@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,6 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sairaph/rodin3d-mcp/internal/assets"
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
@@ -117,16 +117,18 @@ func Register(reg *command.Registry, env Env) {
 			}
 			return s.WaitTask(ctx, a.arg(0), time.Duration(secs)*time.Second)
 		})})
-	reg.Register(command.Handler{Name: "preview", Description: "Save a preview image of a task as PNG", Usage: "preview <id> [mode] [file.png] [stage=..] [size=N] [json]",
+	reg.Register(command.Handler{Name: "preview", Description: "Save a server image or a local render of a task stage as PNG", Usage: "preview <id> [mode] [view] [file.png] [stage=..] [size=N] [json]",
 		Run: func(ctx context.Context, raw []string) int {
 			svc := env.Service()
 			defer svc.Close()
 			a := parse(raw)
-			in := service.PreviewInput{TaskID: a.arg(0), Stage: a.opts["stage"], Mode: a.opts["mode"]}
+			in := service.PreviewInput{TaskID: a.arg(0), Stage: a.opts["stage"], Mode: a.opts["mode"], View: a.opts["view"]}
 			for _, p := range a.pos[min(1, len(a.pos)):] {
 				switch {
-				case isMode(p):
+				case slices.Contains(service.PreviewModes(), p):
 					in.Mode = p
+				case slices.Contains(service.PreviewViews(), p):
+					in.View = p
 				case strings.HasSuffix(strings.ToLower(p), ".png"):
 					abs, err := filepath.Abs(p)
 					if err != nil {
@@ -134,7 +136,8 @@ func Register(reg *command.Registry, env Env) {
 					}
 					in.SaveTo = abs
 				default:
-					return env.print(service.Result{}, usage("unknown argument "+strconv.Quote(p)+": give a mode ("+strings.Join(assets.AllModes, ", ")+") or a .png file"), a.json)
+					return env.print(service.Result{}, usage("unknown argument "+strconv.Quote(p)+": give a mode ("+strings.Join(service.PreviewModes(), ", ")+
+						"), a view ("+strings.Join(service.PreviewViews(), ", ")+") or a .png file"), a.json)
 				}
 			}
 			size, err := intOpt(a, "size", 0)
@@ -174,15 +177,6 @@ func Register(reg *command.Registry, env Env) {
 	reg.Register(command.Handler{Name: "permissions", Description: "Show the [permission] values of config.toml", Usage: "permissions [json]",
 		Run: run(func(_ context.Context, s *service.Service, _ args) (service.Result, error) { return permissions(s) })})
 	registerFlow(reg, run)
-}
-
-func isMode(p string) bool {
-	for _, m := range assets.AllModes {
-		if p == m {
-			return true
-		}
-	}
-	return false
 }
 
 func previewFile(res service.Result) (string, bool) {

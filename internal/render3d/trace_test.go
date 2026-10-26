@@ -232,3 +232,117 @@ func TestEnvSamplerDensity(t *testing.T) {
 		t.Fatalf("pdf integrates to %.8f, want 1", got)
 	}
 }
+
+// bowl is the lower half of a unit sphere, open at the top, with flat
+// faces and one texture coordinate (the maps are single texels).
+func bowl(n int) *Mesh {
+	m := &Mesh{Pos: [][3]float32{{0, -1, 0}}, UV: [][2]float32{{0.5, 0.5}}}
+	for j := 1; j <= n/2; j++ {
+		lat := -math.Pi/2 + float64(j)/float64(n)*math.Pi
+		for i := 0; i < n; i++ {
+			lon := float64(i) / float64(n) * 2 * math.Pi
+			m.Pos = append(m.Pos, [3]float32{float32(math.Cos(lat) * math.Cos(lon)), float32(math.Sin(lat)), float32(math.Cos(lat) * math.Sin(lon))})
+			m.UV = append(m.UV, [2]float32{0.5, 0.5})
+		}
+	}
+	ring := func(j, i int) uint32 { return uint32(1 + (j-1)*n + (i+n)%n) }
+	for i := 0; i < n; i++ {
+		m.Idx = append(m.Idx, 0, ring(1, i), ring(1, i+1))
+	}
+	for j := 1; j < n/2; j++ {
+		for i := 0; i < n; i++ {
+			a, b, c, d := ring(j, i), ring(j, i+1), ring(j+1, i+1), ring(j+1, i)
+			m.Idx = append(m.Idx, a, b, c, a, c, d)
+		}
+	}
+	return m
+}
+
+// brdfOnlyPath is the tracer's path with BRDF sampling alone: no
+// environment samples, so no MIS; the environment counts when a ray
+// escapes. It estimates the same two-vertex light as Trace.path.
+func brdfOnlyPath(t *Trace, x, y int, rg *rng) (vec3, bool) {
+	c := &t.cam
+	nx := (float64(x)+rg.float())/float64(t.w)*2 - 1
+	ny := 1 - (float64(y)+rg.float())/float64(t.h)*2
+	r := newRay(c.eye, c.right.mul(nx*c.aspect/c.focal).add(c.up.mul(ny/c.focal)).add(c.f).norm())
+	tp := vec3{1, 1, 1}
+	for depth := 0; depth <= tracerBounces; depth++ {
+		h, ok := t.acc.intersect(&r, math.Inf(1), false)
+		if !ok {
+			if depth == 0 {
+				return vec3{}, false
+			}
+			return tp.hadamard(t.env.levels[0].at(r.d).mul(tracerEnvIntensity)), true
+		}
+		if depth == tracerBounces {
+			break
+		}
+		s := t.surface(h, r.d)
+		L, w, pdf := s.sample(rg)
+		if pdf <= 0 || s.Ng.dot(L) <= 0 {
+			break
+		}
+		tp = tp.hadamard(w)
+		r = newRay(s.P.add(s.Ng.mul(t.eps)), L)
+	}
+	return vec3{}, true
+}
+
+// TestTraceMatchesBRDFOnly: inside a bowl most paths meet the model twice,
+// so the second vertex's light matters. The tracer (environment samples
+// and BRDF rays combined by MIS at both vertices) must agree with plain
+// BRDF sampling, which has no MIS to get wrong, for a diffuse and a
+// glossy metal surface, in a uniform environment and in the interior one.
+func TestTraceMatchesBRDFOnly(t *testing.T) {
+	uniform := buildEnv(func(vec3) vec3 { return vec3{1, 1, 1} })
+	white := &Texture{W: 1, H: 1, Pix: []uint8{255, 255, 255, 255}, SRGB: true}
+	for _, tc := range []struct {
+		name        string
+		rough, meta uint8
+		env         *envMap
+		tol         float64 // BRDF sampling alone is noisy under small bright lights
+	}{
+		{"diffuse, uniform", 255, 0, uniform, 0.01},
+		{"metal, uniform", 90, 255, uniform, 0.01},
+		{"metal, interior", 90, 255, environment(envRoom), 0.03},
+	} {
+		maps := &Maps{Diffuse: white, PBR: &Texture{W: 1, H: 1, Pix: []uint8{0, tc.rough, tc.meta, 255}}}
+		tr, err := NewTrace(bowl(48), maps, Options{Mode: ModeTracer, Size: 24, View: ViewTop})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr.env, tr.samp = tc.env, tc.env.sampler()
+		// Each estimate is the mean over its own camera rays that met the
+		// bowl (their jitter differs, so rays at the rim hit for one only).
+		var mis, ref float64
+		var nMis, nRef int
+		for y := 0; y < tr.h; y++ {
+			for x := 0; x < tr.w; x++ {
+				for k := 0; k < 256; k++ {
+					rg := newRNG(uint32(x), uint32(y), uint32(k))
+					if l, hit, _ := tr.path(x, y, &rg); hit {
+						mis += lum(l)
+						nMis++
+					}
+					for j := 0; j < 4; j++ {
+						rg := newRNG(uint32(x), uint32(y), uint32(1000+k*4+j))
+						if l, hit := brdfOnlyPath(tr, x, y, &rg); hit {
+							ref += lum(l)
+							nRef++
+						}
+					}
+				}
+			}
+		}
+		if nMis < tr.w*tr.h*256/4 {
+			t.Fatalf("%s: %d hit samples; the camera misses the bowl", tc.name, nMis)
+		}
+		mis, ref = mis/float64(nMis), ref/float64(nRef)
+		if d := math.Abs(mis-ref) / ref; d > tc.tol {
+			t.Errorf("%s: tracer %.4f, BRDF sampling alone %.4f (%.1f%% apart)", tc.name, mis, ref, d*100)
+		} else {
+			t.Logf("%s: tracer %.4f, BRDF sampling alone %.4f", tc.name, mis, ref)
+		}
+	}
+}

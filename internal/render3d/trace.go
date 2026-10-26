@@ -207,14 +207,22 @@ func (t *Trace) path(x, y int, rg *rng) (l vec3, hitModel bool, bg vec3) {
 	r := newRay(c.eye, c.right.mul(nx*c.aspect/c.focal).add(c.up.mul(ny/c.focal)).add(c.f).norm())
 	tp := vec3{1, 1, 1}
 	pdfPrev := 0.0
-	for depth := 0; depth < tracerBounces; depth++ {
-		h, ok := t.acc.intersect(&r, math.Inf(1), false)
+	// Every vertex lights itself twice, combined by MIS: an environment
+	// sample (next-event estimation) and the BRDF sample's ray, which adds
+	// the environment when it escapes. So the last vertex's BRDF ray is
+	// traced too (depth tracerBounces); meeting the model there ends the
+	// path with nothing added.
+	for depth := 0; depth <= tracerBounces; depth++ {
+		h, ok := t.acc.intersect(&r, math.Inf(1), depth == tracerBounces)
 		if !ok {
 			if depth == 0 {
 				return vec3{}, false, t.bgEnv.radiance(r.d, tracerBgBlur)
 			}
 			le := t.env.levels[0].at(r.d).mul(tracerEnvIntensity)
 			l = l.add(tp.hadamard(le).mul(misWeight(pdfPrev, t.samp.pdf(r.d))))
+			break
+		}
+		if depth == tracerBounces {
 			break
 		}
 		s := t.surface(h, r.d)
@@ -229,9 +237,6 @@ func (t *Trace) path(x, y int, rg *rng) (l vec3, hitModel bool, bg vec3) {
 					l = l.add(tp.hadamard(f).hadamard(le.mul(tracerEnvIntensity)).mul(nl * w / pdfL))
 				}
 			}
-		}
-		if depth == tracerBounces-1 {
-			break
 		}
 		L, weight, pdf := s.sample(rg)
 		if pdf <= 0 || s.Ng.dot(L) <= 0 {

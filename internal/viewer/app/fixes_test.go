@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -206,5 +208,53 @@ func TestSetTagWeight(t *testing.T) {
 	b, _ := testInputs(2)
 	if rep := b.applyControl(viewer.Control{SetTag: &viewer.SetTag{ImageIndex: 0, View: "F"}}); rep.Error != nil || b.inputs.items[1].weight != nil {
 		t.Fatalf("retag only: %+v, weight %v", rep.Error, b.inputs.items[1].weight)
+	}
+}
+
+// TestStaleRevisionFields: a call against an older revision is refused
+// with the revision, the user's actions since it only when there are any
+// (never null), and the truncation flag only when actions were dropped; a
+// call at the current revision is not refused.
+func TestStaleRevisionFields(t *testing.T) {
+	a := &App{}
+	a.bump()
+	a.bump() // changes by tool calls: no user action
+	at := func(rev int64) (map[string]any, bool) {
+		rep, stale := a.staleRevision(&rev)
+		if !stale {
+			return nil, false
+		}
+		if rep.Error == nil || rep.Error.Code != "conflict" {
+			t.Fatalf("since %d: refusal %+v, want conflict", rev, rep.Error)
+		}
+		b, err := json.Marshal(rep.Error.Fields)
+		if err != nil || strings.Contains(string(b), "null") {
+			t.Fatalf("since %d: fields %s (%v)", rev, b, err)
+		}
+		return rep.Error.Fields, true
+	}
+	if _, stale := at(a.rev); stale {
+		t.Fatal("current revision: refused")
+	}
+	f, _ := at(0)
+	if _, ok := f["user_actions"]; ok || f["revision"] != a.rev {
+		t.Fatalf("no user actions: fields %v", f)
+	}
+	a.userAction("mode", "pbr")
+	f, _ = at(0)
+	if acts, ok := f["user_actions"].([]viewer.UserAction); !ok || len(acts) != 1 || acts[0].Action != "mode" {
+		t.Fatalf("one user action: fields %v", f)
+	}
+	if _, ok := f["user_actions_truncated"]; ok {
+		t.Fatalf("nothing dropped: fields %v", f)
+	}
+	for i := 0; i < maxActions; i++ {
+		a.userAction("mode", "pbr")
+	}
+	if f, _ = at(0); f["user_actions_truncated"] != true {
+		t.Fatalf("actions dropped: fields %v", f)
+	}
+	if f, _ = at(a.rev - 1); len(f["user_actions"].([]viewer.UserAction)) != 1 {
+		t.Fatalf("since the last but one revision: fields %v", f)
 	}
 }

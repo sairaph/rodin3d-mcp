@@ -372,13 +372,18 @@ func (a *App) staleRevision(expected *int64) (viewer.StateReply, bool) {
 	if expected == nil || *expected == a.rev {
 		return viewer.StateReply{}, false
 	}
+	// The user's changes since then, when there are any (as in the other
+	// replies, user_actions is left out when empty).
 	actions, truncated := a.actionsSince(*expected)
-	fields := map[string]any{"user_actions": actions}
+	fields := map[string]any{}
+	if len(actions) > 0 {
+		fields["user_actions"] = actions
+	}
 	if truncated {
 		fields["user_actions_truncated"] = true
 	}
 	return a.conflict(fmt.Sprintf("The view changed since revision %d (now %d); the call was not applied.", *expected, a.rev),
-		"Read the state in this reply (get_viewer_state shows the user's actions), then call again with expected_revision set to the current revision.",
+		"Changes the user made since then are in user_actions (none listed: other calls changed it); call get_viewer_state for the view as it is now, then call again with expected_revision set to the current revision.",
 		fields), true
 }
 

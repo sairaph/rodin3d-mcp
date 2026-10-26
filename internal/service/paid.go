@@ -267,6 +267,9 @@ type settled struct {
 	status   stage.Status
 	waited   int
 	timedOut bool
+	// sawRunning: a card read during the wait showed a job running, so the
+	// last card shows that job's result, not the state before the call.
+	sawRunning bool
 }
 
 // settle reads the task's card after a call that started jobs and waits,
@@ -282,6 +285,7 @@ func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, 
 	}
 	s.saveCard(card)
 	out := &settled{card: card, status: stage.Of(card.Step, card.UserState, int(card.PendingJobs))}
+	out.sawRunning = out.status.State == stage.Running
 	if !wait {
 		return out, nil
 	}
@@ -316,6 +320,7 @@ func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, 
 	}
 	s.saveCard(out.card)
 	out.waited = int(time.Since(start).Round(time.Second).Seconds())
+	out.sawRunning = seenRunning
 	return out, nil
 }
 
@@ -384,12 +389,14 @@ func (s *Service) finishFlow(ctx context.Context, sp *spend, set *settled, lead 
 	b.WriteString(lead)
 	fmt.Fprintf(&b, " Now: %s, %s.", describeStage(set.status), set.status.State)
 	if set.status.State == stage.Unknown {
-		fmt.Fprintf(&b, " The card reports user_state %q, which this build does not know (a failed job is one possibility); get_task shows the card.", set.status.UserState)
+		fmt.Fprintf(&b, " The card reports user_state %q, which this build does not know (a failed job is one possibility, a job still starting another); get_task shows the card.", set.status.UserState)
 	}
 	b.WriteString("\n\n" + sp.walletText())
 	switch {
 	case set.timedOut || set.status.State == stage.Running:
 		b.WriteString("\n\nNext: wait_task with " + set.card.TaskUUID + " until the job finishes.")
+	case set.status.State == stage.Unknown:
+		b.WriteString("\n\nNext: in a few seconds, wait_task with " + set.card.TaskUUID + ": it reads the card again and waits while a job runs; then get_task.")
 	default:
 		b.WriteString("\n\nNext: " + nextFor(front.Task))
 	}

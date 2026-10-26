@@ -799,6 +799,12 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Pack requested (%s, %s).", typ, format), detail)
 	if len(detail.Files) > 0 {
 		res.Body += "\n\nPacked files: " + strings.Join(detail.Files, ", ") + ". download_model saves them."
+		if st.State == stage.Packed && !set.sawRunning {
+			// A re-pack whose job the card never showed running: the card
+			// and the list may still be the previous pack's.
+			res.Body += " The task was packed before and no card read showed the new pack job running, so this list may still be the " +
+				"previous pack's: call wait_task in a few seconds (it waits while the pack job runs), then download_model."
+		}
 	}
 	return res, nil
 }

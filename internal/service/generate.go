@@ -83,10 +83,13 @@ type sentInput struct {
 // copiedRecipe is what the copied task did after its draft, for the agent
 // to pass to the later stage tools.
 type copiedRecipe struct {
-	From    string         `yaml:"from"`
-	Confirm map[string]any `yaml:"confirm_geometry,omitempty"`
-	Texture map[string]any `yaml:"generate_texture,omitempty"`
-	Export  map[string]any `yaml:"export_model,omitempty"`
+	From string `yaml:"from"`
+	// PresetsNotCopied are presets of the copied task that the new task's
+	// model or tier does not offer.
+	PresetsNotCopied []string       `yaml:"presets_not_copied,omitempty,flow"`
+	Confirm          map[string]any `yaml:"confirm_geometry,omitempty"`
+	Texture          map[string]any `yaml:"generate_texture,omitempty"`
+	Export           map[string]any `yaml:"export_model,omitempty"`
 }
 
 type generateDetail struct {
@@ -220,6 +223,9 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 	}
 	if recipe != nil {
 		res.Body += "\n\nrecipe lists what the copied task used for its later stages: pass those values to confirm_geometry, generate_texture and export_model."
+		if len(recipe.PresetsNotCopied) > 0 {
+			res.Body += " Presets not copied (the new model or tier does not offer them): " + strings.Join(recipe.PresetsNotCopied, ", ") + "."
+		}
 	}
 	return res, nil
 }
@@ -625,6 +631,7 @@ func copySettings(in *GenerateInput, card *rodin.Card) *copiedRecipe {
 	}
 	// face_enhance is not copied: whether it is offered depends on the new
 	// image (the preprocess step), whose default the submit then uses.
+	var skipped []string
 	if in.Presets == nil {
 		p := &Presets{}
 		if v, err := strconv.Atoi(card.Setting("symmetric_bias")); err == nil && v > 0 {
@@ -637,14 +644,25 @@ func copySettings(in *GenerateInput, card *rodin.Card) *copiedRecipe {
 		if v, err := strconv.Atoi(card.Setting("detail_level")); err == nil && v >= 1 && v <= 3 {
 			p.Detailed = v
 		}
-		switch card.Setting("micro_bias") {
-		case "5":
-			p.Micro = "micro"
-		case "1":
-			p.Micro = "clean"
+		// micro and instruct exist only on some Gen-2.5 tiers (checkPresets):
+		// a copy onto a model or tier without them leaves them out, as the
+		// web's panel would not show them.
+		model, tier := strings.ToLower(strings.TrimSpace(in.Model)), strings.ToLower(strings.TrimSpace(in.Tier))
+		if model == "" {
+			model = "gen-2.5"
+		}
+		micro := map[string]string{"5": "micro", "1": "clean"}[card.Setting("micro_bias")]
+		if micro != "" && model == "gen-2.5" && tier == "extreme-high" {
+			p.Micro = micro
+		} else if micro != "" {
+			skipped = append(skipped, "micro")
 		}
 		if m := card.Setting("geometry_instruct_mode"); m == "creative" || m == "faithful" {
-			p.Instruct = m
+			if model == "gen-2.5" && oneOf(tier, "medium", "high", "extreme-high") {
+				p.Instruct = m
+			} else {
+				skipped = append(skipped, "instruct")
+			}
 		}
 		if *p != (Presets{}) {
 			in.Presets = p
@@ -663,7 +681,7 @@ func copySettings(in *GenerateInput, card *rodin.Card) *copiedRecipe {
 		}
 	}
 
-	r := &copiedRecipe{From: card.TaskUUID}
+	r := &copiedRecipe{From: card.TaskUUID, PresetsNotCopied: skipped}
 	put := func(m *map[string]any, k string, v any) {
 		if v == nil || v == "" {
 			return

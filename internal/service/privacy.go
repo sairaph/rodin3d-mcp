@@ -57,7 +57,8 @@ func (s *Service) applyPrivacy(ctx context.Context, uuid string, want bool) (*ro
 	}
 	return after, false, fail(render.CodeUnavailable,
 		fmt.Sprintf("task/set_private was accepted, but the card of %s still reads %s.", short(uuid), privacyWord(after.IsPrivate)),
-		"Call get_task in a few seconds; when it still shows the old privacy, call set_private again (it reads the card first, so it never flips the task back).")
+		"Call get_task in a few seconds and call set_private again only when it still shows the old privacy: set_private sends Hyper3D's "+
+			"toggle whenever the card reads the other privacy, so a card that has not caught up with this change would make it flip the task back.")
 }
 
 // privacyOfNew applies the privacy of a create to the new task uuid. A

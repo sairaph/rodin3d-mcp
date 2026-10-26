@@ -316,23 +316,35 @@ func CheckInputSet(images []viewer.InputImage) error {
 		return fail(render.CodeInvalidInput, fmt.Sprintf("An input set holds 1 to %d images; got %d.", MaxImages, len(images)), "Pass 1 to 5 images.")
 	}
 	paths := make([]string, len(images))
-	weighted := 0
 	for i, im := range images {
 		paths[i] = im.Path
 		if im.View != "" && !slices.Contains(viewer.ViewTags, im.View) {
 			return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the view tag %q.", i, im.View), "Use one of "+strings.Join(viewer.ViewTags, " ")+".")
 		}
-		if im.Weight != nil {
-			if w := *im.Weight; !(w > 0 && w <= 1) {
-				return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the weight %g.", i, w), "Weights are above 0 and at most 1; they are normalised to sum 1.")
-			}
-			weighted++
+	}
+	if err := CheckInputSetWeights(images); err != nil {
+		return err
+	}
+	return CheckImageFiles(paths)
+}
+
+// CheckInputSetWeights checks the weights of an input set as generate_model
+// takes them: each above 0 and at most 1, on every image or on none.
+func CheckInputSetWeights(images []viewer.InputImage) error {
+	weighted := 0
+	for i, im := range images {
+		if im.Weight == nil {
+			continue
 		}
+		if w := *im.Weight; !(w > 0 && w <= 1) {
+			return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the weight %g.", i, w), "Weights are above 0 and at most 1; they are normalised to sum 1.")
+		}
+		weighted++
 	}
 	if weighted != 0 && weighted != len(images) {
 		return fail(render.CodeInvalidInput, fmt.Sprintf("%d of %d images have a weight.", weighted, len(images)), "Give every image a weight, or none for the default weights.")
 	}
-	return CheckImageFiles(paths)
+	return nil
 }
 
 // SaveInputSet stores an input set.

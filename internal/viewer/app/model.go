@@ -43,6 +43,27 @@ func namedCam(view string) (camState, bool) {
 	return camState{Az: theta * 180 / math.Pi, El: 90 - phi*180/math.Pi, Zoom: 1}, true
 }
 
+// viewNamed is the named view whose camera c is (its direction, zoom 1, no
+// pan), else "custom".
+func viewNamed(c camState) string {
+	const eps = 1e-6
+	for _, v := range viewer.Views {
+		n, ok := namedCam(v)
+		if ok && math.Abs(wrapAz(c.Az-n.Az)) < eps && math.Abs(c.El-n.El) < eps && math.Abs(c.Zoom-n.Zoom) < eps && c.Pan == n.Pan {
+			return v
+		}
+	}
+	return "custom"
+}
+
+// settleView names a custom camera that is exactly a named view, so the
+// state says front, not custom, after an orbit to 0, 0.
+func (a *App) settleView() {
+	if a.viewName == "custom" {
+		a.viewName = viewNamed(a.cam)
+	}
+}
+
 func (c camState) r3d() render3d.Camera {
 	return render3d.Camera{Theta: c.Az * math.Pi / 180, Phi: (90 - c.El) * math.Pi / 180, Zoom: c.Zoom, Pan: c.Pan}
 }
@@ -698,6 +719,7 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 		a.cam, a.viewName = cam, view
 		a.lastChange = time.Now()
 	}
+	a.settleView()
 	if c.Turntable != nil {
 		a.turntable = *c.Turntable
 	}
@@ -870,6 +892,7 @@ func (a *App) bump() {
 
 // userAction records a change the user made in the window.
 func (a *App) userAction(action, detail string) {
+	a.settleView()
 	a.bump()
 	a.actions = append(a.actions, viewer.UserAction{Revision: a.rev, At: time.Now().UTC().Format(time.RFC3339), Action: action, Detail: detail})
 	if n := len(a.actions) - maxActions; n > 0 {

@@ -258,3 +258,59 @@ func TestStaleRevisionFields(t *testing.T) {
 		t.Fatalf("since the last but one revision: fields %v", f)
 	}
 }
+
+// TestViewNamed: a camera that is exactly a named view (direction, zoom 1,
+// no pan) is reported by that name, whether a control call or the user set
+// it; any other camera is custom.
+func TestViewNamed(t *testing.T) {
+	for _, v := range viewer.Views {
+		c, _ := namedCam(v)
+		if got := viewNamed(c); got != v {
+			t.Errorf("camera of %s named %s", v, got)
+		}
+	}
+	for _, tc := range []struct {
+		c    camState
+		want string
+	}{
+		{camState{Az: 45, El: 20, Zoom: 1}, "three_quarter"},
+		{camState{Az: 0, El: 0, Zoom: 1}, "front"},
+		{camState{Az: 180, El: 0, Zoom: 1}, "back"},
+		{camState{Az: -180, El: 0, Zoom: 1}, "back"},
+		{camState{Az: 90, El: 0, Zoom: 1}, "right"},
+		{camState{Az: -90, El: 0, Zoom: 1}, "left"},
+		{camState{Az: 0, El: 90, Zoom: 1}, "top"},
+		{camState{Az: 45.01, El: 20, Zoom: 1}, "custom"},
+		{camState{Az: 45, El: 20, Zoom: 1.5}, "custom"},
+		{camState{Az: 45, El: 20, Zoom: 1, Pan: [2]float64{0.1, 0}}, "custom"},
+	} {
+		if got := viewNamed(tc.c); got != tc.want {
+			t.Errorf("%v named %s, want %s", tc.c, got, tc.want)
+		}
+	}
+
+	a := &App{panes: []*pane{{}}, cam: defaultCam(), viewName: "three_quarter"}
+	deg := func(x float64) *float64 { return &x }
+	for _, tc := range []struct {
+		c    viewer.Control
+		want string
+	}{
+		{viewer.Control{Orbit: &viewer.Orbit{AzimuthDeg: deg(10), ElevationDeg: deg(5)}}, "custom"},
+		{viewer.Control{Orbit: &viewer.Orbit{AzimuthDeg: deg(45), ElevationDeg: deg(20)}}, "three_quarter"},
+		{viewer.Control{Zoom: deg(2)}, "custom"},
+		{viewer.Control{Zoom: deg(1)}, "three_quarter"},
+		{viewer.Control{Orbit: &viewer.Orbit{AzimuthDeg: deg(0), ElevationDeg: deg(0)}}, "front"},
+		{viewer.Control{Pan: &viewer.Pan{X: 0.5}}, "custom"},
+	} {
+		rep := a.applyControl(tc.c)
+		if rep.Error != nil || rep.State.View != tc.want {
+			t.Fatalf("control %+v: view %q (error %+v), want %s", tc.c, rep.State.View, rep.Error, tc.want)
+		}
+	}
+	// The user: a drag that ends on the front camera.
+	a.cam, a.viewName = camState{Az: 0, El: 0, Zoom: 1}, "custom"
+	a.userAction("camera", "orbit")
+	if a.viewName != "front" {
+		t.Fatalf("user drag to the front camera: view %s", a.viewName)
+	}
+}

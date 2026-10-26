@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/sairaph/mcp-wizard/render"
@@ -94,6 +95,11 @@ func (s *Service) Download(ctx context.Context, in DownloadInput) (Result, error
 				chosen, found = append(chosen, v), true
 			}
 			if !found {
+				if u, ok := s.resultFile(ctx, uuid, want); ok {
+					chosen, found = append(chosen, item{want, u}), true
+				}
+			}
+			if !found {
 				var names []string
 				for _, p := range pack {
 					names = append(names, p.name)
@@ -138,6 +144,32 @@ func (s *Service) Download(ctx context.Context, in DownloadInput) (Result, error
 	}
 	body := fmt.Sprintf("Saved %d file(s), %s, to %s.\n\nNext: open the files from dir; get_preview shows the task's images.", len(front.Files), sizeText(total), dir)
 	return Result{Front: front, Body: body}, nil
+}
+
+var bangFileRE = regexp.MustCompile(`^bang-(v\d+)-(.+)\.glb$`)
+
+// resultFile finds the signed address of a result file get_task names
+// outside the pack: a Bang parts file (bang-<version>-<bang version>.glb).
+func (s *Service) resultFile(ctx context.Context, uuid, name string) (string, bool) {
+	m := bangFileRE.FindStringSubmatch(name)
+	if m == nil {
+		return "", false
+	}
+	bh, err := s.client.BangHistory(ctx, uuid, m[1])
+	if err != nil {
+		return "", false
+	}
+	for bv, e := range bh {
+		if safeName(bv) == m[2] && e.Model != "" {
+			return e.Model, true
+		}
+	}
+	return "", false
+}
+
+// bangFileName is the name a Bang parts file is saved under.
+func bangFileName(gv, bv string) string {
+	return fmt.Sprintf("bang-%s-%s.glb", gv, safeName(bv))
 }
 
 func notPacked(t TaskFront) error {

@@ -82,10 +82,14 @@ func Actions(s Status) []string {
 		// Bang (split_parts) works on the draft only: on a confirmed task
 		// its calls answer TASK_ALREADY_CONFIRMED (notes 14 section 5).
 		out = []string{"get_preview", "redo_geometry", "confirm_geometry", "select_candidate", "split_parts"}
+	// Rigging works from the confirmed geometry on, the material draft
+	// included (web rig sources, main.fmt.js:149431). animate_model needs
+	// a rig, which the card does not show: get_task reads the rig and offers
+	// it.
 	case Geometry:
 		out = []string{"get_preview", "generate_texture", "export_model", "fork_task", "rig_model"}
 	case MaterialDraft:
-		out = []string{"get_preview", "redo_material", "confirm_material", "fork_task"}
+		out = []string{"get_preview", "redo_material", "confirm_material", "fork_task", "rig_model"}
 	case Material:
 		out = []string{"get_preview", "export_model", "fork_task", "rig_model"}
 	}

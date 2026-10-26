@@ -44,7 +44,9 @@ func TestActions(t *testing.T) {
 		t.Errorf("packed: %v", a)
 	}
 	// L5: Bang (split_parts) works on the geometry draft only (notes 14
-	// section 5); rigging stays at the confirmed stages.
+	// section 5); rigging works from the confirmed geometry on, the material
+	// draft included (web rig sources, main.fmt.js:149431); animate_model
+	// needs a rig the card does not show, so only get_task offers it.
 	for _, c := range []struct {
 		step, state string
 		split, rig  bool
@@ -52,12 +54,12 @@ func TestActions(t *testing.T) {
 		{"ModelGenerate", "DonePreview", true, false},
 		{"ModelRefine", "DonePreview", false, true},
 		{"ModelRefine", "DoneBasic", false, true},
-		{"TextureGenerate", "DonePreview", false, false},
+		{"TextureGenerate", "DonePreview", false, true},
 		{"TextureRefine", "DonePreview", false, true},
 		{"TextureRefine", "DoneHigh", false, true},
 	} {
 		a := Actions(Of(c.step, c.state, 0))
-		if slices.Contains(a, "split_parts") != c.split || slices.Contains(a, "rig_model") != c.rig {
+		if slices.Contains(a, "split_parts") != c.split || slices.Contains(a, "rig_model") != c.rig || slices.Contains(a, "animate_model") {
 			t.Errorf("%s/%s: %v", c.step, c.state, a)
 		}
 	}

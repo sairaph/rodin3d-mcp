@@ -197,6 +197,7 @@ type QuoteInput struct {
 	TaskID       string
 	Model        string
 	Tier         string
+	Mode         string // gen-1.5 mode
 	TextureMode  string
 	SmartLowPoly bool
 	Mesh         string
@@ -211,6 +212,10 @@ type QuoteInput struct {
 	Budget                          string
 	Batch                           int
 	ForkStage                       string
+	BangStep                        string // split_parts: plan | generate | both
+	Strength                        int    // split_parts part count
+	RigTemplate                     string // rig_model template
+	Animations                      int    // animate_model presets and files
 }
 
 type permissionFront struct {
@@ -240,10 +245,10 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		return Result{}, err
 	}
 	pin := price.Input{
-		Operation: in.Operation, Model: in.Model, Tier: in.Tier, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
+		Operation: in.Operation, Model: in.Model, Tier: in.Tier, Mode: in.Mode, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
 		Mesh: in.Mesh, PackType: in.PackType,
 		Resolution: in.Resolution, Geometry: in.Geometry, Format: in.Format, Material: in.Material, Budget: in.Budget, Batch: in.Batch,
-		ForkStage: in.ForkStage,
+		ForkStage: in.ForkStage, BangStep: in.BangStep, Strength: in.Strength, RigTemplate: in.RigTemplate, Animations: in.Animations,
 	}
 	var task *TaskFront
 	var base map[string]any // the draft's settings a material redo repeats

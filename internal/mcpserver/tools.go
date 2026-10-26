@@ -64,6 +64,7 @@ type optionsInput struct {
 type quoteSettings struct {
 	Model        *string `json:"model,omitempty" jsonschema:"gen-2.5 (default) or gen-1.5 (taken from the task when task_id is given)"`
 	Tier         *string `json:"tier,omitempty" jsonschema:"the Gen-2.5 tier: generate_model's tier, or the task's for the other operations (taken from the task when task_id is given)"`
+	Mode         *string `json:"mode,omitempty" jsonschema:"generate_model: the gen-1.5 mode (default default)"`
 	TextureMode  *string `json:"texture_mode,omitempty" jsonschema:"the texture tier: generate_texture's (default high, the web default), redo_material's (default the task's); confirm_material reads it from the task"`
 	SmartLowPoly *bool   `json:"smart_low_poly,omitempty" jsonschema:"confirm_geometry: confirm in smart low-poly mode"`
 	Mesh         *string `json:"mesh,omitempty" jsonschema:"confirm_geometry: raw or quad, as passed to confirm_geometry (default the same as confirm_geometry's)"`
@@ -79,6 +80,10 @@ type quoteSettings struct {
 	Budget       *string `json:"budget,omitempty" jsonschema:"generate_agentic: the Agentic budget"`
 	Batch        *int    `json:"batch,omitempty" jsonschema:"generate_model: drafts per submit (more than 1 needs the Business plan)"`
 	Stage        *string `json:"stage,omitempty" jsonschema:"fork_task: the stage to fork from (default material, the priced one)"`
+	Step         *string `json:"step,omitempty" jsonschema:"split_parts: plan, generate or both (default both)"`
+	Strength     *int    `json:"strength,omitempty" jsonschema:"split_parts: the part count 1-12 (default 5)"`
+	Template     *string `json:"template,omitempty" jsonschema:"rig_model: the template (default human); custom for an own skeleton or a description"`
+	Animations   *int    `json:"animations,omitempty" jsonschema:"animate_model: how many presets and own files the export carries"`
 }
 
 type quoteInput struct {
@@ -115,7 +120,7 @@ type previewInput struct {
 type downloadInput struct {
 	TaskID    string   `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	OutputDir *string  `json:"output_dir,omitempty" jsonschema:"absolute folder to save into; default downloads/<id8>-<prompt> in the data directory"`
-	Files     []string `json:"files,omitempty" jsonschema:"names to save, from get_task files.pack or files.videos; default the whole pack"`
+	Files     []string `json:"files,omitempty" jsonschema:"names to save, from get_task files.pack, files.videos, or the download names of its bang results and rig; default the whole pack"`
 }
 
 func (s *Server) registerTools() {
@@ -159,6 +164,7 @@ func (s *Server) registerTools() {
 	nonNull(settings)
 	withEnum(settings, "model", "gen-2.5", "gen-1.5")
 	withEnum(settings, "tier", "extreme-low", "low", "medium", "high", "extreme-high")
+	withEnum(settings, "mode", "default", "focal", "zero", "speedy")
 	withEnum(settings, "texture_mode", "extreme-low", "low", "medium", "high", "extreme-high")
 	withEnum(settings, "mesh", "raw", "quad")
 	withEnum(settings, "type", "mesh", "material")
@@ -169,6 +175,10 @@ func (s *Server) registerTools() {
 	withEnum(settings, "budget", "basic", "standard", "pro")
 	withRange(settings, 1, 10, "batch")
 	withEnum(settings, "stage", "geometry", "material")
+	withEnum(settings, "step", "both", "plan", "generate")
+	withRange(settings, 1, 12, "strength")
+	withEnum(settings, "template", "human", "quadruped", "bird", "dragon", "kaiju", "custom")
+	withRange(settings, 0, 10, "animations")
 	addTool(s, "quote_cost", "Price of an operation",
 		"Quote what an operation costs before it is run: credits, when they are taken, why it may be free, where the number comes from "+
 			"and whether it was measured (the web app shows fixed price labels and the server decides the real amount; a price is known only "+
@@ -224,11 +234,12 @@ func (s *Server) registerTools() {
 
 	addTool(s, "download_model", "Download model files",
 		"Save the files of a task's finished pack (the model in its packed format, textures) to output_dir or downloads/<id8>-<prompt> in "+
-			"the data directory; files limits the download to names from get_task files.pack, and the stage videos (files.videos) can be "+
-			"named too. Answers conflict when the task has no finished pack yet. Returns each file's path and size.",
+			"the data directory; files limits the download to names from get_task files.pack, and the stage videos (files.videos), the parts "+
+			"files of Bang results (bang) and the rigged model (rig) can be named by their download names too. Answers conflict when the task has no finished pack yet. Returns each file's path and size.",
 		localTool, nonNull(inputSchema[downloadInput](nil)), s.downloadModel)
 
 	s.registerFlowTools()
+	s.registerP3Tools()
 	s.registerViewerTools()
 }
 
@@ -261,7 +272,7 @@ func (s *Server) getOptions(ctx context.Context, _ *mcp.CallToolRequest, in opti
 func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quoteInput) (*mcp.CallToolResult, any, error) {
 	q := service.QuoteInput{Operation: in.Operation, TaskID: optString(in.TaskID)}
 	if st := in.Settings; st != nil {
-		q.Model, q.Tier, q.TextureMode = optString(st.Model), optString(st.Tier), optString(st.TextureMode)
+		q.Model, q.Tier, q.TextureMode, q.Mode = optString(st.Model), optString(st.Tier), optString(st.TextureMode), optString(st.Mode)
 		q.SmartLowPoly = optBool(st.SmartLowPoly, false)
 		q.Mesh = optString(st.Mesh)
 		q.HD, q.Sharp, q.FaceEnhance, q.Delight = st.HDTexture, st.Sharp, st.FaceEnhance, st.Delight
@@ -269,6 +280,8 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 		q.Resolution, q.Geometry, q.Budget = optString(st.Resolution), optString(st.Geometry), optString(st.Budget)
 		q.Batch = optInt(st.Batch, 0)
 		q.ForkStage = optString(st.Stage)
+		q.BangStep, q.Strength = optString(st.Step), optInt(st.Strength, 0)
+		q.RigTemplate, q.Animations = optString(st.Template), optInt(st.Animations, 0)
 	}
 	return reply(s.svc.Quote(ctx, q)), nil, nil
 }

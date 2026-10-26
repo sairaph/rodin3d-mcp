@@ -46,6 +46,7 @@ func PermissionKey(operation string) (string, bool) {
 type Input struct {
 	Operation    string
 	Model        string // gen-2.5 (default) | gen-1.5
+	Mode         string // gen-1.5 mode: default focal zero speedy
 	Tier         string // extreme-low low medium high extreme-high (Gen-2.5)
 	TextureMode  string // extreme-low .. extreme-high, legacy (Gen-1.5)
 	SmartLowPoly bool
@@ -61,6 +62,16 @@ type Input struct {
 	Budget                          string // basic standard pro (Agentic)
 	Batch                           int
 	ForkStage                       string // geometry | material (fork_task)
+	// BangStep is the part of split_parts the call runs: plan, generate or
+	// both (empty).
+	BangStep string
+	// Strength is split_parts' part count (1-12; 0 is the web's 5).
+	Strength int
+	// RigTemplate is rig_model's template ("" is human; custom for an own
+	// skeleton or a description).
+	RigTemplate string
+	// Animations is animate_model's number of presets and own files.
+	Animations int
 	// TaskCreated is the creation time of the task an operation acts on, for
 	// the 30-day fork rule; zero when not known.
 	TaskCreated time.Time
@@ -237,7 +248,7 @@ func For(in Input, acct Account) (Quote, error) {
 	case "generate_agentic":
 		switch strings.ToLower(in.Budget) {
 		case "basic", "":
-			return label(0.5, "submit (frozen), taken during the run", "web Agentic timer: basic ~3 min, 0.5 credits; an official-MCP run took the same amount (2026-10-26)"), nil
+			return measured(0.5, "submit (frozen), taken during the run", "web Agentic timer: basic ~3 min, 0.5 credits; measured 2026-10-27: 0.5 frozen at submit and taken by the end of the run (high-poly producer)"), nil
 		case "standard":
 			return label(1, "submit (frozen), taken during the run", "web Agentic timer: standard ~5 min, 1 credit"), nil
 		case "pro":
@@ -245,19 +256,71 @@ func For(in Input, acct Account) (Quote, error) {
 		}
 		return Quote{}, &InvalidInput{fmt.Sprintf("budget %q is not one of basic, standard, pro", in.Budget)}
 	case "split_parts":
-		return label(0.5, "submit (frozen), taken on completion", `web label "0.5 Credits" on Bang to Parts; an official-MCP run took the same amount (2026-10-26)`), nil
+		return splitParts(in, acct)
 	case "rig_model":
-		return unknown("the web shows no price for rigging and it has not been measured"), nil
+		tmpl := strings.ToLower(in.RigTemplate)
+		if tmpl == "" {
+			tmpl = "human"
+		}
+		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && tmpl == "human" {
+			q := measured(0, "", "wallet delta of a human-template rig of a textured gen-2.5 high task, 2026-10-27 (the web shows no price for rigging)")
+			q.FreeReason = "this rig took no credits"
+			return q, nil
+		}
+		return unknown(fmt.Sprintf("the web shows no price for rigging, and a rig was measured only with the human template on a textured gen-2.5 high task (free); this is template %s on a %s task (%s stage)",
+			tmpl, task(model, tier), orNone(in.PackType))), nil
 	case "animate_model":
-		return unknown("the web shows no price for animation packs and it has not been measured"), nil
+		format := strings.ToLower(in.Format)
+		if format == "" {
+			format = "glb"
+		}
+		res := strings.ToLower(in.Resolution)
+		if model == "gen-2.5" && tier == "high" && in.PackType == "material" && format == "glb" && (res == "" || res == "2k") && in.Animations == 1 {
+			q := measured(0, "", "wallet delta of a 2k glb export with one animation preset of a rigged, textured gen-2.5 high task, 2026-10-27 (the web shows no price)")
+			q.FreeReason = "this export took no credits"
+			return q, nil
+		}
+		return unknown(fmt.Sprintf("the web shows no price for animation exports, and one was measured only as a 2k glb export with one preset of a rigged, textured gen-2.5 high task (free); this is %s at %s with %d animation(s) of a %s task (%s stage)",
+			format, orNone(res), in.Animations, task(model, tier), orNone(in.PackType))), nil
 	case "texture_model":
-		return unknown("the web shows no price for texturing an uploaded model and it has not been measured"), nil
+		if model == "gen-2.5" {
+			// The web's 3D Editing submit sends no tier (brilliant_mode).
+			q := measured(0, "confirm_geometry", "wallet delta of a gen-2.5 3D Editing submit, 2026-10-27: nothing taken, 0.5 frozen at submit (the web shows no price)")
+			q.FreeReason = "the draft is free; the 0.5 frozen at submit is taken when the geometry is confirmed, or released"
+			q.FrozenAtSubmit = credits(0.5)
+			return q, nil
+		}
+		return unknown("a 3D Editing submit was measured only with gen-2.5 (nothing taken, 0.5 frozen); not with " + model), nil
 	}
 	names := make([]string, len(Operations))
 	for i, o := range Operations {
 		names[i] = o.Name
 	}
 	return Quote{}, &InvalidInput{fmt.Sprintf("operation %q is not one of %s", in.Operation, strings.Join(names, ", "))}
+}
+
+// splitParts prices split_parts: the plan (the part layout, run by the web
+// as soon as its Bang panel opens) and the split ("Bang to Parts").
+func splitParts(in Input, acct Account) (Quote, error) {
+	if in.Strength < 0 || in.Strength > 12 {
+		return Quote{}, &InvalidInput{fmt.Sprintf("strength %d is not 1-12", in.Strength)}
+	}
+	if in.Strength > 5 && !acct.has("RodinBangGenerateAdvancedQuality") {
+		return Quote{}, &Gate{"a part split strength above 5 needs the RodinBangGenerateAdvancedQuality privilege (Creator plan or higher)"}
+	}
+	// Measured 2026-10-27 on a gen-2.5 extreme-low draft (notes 35, P3): the
+	// plan took nothing; the split froze 0.5 at submit and took it when done.
+	const plan = "wallet delta of a Bang plan, strength 5, on a gen-2.5 extreme-low draft, 2026-10-27 (the web shows no price for it)"
+	const generate = `web label "0.5 Credits" on Bang to Parts; measured 2026-10-27: a split of a gen-2.5 extreme-low draft froze 0.5 at submit and took it when done`
+	switch strings.ToLower(in.BangStep) {
+	case "plan":
+		q := measured(0, "", plan)
+		q.FreeReason = "the Bang plan took no credits"
+		return q, nil
+	case "generate", "", "both":
+		return measured(0.5, "submit (frozen), taken when the split is done", generate+"; the plan step before it took nothing"), nil
+	}
+	return Quote{}, &InvalidInput{fmt.Sprintf("step %q is not plan, generate or both", in.BangStep)}
 }
 
 func orNone(s string) string {
@@ -286,7 +349,12 @@ func generate(in Input, acct Account) (Quote, error) {
 	const freeze = `; on extreme-low the same label still froze 0.5 at submit`
 	switch model {
 	case "gen-1.5":
-		q := label(0, "confirm_geometry", `web label "Free Preview" on GENERATE for all four Gen-1.5 modes`+freeze)
+		if strings.ToLower(in.Mode) == "speedy" {
+			q := measured(0, "confirm_geometry", `web label "Free Preview" on GENERATE for all four Gen-1.5 modes; measured 2026-10-27: a speedy draft took and froze nothing`)
+			q.FreeReason = "Free Preview: the Gen-1.5 draft is free; confirming the geometry costs credits"
+			return q, nil
+		}
+		q := label(0, "confirm_geometry", `web label "Free Preview" on GENERATE for all four Gen-1.5 modes`+freeze+`; a speedy draft froze nothing`)
 		q.FreeReason = "Free Preview: the Gen-1.5 draft is free; confirming the geometry costs credits"
 		return q, nil
 	case "gen-2.5":

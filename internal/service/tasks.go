@@ -332,6 +332,8 @@ type taskDetailFront struct {
 	Settings  settingsFront   `yaml:"settings"`
 	Inputs    []inputFront    `yaml:"inputs,omitempty"`
 	Versions  versionsFront   `yaml:"versions,omitempty"`
+	Bang      []bangListFront `yaml:"bang,omitempty"`
+	Rig       *rigFront       `yaml:"rig,omitempty"`
 	Confirmed *confirmedFront `yaml:"confirmed,omitempty"`
 	Previews  []previewFront  `yaml:"previews"`
 	Files     filesFront      `yaml:"files,omitempty"`
@@ -552,6 +554,15 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 
 	front.Previews = previewModes(d)
 
+	// Bang results of the draft versions, and the rig of a confirmed task
+	// (animate_model needs one).
+	if d.status.Stage == stage.GeometryDraft {
+		front.Bang = s.bangVersions(ctx, uuid, d.hist.Geometry)
+	}
+	if front.Rig = s.rigState(ctx, uuid, d.status); front.Rig != nil && front.Rig.State == "done" && registered("animate_model") {
+		front.Task.Actions = append(front.Task.Actions, "animate_model")
+	}
+
 	if d.status.State == stage.Packed {
 		items, err := s.client.GetDownload(ctx, uuid)
 		for _, it := range items {
@@ -593,6 +604,12 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 	}
 	if len(front.Files.Pack) > 0 {
 		fmt.Fprintf(&b, "\n\nPacked files: %s. download_model saves them to %s.", strings.Join(front.Files.Pack, ", "), front.Task.FilesDir)
+	}
+	if len(front.Bang) > 0 {
+		b.WriteString("\n\nThe draft has Bang (parts) results (bang): confirm_geometry with bang_version confirms one; download_model with files [its download name] saves its parts file.")
+	}
+	if r := front.Rig; r != nil && r.State == "done" {
+		b.WriteString("\n\nThe task is rigged (rig): animate_model exports the rigged model, with animations or without.")
 	}
 	b.WriteString("\n\nNext: " + nextFor(front.Task))
 	res := Result{Front: front, Body: b.String()}

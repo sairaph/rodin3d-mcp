@@ -75,6 +75,7 @@ type confirmGeometryArgs struct {
 	Hyper           *bool   `json:"hyper,omitempty" jsonschema:"use_hyper (default true, like the web)"`
 	Smooth          *bool   `json:"smooth,omitempty" jsonschema:"smooth a quad mesh"`
 	Version         *string `json:"version,omitempty" jsonschema:"the draft version to confirm (default the newest; get_task lists versions)"`
+	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"confirm this Bang result (split_parts) of the draft version: the model keeps its parts, all in one UV group as the web confirms them"`
 	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for confirm_geometry on this task with the same mesh and smart_low_poly; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the confirmed geometry (default true)"`
 }
@@ -327,7 +328,7 @@ func (s *Server) redoGeometry(ctx context.Context, _ *mcp.CallToolRequest, in re
 func (s *Server) confirmGeometry(ctx context.Context, _ *mcp.CallToolRequest, in confirmGeometryArgs) (*mcp.CallToolResult, any, error) {
 	return reply(s.svc.ConfirmGeometry(ctx, service.ConfirmGeometryInput{
 		TaskID: in.TaskID, Mesh: optString(in.Mesh), Quality: optString(in.Quality), Faces: in.Faces, SmartLowPoly: optBool(in.SmartLowPoly, false),
-		BakeNormal: in.BakeNormal, Symmetric: in.Symmetric, Hyper: in.Hyper, Smooth: in.Smooth, Version: optString(in.Version),
+		BakeNormal: in.BakeNormal, Symmetric: in.Symmetric, Hyper: in.Hyper, Smooth: in.Smooth, Version: optString(in.Version), BangVersion: optString(in.BangVersion),
 		Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true),
 	})), nil, nil
 }

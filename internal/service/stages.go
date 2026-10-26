@@ -145,8 +145,11 @@ type ConfirmGeometryInput struct {
 	Hyper        *bool
 	Smooth       *bool
 	Version      string
-	Expected     *float64
-	Wait         bool
+	// BangVersion confirms a Bang result (split_parts) of the version: its
+	// parts go in one UV group, as the web confirms parts nobody regrouped.
+	BangVersion string
+	Expected    *float64
+	Wait        bool
 }
 
 var quadFaces = map[string]int{"extra-low": 4000, "low": 8000, "medium": 18000, "high": 50000}
@@ -181,6 +184,14 @@ func (s *Service) ConfirmGeometry(ctx context.Context, in ConfirmGeometryInput) 
 		return Result{}, err
 	}
 	body := map[string]any{"uuid": uuid, "settings": settings, "version": version}
+	if bv := strings.TrimSpace(in.BangVersion); bv != "" {
+		groups, err := s.bangGroups(ctx, uuid, card.Prompt, version, bv)
+		if err != nil {
+			return Result{}, err
+		}
+		settings["model_multi_udim"] = groups
+		body["bang_version"] = bv
+	}
 
 	sp.open()
 	reply, err := s.client.Confirm(ctx, body, in.SmartLowPoly)
@@ -196,6 +207,12 @@ func (s *Service) ConfirmGeometry(ctx context.Context, in ConfirmGeometryInput) 
 	mesh := fmt.Sprintf("%v", settings["mesh_export_type"])
 	if f, ok := settings["quality_override"].(int); ok {
 		mesh += fmt.Sprintf(", %d faces", f)
+	}
+	if bv, ok := body["bang_version"].(string); ok {
+		mesh += ", Bang result " + bv
+		if g, ok := settings["model_multi_udim"].([][]string); ok && len(g) == 1 {
+			mesh += fmt.Sprintf(" with %d parts", len(g[0]))
+		}
 	}
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Geometry %s confirmed (%s).", version, mesh), map[string]any{"version": version, "settings": settings})
 	return res, nil
@@ -444,6 +461,11 @@ func inputNames(card *rodin.Card) []string {
 	var out []string
 	for _, m := range []rodin.StringMap{card.Info.MeshInputImages, card.Info.MaterialInputImages, card.Info.MeshReferenceImages} {
 		for n := range m {
+			// A 3D Editing task lists its model file (421e8e.glb) among the
+			// mesh references: only images are texture references.
+			if !oneOf(strings.ToLower(filepath.Ext(n)), ".webp", ".png", ".jpg", ".jpeg") {
+				continue
+			}
 			if !seen[n] {
 				seen[n] = true
 				out = append(out, n)

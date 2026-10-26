@@ -62,6 +62,12 @@ func (s *Service) permit(op string) (string, error) {
 
 // actionCard reads the task and checks that its stage offers tool now.
 func (s *Service) actionCard(ctx context.Context, id, tool string) (string, *rodin.Card, stage.Status, error) {
+	return s.actionCardAs(ctx, id, tool, tool)
+}
+
+// actionCardAs is actionCard for a tool that works wherever action is
+// offered (animate_model where rig_model is).
+func (s *Service) actionCardAs(ctx context.Context, id, tool, action string) (string, *rodin.Card, stage.Status, error) {
 	uuid, err := s.resolveTask(id)
 	if err != nil {
 		return "", nil, stage.Status{}, err
@@ -72,7 +78,7 @@ func (s *Service) actionCard(ctx context.Context, id, tool string) (string, *rod
 	}
 	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
 	actions := stage.Actions(st)
-	if st.State != stage.Running && contains(actions, tool) {
+	if st.State != stage.Running && contains(actions, action) {
 		return uuid, card, st, nil
 	}
 	front := s.taskFront(card)
@@ -423,7 +429,7 @@ func pinFromCard(pin *price.Input, card *rodin.Card) {
 	if pin.TextureMode == "" && (pin.Operation == "redo_material" || pin.Operation == "confirm_material") {
 		pin.TextureMode = card.Setting("texture_mode")
 	}
-	if pin.PackType == "" && pin.Operation == "export_model" {
+	if pin.PackType == "" && (pin.Operation == "export_model" || pin.Operation == "rig_model" || pin.Operation == "animate_model") {
 		pin.PackType = packType(stage.Of(card.Step, card.UserState, int(card.PendingJobs)))
 	}
 	if ts, err := time.Parse(time.RFC3339, card.Time); err == nil {

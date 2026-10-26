@@ -40,7 +40,13 @@ func TestLabelTable(t *testing.T) {
 		{Input{Operation: "fork_task"}, 0.5},
 		{Input{Operation: "fork_task", ForkStage: "geometry", Tier: "extreme-low"}, 0},
 		{Input{Operation: "generate_agentic", Budget: "pro"}, 2},
+		{Input{Operation: "split_parts", BangStep: "generate"}, 0.5},
 		{Input{Operation: "split_parts"}, 0.5},
+		{Input{Operation: "split_parts", BangStep: "plan", Strength: 5}, 0},
+		{Input{Operation: "rig_model", Tier: "high", PackType: "material"}, 0},
+		{Input{Operation: "texture_model"}, 0},
+		{Input{Operation: "generate_agentic", Budget: "basic"}, 0.5},
+		{Input{Operation: "animate_model", Tier: "high", PackType: "material", Animations: 1}, 0},
 		{Input{Operation: "export_model", Tier: "low"}, 0},
 		{Input{Operation: "export_model", Tier: "high", PackType: "material"}, 0},
 		{Input{Operation: "redo_geometry", Tier: "extreme-high"}, 2},
@@ -61,7 +67,9 @@ func TestUnknownPrices(t *testing.T) {
 	for _, in := range []Input{
 		{Operation: "generate_texture", TextureMode: "medium"}, {Operation: "generate_texture", Model: "gen-1.5"},
 		{Operation: "generate_texture", TextureMode: "low"}, {Operation: "confirm_geometry"}, {Operation: "confirm_material"}, {Operation: "redo_material"},
-		{Operation: "rig_model"}, {Operation: "animate_model"}, {Operation: "texture_model"},
+		{Operation: "rig_model"}, {Operation: "animate_model"}, {Operation: "texture_model", Model: "gen-1.5"},
+		{Operation: "rig_model", Tier: "high", PackType: "material", RigTemplate: "dragon"},
+		{Operation: "animate_model", Tier: "high", PackType: "material", Animations: 3},
 	} {
 		q, err := For(in, creator)
 		if err != nil || q.Known || q.Credits != nil || q.Basis == "" {
@@ -77,6 +85,7 @@ func TestGates(t *testing.T) {
 		{Operation: "export_model", Resolution: "4k"},
 		{Operation: "export_model", Geometry: "high_poly"},
 		{Operation: "fork_task", TaskCreated: time.Now().Add(-40 * 24 * time.Hour)},
+		{Operation: "split_parts", Strength: 6},
 	} {
 		if _, err := For(in, creator); !errors.As(err, &gate) {
 			t.Errorf("%+v: err %v, want a gate", in, err)
@@ -88,6 +97,14 @@ func TestGates(t *testing.T) {
 	// L11: a batch the plan allows has no measured price, so no number.
 	if q, err := For(Input{Operation: "generate_model", Tier: "high", Batch: 3}, Account{Plan: "Business"}); err != nil || q.Known || q.Credits != nil {
 		t.Errorf("business batch: %+v %v", q, err)
+	}
+	// A split strength above 5 passes with the privilege; 13 is no strength.
+	if _, err := For(Input{Operation: "split_parts", Strength: 12}, Account{Privileges: []string{"RodinBangGenerateAdvancedQuality"}}); err != nil {
+		t.Errorf("strength 12 with the privilege: %v", err)
+	}
+	var bad *InvalidInput
+	if _, err := For(Input{Operation: "split_parts", Strength: 13}, Account{Privileges: []string{"RodinBangGenerateAdvancedQuality"}}); !errors.As(err, &bad) {
+		t.Errorf("strength 13: %v", err)
 	}
 	// M4: 4K/12K and high-poly packs pass with the privilege.
 	pack := Account{Plan: "Business", Privileges: []string{"RodinPackHighResolution"}}

@@ -63,6 +63,7 @@ var serviceCodes = map[string]string{
 	"TASK_ALREADY_CONFIRMED": render.CodeConflict, "ALREADY_GENERATED": render.CodeConflict, "TASK_INCOMPLETE": render.CodeConflict,
 	"TASK_NOT_INITIALIZED": render.CodeConflict, "MODEL_NOT_CONFIRMED": render.CodeConflict, "OPERATION_NOT_SUPPORTED": render.CodeConflict,
 	"REVERSION_EXISTS": render.CodeConflict, "NO_HISTORY_AVAILABLE": render.CodeConflict,
+	"RIGGING_NOT_FOUND": render.CodeConflict, "NO_SUCH_A_PLAN": render.CodeConflict,
 
 	"INSUFFICIENT_BALANCE": CodeInsufficientCredits, "INSUFFICIENT_UNFROZEN_BALANCE": CodeInsufficientCredits,
 

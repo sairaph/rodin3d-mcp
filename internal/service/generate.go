@@ -172,7 +172,7 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 		return Result{}, err
 	}
 
-	sp, err := s.prepare(ctx, "generate_model", "", price.Input{Model: model, Tier: tier, Batch: in.Batch}, in.Expected, true)
+	sp, err := s.prepare(ctx, "generate_model", "", price.Input{Model: model, Tier: tier, Mode: mode, Batch: in.Batch}, in.Expected, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -226,7 +226,7 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 	if err != nil {
 		return Result{}, wrapf(err, "the draft %s was submitted; read its card", reply.UUID)
 	}
-	lead := fmt.Sprintf("Submitted %d image(s) as task %s (%s).", len(images), reply.UUID, strings.TrimSpace(model+" "+tier+" "+mode))
+	lead := fmt.Sprintf("Submitted %d image(s) as task %s (%s).", len(images), reply.UUID, strings.Join(strings.Fields(model+" "+tier+" "+mode), " "))
 	res := s.finishFlow(ctx, sp, set, lead, detail)
 	if privacyNote != "" {
 		res.Body += "\n\n" + privacyNote

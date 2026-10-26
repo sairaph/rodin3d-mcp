@@ -219,17 +219,18 @@ func quote(ctx context.Context, s *service.Service, a args) (service.Result, err
 	if err != nil {
 		return service.Result{}, err
 	}
-	flags := map[string]bool{}
+	flags := map[string]*bool{}
 	for _, k := range []string{"smart_low_poly", "hd_texture", "sharp", "face_enhance", "delight"} {
 		b, err := boolOpt(a, k)
 		if err != nil {
 			return service.Result{}, err
 		}
-		flags[k] = b != nil && *b
+		flags[k] = b
 	}
+	smart := flags["smart_low_poly"] != nil && *flags["smart_low_poly"]
 	return s.Quote(ctx, service.QuoteInput{
 		Operation: a.arg(0), TaskID: a.opts["task"], Model: a.opts["model"], Tier: a.opts["tier"], TextureMode: a.opts["texture_mode"],
-		SmartLowPoly: flags["smart_low_poly"], Mesh: a.opts["mesh"], HD: flags["hd_texture"], Sharp: flags["sharp"], FaceEnhance: flags["face_enhance"],
+		SmartLowPoly: smart, Mesh: a.opts["mesh"], HD: flags["hd_texture"], Sharp: flags["sharp"], FaceEnhance: flags["face_enhance"],
 		Delight: flags["delight"], PackType: a.opts["type"], Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Format: a.opts["format"],
 		Material: a.opts["material"], Budget: a.opts["budget"], Batch: batch, ForkStage: a.opts["stage"],
 	})

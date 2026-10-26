@@ -50,7 +50,8 @@ type Input struct {
 	TextureMode  string // extreme-low .. extreme-high, legacy (Gen-1.5)
 	SmartLowPoly bool
 	Mesh         string // confirm_geometry: raw | quad; empty: DefaultMesh
-	// generate_texture options; false is the tool's default.
+	// generate_texture and redo_material options as the call sends them
+	// (generate_texture: unset is off; redo_material: unset is the draft's).
 	HD, Sharp, FaceEnhance, Delight bool
 	PackType                        string // export_model: mesh | material
 	Resolution                      string // 1k 2k 4k 6k 12k (pack resolutions; 8K is the sharp_texture option)
@@ -168,26 +169,38 @@ func For(in Input, acct Account) (Quote, error) {
 		if tier == "extreme-high" {
 			return label(2, "submit", `web hover label "2 Credits" on Redo of an extreme-high draft`), nil
 		}
-		q := measured(0, "", `measured free on a gen-2.5 extreme-low draft (2026-10-26); the web shows Redo with its counter and no price on extreme-low and high drafts, and its tip says "Redos are free, but confirmation costs credits"`)
-		q.FreeReason = "geometry redos are free below the extreme-high tier; the plan limits their number (redo_left)"
-		if model != "gen-2.5" || tier != "extreme-low" {
-			q.Measured = false
+		const redoLabel = `the web shows Redo with its counter and no price on extreme-low and high drafts, and its tip says "Redos are free, but confirmation costs credits"`
+		var q Quote
+		if model == "gen-2.5" && tier == "extreme-low" {
+			q = measured(0, "", "measured free on a gen-2.5 extreme-low draft (2026-10-26); "+redoLabel)
+		} else {
+			q = label(0, "", redoLabel+"; a geometry redo was measured free only on a gen-2.5 extreme-low draft, not on "+task(model, tier))
 		}
+		q.FreeReason = "geometry redos are free below the extreme-high tier; the plan limits their number (redo_left)"
 		return q, nil
 	case "redo_material":
-		if strings.ToLower(in.TextureMode) == "extreme-high" {
+		mode := strings.ToLower(in.TextureMode)
+		if mode == "extreme-high" {
 			return label(2, "submit", `web hover label "2 Credits" on material Redo at the extreme-high texture tier`), nil
 		}
-		q := measured(0, "", `measured free at texture_mode high on a gen-2.5 high task (2026-10-26); the web's tip says "Redos are free, but confirmation costs credits"`)
-		q.FreeReason = "material redos are free below the extreme-high texture tier; the plan limits their number (redo_left)"
-		if model != "gen-2.5" || tier != "high" || strings.ToLower(in.TextureMode) != "high" {
-			q.Measured = false
+		// The web shows no price on material Redo below extreme-high (its
+		// generic tip names no tier), so only the measured case is known.
+		if model == "gen-2.5" && tier == "high" && mode == "high" && textureOptions(in) == "face_enhance" {
+			q := measured(0, "", "wallet delta of a material redo at texture_mode high with face_enhance on a gen-2.5 high task, 2026-10-26")
+			q.FreeReason = "this material redo took no credits"
+			return q, nil
 		}
-		return q, nil
+		return unknown(fmt.Sprintf("the web shows no price on material Redo below the extreme-high texture tier, and a material redo was measured only at texture_mode high with face_enhance on a gen-2.5 high task (free); this is texture_mode %s with %s on a %s task",
+			orNone(mode), textureOptions(in), task(model, tier))), nil
 	case "select_candidate":
-		q := measured(0, "", "measured free on a gen-2.5 extreme-low draft (2026-10-26); the web's batch view shows no price for the pick")
+		var q Quote
+		if model == "gen-2.5" && tier == "extreme-low" {
+			q = measured(0, "", "measured free on a gen-2.5 extreme-low draft (2026-10-26); the web's batch view shows no price for the pick")
+		} else {
+			q = Quote{Credits: credits(0), Known: true, Basis: "not measured on " + task(model, tier) +
+				" (measured free only on a gen-2.5 extreme-low draft); the web's batch view shows no price for the pick, which only chooses among drafts already made"}
+		}
 		q.FreeReason = "picking one draft of a batch changes nothing that is charged"
-		q.Measured = model == "gen-2.5" && tier == "extreme-low"
 		return q, nil
 	case "confirm_geometry":
 		return confirmGeometry(in, acct, model, tier)
@@ -341,6 +354,25 @@ func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) 
 	return unknown(`the web's Confirm label ("0.5 Credits") was read and the price measured only on gen-2.5 extreme-low and high drafts; not on ` + task(model, tier)), nil
 }
 
+const noOptions = "no options"
+
+// textureOptions names the texture options that are on, in a fixed order.
+func textureOptions(in Input) string {
+	var opts []string
+	for _, o := range []struct {
+		on   bool
+		name string
+	}{{in.HD, "hd_texture"}, {in.Sharp, "sharp"}, {in.FaceEnhance, "face_enhance"}, {in.Delight, "delight"}} {
+		if o.on {
+			opts = append(opts, o.name)
+		}
+	}
+	if len(opts) == 0 {
+		return noOptions
+	}
+	return strings.Join(opts, ", ")
+}
+
 func texture(in Input, model, tier string) (Quote, error) {
 	mode := strings.ToLower(in.TextureMode)
 	if mode == "" {
@@ -356,25 +388,13 @@ func texture(in Input, model, tier string) (Quote, error) {
 		// hd_texture, sharp and face_enhance do not apply at this tier.
 		return label(2, "submit (frozen), taken on completion", `web label "2 Credits" for the extreme-high texture tier`), nil
 	}
-	var opts []string
-	for _, o := range []struct {
-		on   bool
-		name string
-	}{{in.HD, "hd_texture"}, {in.Sharp, "sharp"}, {in.FaceEnhance, "face_enhance"}, {in.Delight, "delight"}} {
-		if o.on {
-			opts = append(opts, o.name)
-		}
-	}
-	options := "no options"
-	if len(opts) > 0 {
-		options = strings.Join(opts, ", ")
-	}
+	options := textureOptions(in)
 	switch {
 	case model == "gen-2.5" && tier == "high" && mode == "high" && options == "face_enhance":
 		q := measured(0, "", "wallet delta of a texture_mode high run with face_enhance on a gen-2.5 high task, 2026-10-26 (the web shows no price)")
 		q.FreeReason = "this texture run took no credits"
 		return q, nil
-	case mode == "low" && len(opts) == 0:
+	case mode == "low" && options == noOptions:
 		return unknown("texture_mode low with no options was measured twice with different results: 0.5 taken on 2026-10-07, nothing on 2026-10-26 (the web shows no price)"), nil
 	}
 	return unknown(fmt.Sprintf("the web shows no price for texture_mode %s, and texture runs were measured only for texture_mode high with face_enhance on a gen-2.5 high task (free) and texture_mode low with no options (0.5 once, 0 once); this is %s on a %s task",

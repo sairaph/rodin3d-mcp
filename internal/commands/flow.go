@@ -197,8 +197,8 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 			}
 			return s.GenerateTexture(ctx, in)
 		})})
-	reg.Register(command.Handler{Name: "redo-material", Description: "Redo a material draft (free below extreme-high)",
-		Usage: "redo-material <id> [texture_mode=..] [escore=..] [seed=keep|new] [prompt=..] [expected=<credits>] [nowait] [json]",
+	reg.Register(command.Handler{Name: "redo-material", Description: "Redo a material draft (quote redo_material for its price)",
+		Usage: "redo-material <id> [texture_mode=..] [hd_texture=..] [sharp=..] [delight=..] [face_enhance=..] [escore=..] [seed=keep|new] [prompt=..] [expected=<credits>] [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in, err := texture(&a)
 			if err != nil {

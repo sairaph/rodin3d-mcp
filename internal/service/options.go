@@ -200,8 +200,9 @@ type QuoteInput struct {
 	TextureMode  string
 	SmartLowPoly bool
 	Mesh         string
-	// generate_texture options (unset is off, as the tool sends them).
-	HD, Sharp, FaceEnhance, Delight bool
+	// generate_texture and redo_material options; nil is the tool's default
+	// (generate_texture: off; redo_material: the draft's, read from task_id).
+	HD, Sharp, FaceEnhance, Delight *bool
 	PackType                        string // export_model type; default the task's stage
 	Resolution                      string
 	Geometry                        string
@@ -240,11 +241,12 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	}
 	pin := price.Input{
 		Operation: in.Operation, Model: in.Model, Tier: in.Tier, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
-		Mesh: in.Mesh, HD: in.HD, Sharp: in.Sharp, FaceEnhance: in.FaceEnhance, Delight: in.Delight, PackType: in.PackType,
+		Mesh: in.Mesh, PackType: in.PackType,
 		Resolution: in.Resolution, Geometry: in.Geometry, Format: in.Format, Material: in.Material, Budget: in.Budget, Batch: in.Batch,
 		ForkStage: in.ForkStage,
 	}
 	var task *TaskFront
+	var base map[string]any // the draft's settings a material redo repeats
 	if strings.TrimSpace(in.TaskID) != "" {
 		uuid, err := s.resolveTask(in.TaskID)
 		if err != nil {
@@ -257,7 +259,11 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		t := s.taskFront(card)
 		task = &t
 		pinFromCard(&pin, card)
+		if in.Operation == "redo_material" {
+			base = card.Settings
+		}
 	}
+	pinTextureOptions(&pin, in.HD, in.Sharp, in.FaceEnhance, in.Delight, base)
 	info, err := s.client.GetInfo(ctx)
 	if err != nil {
 		return Result{}, err

@@ -67,10 +67,10 @@ type quoteSettings struct {
 	TextureMode  *string `json:"texture_mode,omitempty" jsonschema:"the texture tier: generate_texture's (default high, the web default), redo_material's (default the task's); confirm_material reads it from the task"`
 	SmartLowPoly *bool   `json:"smart_low_poly,omitempty" jsonschema:"confirm_geometry: confirm in smart low-poly mode"`
 	Mesh         *string `json:"mesh,omitempty" jsonschema:"confirm_geometry: raw or quad, as passed to confirm_geometry (default the same as confirm_geometry's)"`
-	HDTexture    *bool   `json:"hd_texture,omitempty" jsonschema:"generate_texture: the hd_texture option as passed to generate_texture"`
-	Sharp        *bool   `json:"sharp,omitempty" jsonschema:"generate_texture: the sharp option as passed to generate_texture"`
-	FaceEnhance  *bool   `json:"face_enhance,omitempty" jsonschema:"generate_texture: the face_enhance option as passed to generate_texture"`
-	Delight      *bool   `json:"delight,omitempty" jsonschema:"generate_texture: the delight option as passed to generate_texture"`
+	HDTexture    *bool   `json:"hd_texture,omitempty" jsonschema:"generate_texture and redo_material: the hd_texture option as passed to the call (unset: off for generate_texture, the draft's for redo_material)"`
+	Sharp        *bool   `json:"sharp,omitempty" jsonschema:"generate_texture and redo_material: the sharp option as passed to the call (unset: off for generate_texture, the draft's for redo_material)"`
+	FaceEnhance  *bool   `json:"face_enhance,omitempty" jsonschema:"generate_texture and redo_material: the face_enhance option as passed to the call (unset: off for generate_texture, the draft's for redo_material)"`
+	Delight      *bool   `json:"delight,omitempty" jsonschema:"generate_texture and redo_material: the delight option as passed to the call (unset: off for generate_texture, the draft's for redo_material)"`
 	Type         *string `json:"type,omitempty" jsonschema:"export_model: mesh or material pack (default the task's stage)"`
 	Resolution   *string `json:"resolution,omitempty" jsonschema:"export_model: pack texture resolution"`
 	Geometry     *string `json:"geometry,omitempty" jsonschema:"export_model: pack geometry"`
@@ -263,8 +263,7 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 		q.Model, q.Tier, q.TextureMode = optString(st.Model), optString(st.Tier), optString(st.TextureMode)
 		q.SmartLowPoly = optBool(st.SmartLowPoly, false)
 		q.Mesh = optString(st.Mesh)
-		q.HD, q.Sharp = optBool(st.HDTexture, false), optBool(st.Sharp, false)
-		q.FaceEnhance, q.Delight = optBool(st.FaceEnhance, false), optBool(st.Delight, false)
+		q.HD, q.Sharp, q.FaceEnhance, q.Delight = st.HDTexture, st.Sharp, st.FaceEnhance, st.Delight
 		q.PackType, q.Format, q.Material = optString(st.Type), optString(st.Format), optString(st.Material)
 		q.Resolution, q.Geometry, q.Budget = optString(st.Resolution), optString(st.Geometry), optString(st.Budget)
 		q.Batch = optInt(st.Batch, 0)

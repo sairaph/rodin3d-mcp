@@ -104,7 +104,7 @@ type redoMaterialArgs struct {
 	ReferenceScale  *float64 `json:"reference_scale,omitempty" jsonschema:"reference strength 0-1, gen-1.5 only"`
 	Seed            *string  `json:"seed,omitempty" jsonschema:"keep the draft's seed or take a new one (default new)"`
 	Prompt          *string  `json:"prompt,omitempty" jsonschema:"texture prompt (default the task's prompt)"`
-	ExpectedCredits *float64 `json:"expected_credits,omitempty" jsonschema:"needed only when quote_cost prices the redo above 0 (extreme-high textures)"`
+	ExpectedCredits *float64 `json:"expected_credits,omitempty" jsonschema:"the credits quote_cost returned for redo_material on this task with the same texture_mode and options; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool    `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the new version (default true)"`
 }
 
@@ -247,8 +247,8 @@ func (s *Server) registerFlowTools() {
 	textureMode(rmat)
 	withEnum(rmat, "seed", "keep", "new")
 	addTool(s, "redo_material", "Redo the material draft",
-		"Generate a new version of a material draft (stage material_draft) with its settings, changing only what is given. Free except at "+
-			"texture_mode extreme-high (quote_cost operation redo_material); the plan limits the number of redos (get_task redo_left). Needs "+
+		"Generate a new version of a material draft (stage material_draft) with its settings, changing only what is given. The web shows a price only at "+
+			"texture_mode extreme-high (2 credits); quote_cost (operation redo_material, task_id) says whether it is known; the plan limits the number of redos (get_task redo_left). Needs "+
 			"[permission] redo = \"allow\".",
 		paidTool, rmat, s.redoMaterial)
 

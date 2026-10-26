@@ -422,6 +422,21 @@ func textureSettings(in TextureInput, card *rodin.Card, info *rodin.UserInfo, ba
 	return st, mode, nil
 }
 
+// pinTextureOptions sets the texture options of a price input as
+// textureSettings sends them: each given value, else base's (the draft's
+// settings for a material redo; nil for a first texture, where unset is off).
+func pinTextureOptions(pin *price.Input, hd, sharp, face, delight *bool, base map[string]any) {
+	of := func(p *bool, key string) bool {
+		if p != nil {
+			return *p
+		}
+		v, _ := base[key].(bool)
+		return v
+	}
+	pin.HD, pin.Sharp = of(hd, "superres_texture"), of(sharp, "sharp_texture")
+	pin.FaceEnhance, pin.Delight = of(face, "face_enhance"), of(delight, "texture_delight")
+}
+
 // inputNames lists the image names a texture may use as reference, in
 // upload order.
 func inputNames(card *rodin.Card) []string {
@@ -483,11 +498,8 @@ func (s *Service) GenerateTexture(ctx context.Context, in TextureInput) (Result,
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("reference_image %q is not an input image of the task.", ref),
 			"Pass ALL, one of "+orNone(names)+", or the absolute path of a new image.")
 	}
-	// The options as textureSettings sends them for a first texture (unset
-	// is off); the price depends on them.
-	on := func(p *bool) bool { return p != nil && *p }
-	pin := price.Input{Operation: "generate_texture", TextureMode: in.TextureMode,
-		HD: on(in.HD), Sharp: on(in.Sharp), FaceEnhance: on(in.FaceEnhance), Delight: on(in.Delight)}
+	pin := price.Input{Operation: "generate_texture", TextureMode: in.TextureMode}
+	pinTextureOptions(&pin, in.HD, in.Sharp, in.FaceEnhance, in.Delight, nil)
 	pinFromCard(&pin, card)
 	if pin.Model == "gen-1.5" {
 		pin.TextureMode = "legacy"
@@ -569,6 +581,7 @@ func (s *Service) RedoMaterial(ctx context.Context, in TextureInput) (Result, er
 		return Result{}, err
 	}
 	pin := price.Input{Operation: "redo_material", TextureMode: in.TextureMode}
+	pinTextureOptions(&pin, in.HD, in.Sharp, in.FaceEnhance, in.Delight, card.Settings)
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "redo_material", uuid, pin, in.Expected, false)
 	if err != nil {

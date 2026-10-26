@@ -44,7 +44,7 @@ func TestLabelTable(t *testing.T) {
 		{Input{Operation: "export_model", Tier: "low"}, 0},
 		{Input{Operation: "export_model", Tier: "high", PackType: "material"}, 0},
 		{Input{Operation: "redo_geometry", Tier: "extreme-high"}, 2},
-		{Input{Operation: "redo_material"}, 0},
+		{Input{Operation: "redo_material", Tier: "high", TextureMode: "high", FaceEnhance: true}, 0},
 		{Input{Operation: "select_candidate"}, 0},
 	}
 	for _, c := range cases {
@@ -60,7 +60,7 @@ func TestLabelTable(t *testing.T) {
 func TestUnknownPrices(t *testing.T) {
 	for _, in := range []Input{
 		{Operation: "generate_texture", TextureMode: "medium"}, {Operation: "generate_texture", Model: "gen-1.5"},
-		{Operation: "generate_texture", TextureMode: "low"}, {Operation: "confirm_geometry"}, {Operation: "confirm_material"},
+		{Operation: "generate_texture", TextureMode: "low"}, {Operation: "confirm_geometry"}, {Operation: "confirm_material"}, {Operation: "redo_material"},
 		{Operation: "rig_model"}, {Operation: "animate_model"}, {Operation: "texture_model"},
 	} {
 		q, err := For(in, creator)

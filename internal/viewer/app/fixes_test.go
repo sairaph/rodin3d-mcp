@@ -314,3 +314,44 @@ func TestViewNamed(t *testing.T) {
 		t.Fatalf("user drag to the front camera: view %s", a.viewName)
 	}
 }
+
+// TestMissingMaps: a task pane loads the maps its mode samples and has not
+// loaded yet (PBR and Tracer: diffuse, normal, pbr; Shaded: shaded, or
+// diffuse without one; Toon: diffuse; other modes: none); a model file's
+// maps came with it.
+func TestMissingMaps(t *testing.T) {
+	stage := func(kinds ...string) service.ViewStage {
+		st := service.ViewStage{Name: "material"}
+		for _, k := range kinds {
+			st.Maps = append(st.Maps, service.ViewAsset{Mode: "texture_" + k})
+		}
+		return st
+	}
+	tex := &render3d.Texture{W: 1, H: 1, Pix: []uint8{0, 0, 0, 255}}
+	all := stage("diffuse", "normal", "pbr", "shaded")
+	for _, tc := range []struct {
+		name string
+		p    *pane
+		mode string
+		want string
+	}{
+		{"pbr", &pane{kind: viewer.KindTask, stage: all}, "pbr", "diffuse normal pbr"},
+		{"tracer", &pane{kind: viewer.KindTask, stage: all}, "tracer", "diffuse normal pbr"},
+		{"shaded", &pane{kind: viewer.KindTask, stage: all}, "shaded", "shaded"},
+		{"shaded without a shaded map", &pane{kind: viewer.KindTask, stage: stage("diffuse", "normal", "pbr")}, "shaded", "diffuse"},
+		{"toon", &pane{kind: viewer.KindTask, stage: all}, "toon", "diffuse"},
+		{"untextured mode", &pane{kind: viewer.KindTask, stage: all}, "ao", ""},
+		{"stage without a normal map", &pane{kind: viewer.KindTask, stage: stage("diffuse", "pbr")}, "pbr", "diffuse pbr"},
+		{"loaded for pbr, now shaded", &pane{kind: viewer.KindTask, stage: all, maps: &render3d.Maps{Diffuse: tex, Normal: tex, PBR: tex}}, "shaded", "shaded"},
+		{"loaded for shaded, now pbr", &pane{kind: viewer.KindTask, stage: all, maps: &render3d.Maps{Shaded: tex}}, "pbr", "diffuse normal pbr"},
+		{"loaded for pbr, now toon", &pane{kind: viewer.KindTask, stage: all, maps: &render3d.Maps{Diffuse: tex, Normal: tex, PBR: tex}}, "toon", ""},
+		{"model file", &pane{kind: viewer.KindModelFile}, "pbr", ""},
+	} {
+		if got := strings.Join(missingMaps(tc.p, tc.mode), " "); got != tc.want {
+			t.Errorf("%s: missing %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if n := mapCount(&render3d.Maps{Diffuse: tex, Shaded: tex}); n != 2 {
+		t.Errorf("mapCount %d, want 2", n)
+	}
+}

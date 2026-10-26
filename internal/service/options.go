@@ -277,7 +277,9 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		Permission: permissionFront{Key: key, Value: value, File: s.paths.Config},
 	}
 	if q.Known && q.Credits != nil {
-		ok := front.Wallet.Available >= *q.Credits
+		// Frozen credits are counted as spent: whether prepaid_available already
+		// excludes them is not measured, and erring low never overspends.
+		ok := front.Wallet.Available-front.Wallet.Frozen >= *q.Credits
 		front.Affordable = &ok
 	}
 

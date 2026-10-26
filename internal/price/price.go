@@ -44,7 +44,7 @@ type Input struct {
 	Tier         string // extreme-low low medium high extreme-high (Gen-2.5)
 	TextureMode  string // extreme-low .. extreme-high
 	SmartLowPoly bool
-	Resolution   string // 1k 2k 4k 6k 8k 12k
+	Resolution   string // 1k 2k 4k 6k 12k (pack resolutions; 8K is the sharp_texture option)
 	Geometry     string // base | lod | high_poly
 	Budget       string // basic standard pro (Agentic)
 	Batch        int
@@ -179,6 +179,9 @@ func generate(in Input, acct Account) (Quote, error) {
 		if plan != "business" && plan != "enterprise" {
 			return Quote{}, &Gate{fmt.Sprintf("batch %d needs the Business plan (this account: %s)", in.Batch, acct.Plan)}
 		}
+		// The web shows no price for a batch and none was measured: one
+		// draft's label times the count is a guess, so no number.
+		return unknown(fmt.Sprintf("the price of a batch of %d drafts is not shown by the web and has not been measured", in.Batch)), nil
 	}
 	model := strings.ToLower(in.Model)
 	if model == "" {
@@ -224,10 +227,13 @@ func export(in Input, acct Account) (Quote, error) {
 	high := false
 	switch res {
 	case "", "1k", "2k", "6k":
-	case "4k", "8k", "12k":
+	case "4k", "12k":
 		high = true
 	default:
-		return Quote{}, &InvalidInput{fmt.Sprintf("resolution %q is not one of 1k, 2k, 4k, 6k, 8k, 12k", in.Resolution)}
+		if res == "8k" {
+			return Quote{}, &InvalidInput{"8k is not a pack resolution: the web's 8K chip is the sharp_texture option of generate_texture; packs are 1k, 2k, 6k (Basic) or 4k, 12k (High)"}
+		}
+		return Quote{}, &InvalidInput{fmt.Sprintf("resolution %q is not one of 1k, 2k, 4k, 6k, 12k", in.Resolution)}
 	}
 	geo := strings.ToLower(in.Geometry)
 	switch geo {
@@ -238,7 +244,7 @@ func export(in Input, acct Account) (Quote, error) {
 		return Quote{}, &InvalidInput{fmt.Sprintf("geometry %q is not one of base, lod, high_poly", in.Geometry)}
 	}
 	if high && !acct.has("RodinPackHighResolution") {
-		return Quote{}, &Gate{"4K, 8K and 12K packs and high-poly geometry need the RodinPackHighResolution privilege (Business plan); use 2k (or 6k for extreme-high textures) with base geometry"}
+		return Quote{}, &Gate{"4K and 12K packs and high-poly geometry need the RodinPackHighResolution privilege (Business plan); use 2k (or 6k for extreme-high textures) with base geometry"}
 	}
 	switch strings.ToLower(in.Tier) {
 	case "extreme-low", "low":

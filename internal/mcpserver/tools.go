@@ -111,8 +111,9 @@ type downloadInput struct {
 func (s *Server) registerTools() {
 	addTool(s, "get_account", "Account and wallet",
 		"Show the signed-in Hyper3D account: username, plan and renewal date, the wallet in credits (available, regular, subscription, frozen), "+
-			"the [permission] values of config.toml that allow or deny each paid or changing operation, the session's state and expiry, and the "+
-			"background syncer's state. Call it first. When it answers authentication, call login and give the user the link.",
+			"the [permission] values of config.toml that allow or deny each paid or changing operation, the session's state (login.expires_at "+
+			"is when the current access token expires; it is refreshed on its own, so it is not a sign-in deadline), and the background "+
+			"syncer's state and last sync. Call it first. When it answers authentication, call login and give the user the link.",
 		readTool, inputSchema[noInput](nil), s.getAccount)
 
 	addTool(s, "login", "Sign in",
@@ -149,7 +150,7 @@ func (s *Server) registerTools() {
 	withEnum(settings, "model", "gen-2.5", "gen-1.5")
 	withEnum(settings, "tier", "extreme-low", "low", "medium", "high", "extreme-high")
 	withEnum(settings, "texture_mode", "extreme-low", "low", "medium", "high", "extreme-high")
-	withEnum(settings, "resolution", "1k", "2k", "4k", "6k", "8k", "12k")
+	withEnum(settings, "resolution", "1k", "2k", "4k", "6k", "12k")
 	withEnum(settings, "geometry", "base", "lod", "high_poly")
 	withEnum(settings, "budget", "basic", "standard", "pro")
 	withRange(settings, 1, 10, "batch")

@@ -1,8 +1,14 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -386,5 +392,53 @@ func TestShowCamera(t *testing.T) {
 		if a.cam != tc.wantCam || a.viewName != tc.wantName {
 			t.Errorf("%s: camera %v named %s, want %v named %s", tc.name, a.cam, a.viewName, tc.wantCam, tc.wantName)
 		}
+	}
+}
+
+// TestStripLoadsListed (N16): a picture load of a strip the view no longer
+// lists (a stage change replaced it within the same content) uploads
+// nothing, as nothing would free it; a listed thumb takes its result.
+func TestStripLoadsListed(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "poster.png")
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.png")
+	a := &App{ctx: context.Background(), loaded: make(chan func(), 4)}
+	old := &thumb{kind: "poster", file: good}
+	a.strip = []*thumb{{kind: "poster"}} // the new stage's strip
+	input := &thumb{kind: "input", file: missing}
+	a.inputs = &inputModel{items: []*thumb{input}}
+
+	a.decodeThumb(a.contentGen, old, good)
+	runPost(t, a)
+	if old.img != nil || old.err != "" {
+		t.Fatal("a thumb of the old strip took its picture")
+	}
+	a.loadFlat(old)
+	runPost(t, a)
+	if old.full != nil {
+		t.Fatal("a flat picture of the old strip was uploaded")
+	}
+
+	// Listed thumbs (here: failing reads, which need no GPU) take results.
+	a.decodeThumb(a.contentGen, input, missing)
+	runPost(t, a)
+	if input.err == "" {
+		t.Fatal("a listed input thumb did not take its result")
+	}
+	a.strip[0].file = missing
+	a.loadFlat(a.strip[0])
+	runPost(t, a)
+	if a.strip[0].fullLoading {
+		t.Fatal("a listed strip thumb did not take its flat load's result")
+	}
+	if !a.listed(a.strip[0]) || !a.listed(input) || a.listed(old) {
+		t.Fatal("listed is wrong")
 	}
 }

@@ -436,7 +436,7 @@ func (a *App) loadFlat(t *thumb) {
 	go func() {
 		img, _, _, err := decodeFile(file, 4096)
 		a.post(func() {
-			if a.contentGen != cgen {
+			if a.contentGen != cgen || !a.listed(t) {
 				return
 			}
 			t.fullLoading = false

@@ -352,7 +352,7 @@ func (a *App) loadThumb(t *thumb, file string) {
 func (a *App) decodeThumb(cgen uint64, t *thumb, file string) {
 	img, w, h, err := decodeFile(file, thumbEdge)
 	a.post(func() {
-		if a.contentGen != cgen {
+		if a.contentGen != cgen || !a.listed(t) {
 			return
 		}
 		if err != nil {
@@ -362,6 +362,14 @@ func (a *App) decodeThumb(cgen uint64, t *thumb, file string) {
 		}
 		a.dirty()
 	})
+}
+
+// listed reports whether the view still lists t in its strip or its inputs
+// panel. A stage change replaces the strip within the same content, and
+// loads of the old strip may end after that: their pictures are not
+// uploaded (nothing would free them).
+func (a *App) listed(t *thumb) bool {
+	return slices.Contains(a.strip, t) || a.inputs != nil && slices.Contains(a.inputs.items, t)
 }
 
 // decodeFile reads a png, jpeg or webp file, fitted to edge (0: as is).

@@ -6,12 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -27,13 +26,16 @@ import (
 	"github.com/sairaph/mcp-wizard/flow"
 	"github.com/sairaph/mcp-wizard/harness"
 	"github.com/sairaph/mcp-wizard/installer"
-	"github.com/sairaph/mcp-wizard/proxy"
-	"github.com/sairaph/mcp-wizard/secret"
 	"github.com/sairaph/mcp-wizard/tui"
 	"github.com/sairaph/mcp-wizard/update"
 
+	"github.com/sairaph/rodin3d-mcp/internal/auth"
+	"github.com/sairaph/rodin3d-mcp/internal/commands"
+	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/mcpserver"
+	"github.com/sairaph/rodin3d-mcp/internal/service"
+	"github.com/sairaph/rodin3d-mcp/internal/store"
 )
 
 // version is set by goreleaser via -ldflags "-X main.version=...".
@@ -41,24 +43,31 @@ var version = "dev"
 
 var oneShotCommands = command.New()
 
+func newService() *service.Service {
+	exe, _ := harness.ResolveExecutable()
+	return service.New(service.Options{
+		Paths:       domain.DefaultPaths(),
+		Version:     version,
+		Executable:  exe,
+		OpenBrowser: auth.OpenBrowser,
+	})
+}
+
+func commandEnv() commands.Env {
+	return commands.Env{Service: newService, Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin, Open: openFile}
+}
+
 func init() {
-	// Register one-shot CLI commands that share business logic with the TUI:
-	//
-	// oneShotCommands.Register(command.Handler{
-	//     Name:        "list-items",
-	//     Description: "List all items",
-	//     Run: func(ctx context.Context, args []string) int {
-	//         return 0
-	//     },
-	// })
+	commands.Register(oneShotCommands, commandEnv())
 }
 
 var usageSpecs = []cli.Spec{
-	{Name: "mcp", Description: "Run the MCP server, or bridge to the remote endpoint (default when not in a terminal)"},
-	{Name: "install", Description: "Install and configure AI client integration"},
-	{Name: "uninstall", Description: "Remove AI client integration"},
+	{Name: "mcp", Description: "Run the MCP server over stdio (default when not in a terminal)"},
+	{Name: "install", Description: "Register the MCP server with the AI clients on this machine"},
+	{Name: "uninstall", Description: "Remove the AI client registrations"},
 	{Name: "add", Description: "Register the server in this project's AI client configs"},
-	{Name: "login", Description: "Sign in to rodin3d"},
+	{Name: "login", Description: "Sign in to Hyper3D (login [final-address] [no-browser])"},
+	{Name: "daemon", Description: "Run the background syncer (daemon --stop stops it)"},
 	{Name: "doctor", Description: "Diagnose the installation"},
 	{Name: "update", Description: "Update to the latest release"},
 	{Name: "version", Description: "Print the version"},
@@ -101,7 +110,13 @@ func main() {
 	case "add":
 		os.Exit(runAdd(ctx, cmd))
 	case "login":
-		os.Exit(runLogin(ctx, cmd))
+		if len(cmd.Credentials) > 0 {
+			fmt.Fprintln(os.Stderr, "Error: Hyper3D sign-in has no token or e-mail option; run `"+domain.BinaryName+" login` and approve in a browser.")
+			os.Exit(2)
+		}
+		os.Exit(commands.Login(ctx, commandEnv(), cmd.Args))
+	case "daemon":
+		os.Exit(runDaemon(ctx, cmd.Args))
 	case "doctor":
 		os.Exit(runDoctor(ctx))
 	case "update":
@@ -121,22 +136,64 @@ func main() {
 }
 
 func printUsage(w *os.File) {
-	cli.Usage(w, usageSpecs)
-	oneShotCommands.PrintUsage(w)
+	fmt.Fprintf(w, "Usage: %s <command> [arguments]\n\nCommands:\n", domain.BinaryName)
+	width := 0
+	for _, s := range usageSpecs {
+		width = max(width, len(s.Name))
+	}
+	for _, h := range oneShotCommands.List() {
+		width = max(width, len(h.Name))
+	}
+	for _, s := range usageSpecs {
+		fmt.Fprintf(w, "  %-*s  %s\n", width, s.Name, s.Description)
+	}
+	for _, h := range oneShotCommands.List() {
+		fmt.Fprintf(w, "  %-*s  %s\n", width, h.Name, h.Description)
+	}
+	fmt.Fprintln(w, "\nCommand forms (options are key=value; json prints the result as JSON):")
+	for _, h := range oneShotCommands.List() {
+		fmt.Fprintf(w, "  %s %s\n", domain.BinaryName, h.Usage)
+	}
+	fmt.Fprintln(w, "\nInstall, add and uninstall flags:")
+	fmt.Fprintln(w, "  --yes          non-interactive")
+	fmt.Fprintln(w, "  --dry-run      show what would change without writing")
+	fmt.Fprintln(w, "  --all          register with every detected client")
+	fmt.Fprintln(w, "  --clients      comma-separated client ids")
+	fmt.Fprintln(w, "  --scope        project (default: global)")
+	fmt.Fprintln(w, "  --dir          project directory for --scope project and add")
+	fmt.Fprintln(w, "  --name         server name in client configs (default "+domain.ServerName+")")
 }
 
-// --- Shared helpers ---
+// --- Daemon ---
+
+func runDaemon(ctx context.Context, args []string) int {
+	svc := newService()
+	defer svc.Close()
+	if len(args) > 0 && (args[0] == "--stop" || args[0] == "stop") {
+		if err := svc.StopDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "  %v\n", err)
+			return 1
+		}
+		fmt.Println("  Daemon stopped.")
+		return 0
+	}
+	if err := svc.RunDaemon(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// --- Shared install helpers ---
 
 // AppState is shared across install wizard steps.
 type AppState struct {
 	flow.BaseState
 	Harness installer.HarnessState
-	Login   installer.LoginState
 	Results installer.ResultsState
 }
 
 func harnessState(s *AppState) *installer.HarnessState { return &s.Harness }
-func loginState(s *AppState) *installer.LoginState     { return &s.Login }
 func resultsState(s *AppState) *installer.ResultsState { return &s.Results }
 
 func serverName(cmd cli.Command) string {
@@ -182,9 +239,6 @@ func selectIDs(harnesses []harness.Harness, cmd cli.Command) (ids []harness.ID, 
 		}
 		return ids, ""
 	}
-	// Default: installed clients that are not configured yet. --all: every
-	// installed or configured client (in project scope that means every
-	// client found on this machine gets a project entry).
 	candidates := 0
 	for _, h := range harnesses {
 		if !h.Selectable() || !h.Relevant() {
@@ -218,78 +272,6 @@ func byID(harnesses []harness.Harness) map[harness.ID]harness.Harness {
 	return m
 }
 
-// credentialKey is the store key the bridge reads the remote token from.
-func credentialKey() string {
-	if r := domain.Remote(); r != nil && r.CredentialKey != "" {
-		return r.CredentialKey
-	}
-	return "token"
-}
-
-// saveCredentialsFromFlags stores --email/--token given to an unattended
-// install so the server can use them without a login step. The token is
-// stored under the key the bridge reads.
-func saveCredentialsFromFlags(ctx context.Context, store secret.Store, cmd cli.Command) error {
-	if len(cmd.Credentials) == 0 {
-		return nil
-	}
-	sess, _, err := store.Load(ctx)
-	if err != nil {
-		return err
-	}
-	for k, v := range cmd.Credentials {
-		if k == "token" {
-			k = credentialKey()
-			v = strings.TrimSpace(v)
-		}
-		sess.Set(k, v)
-	}
-	return store.Save(ctx, sess)
-}
-
-// loadCredential returns the stored value for key, looking in the current
-// project's store first (where `add` saves it) and then the global one.
-func loadCredential(ctx context.Context, key string) (string, error) {
-	paths := []string{domain.CredentialPath()}
-	if cwd, err := os.Getwd(); err == nil {
-		paths = append([]string{domain.ProjectCredentialPath(cwd)}, paths...)
-	}
-	for _, path := range paths {
-		sess, exists, err := secret.NewFileStore(path).Load(ctx)
-		if err != nil {
-			return "", err
-		}
-		if !exists {
-			continue
-		}
-		if v := strings.TrimSpace(sess.GetString(key)); v != "" {
-			return v, nil
-		}
-	}
-	return "", nil
-}
-
-// checkRemoteURL refuses to send a credential over plain HTTP to anything
-// but a loopback address.
-func checkRemoteURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("invalid remote URL %q: %w", raw, err)
-	}
-	switch u.Scheme {
-	case "https":
-		return nil
-	case "http":
-		host := u.Hostname()
-		if host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback() {
-			return nil
-		}
-		return fmt.Errorf("remote URL %q uses plain http; the credential would be sent in cleartext (use https)", raw)
-	default:
-		return fmt.Errorf("remote URL %q must use https", raw)
-	}
-}
-
 // --- Install / add ---
 
 func runInstall(ctx context.Context, cmd cli.Command) int {
@@ -298,15 +280,12 @@ func runInstall(ctx context.Context, cmd cli.Command) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	credStore := secret.NewFileStore(domain.CredentialPath())
-
 	if tui.IsInteractive() && !cmd.Yes {
-		return runWizard(ctx, detector, harness.Scope{}, domain.LoginConfig(credStore), cmd, "rodin3d setup")
+		return runWizard(ctx, detector, harness.Scope{}, cmd, domain.BinaryName+" setup")
 	}
-	return runUnattended(ctx, detector, harness.Scope{}, credStore, cmd, harness.Present)
+	return runUnattended(ctx, detector, harness.Scope{}, cmd, harness.Present)
 }
 
-// projectDir resolves --dir (default: the working directory) to an absolute path.
 func projectDir(cmd cli.Command) (string, error) {
 	dir := cmd.Dir
 	if dir == "" {
@@ -325,31 +304,24 @@ func runAdd(ctx context.Context, cmd cli.Command) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-
 	detector, err := newDetector(serverName(cmd))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	scope := harness.ProjectScopeDir(dir)
-	credStore := secret.NewFileStore(domain.ProjectCredentialPath(dir))
-
 	if tui.IsInteractive() && !cmd.Yes {
-		return runWizard(ctx, detector, scope, domain.ProjectLoginConfig(credStore, dir), cmd, "rodin3d project setup")
+		return runWizard(ctx, detector, scope, cmd, domain.BinaryName+" project setup")
 	}
-	return runUnattended(ctx, detector, scope, credStore, cmd, harness.Present)
+	return runUnattended(ctx, detector, scope, cmd, harness.Present)
 }
 
-// runWizard drives the interactive install: pick clients, sign in, register.
-func runWizard(ctx context.Context, detector *harness.Detector, scope harness.Scope, login installer.LoginConfig, cmd cli.Command, title string) int {
-	if cmd.DryRun {
-		// A dry run must not write anything, credentials included.
-		login.Store = nil
-	}
+// runWizard drives the interactive install: pick clients, register. Sign-in
+// is the login command (the installer's sign-in step comes with the app).
+func runWizard(ctx context.Context, detector *harness.Detector, scope harness.Scope, cmd cli.Command, title string) int {
 	state := &AppState{}
 	steps := []flow.Step[AppState]{
 		installer.HarnessStep(ctx, detector, harnessState, installer.HarnessStepOptions{AllDetected: true, Scope: scope}),
-		installer.LoginStep(ctx, login, loginState),
 		installer.ApplyStep(ctx, detector, harnessState, resultsState, installer.ApplyStepOptions{Scope: scope, DryRun: cmd.DryRun}),
 	}
 	f := flow.New(steps, state)
@@ -357,10 +329,22 @@ func runWizard(ctx context.Context, detector *harness.Detector, scope harness.Sc
 	if state.Failure != nil {
 		fmt.Fprintln(os.Stderr, state.Failure)
 	}
+	if code == 0 && !cmd.DryRun {
+		printLoginHint()
+	}
 	return code
 }
 
-func runUnattended(ctx context.Context, detector *harness.Detector, scope harness.Scope, credStore secret.Store, cmd cli.Command, desired harness.DesiredState) int {
+func printLoginHint() {
+	svc := newService()
+	defer svc.Close()
+	if c, err := svc.Credentials(context.Background()); err == nil && c.State() == auth.StateSignedIn {
+		return
+	}
+	fmt.Printf("\n  Sign in to Hyper3D with:\n    %s login\n", domain.BinaryName)
+}
+
+func runUnattended(ctx context.Context, detector *harness.Detector, scope harness.Scope, cmd cli.Command, desired harness.DesiredState) int {
 	enabling := desired == harness.Present
 	harnesses := detector.DetectIn(ctx, scope)
 
@@ -393,7 +377,6 @@ func runUnattended(ctx context.Context, detector *harness.Detector, scope harnes
 	if cmd.DryRun {
 		return printPlan(ctx, detector, scope, ids, desired)
 	}
-
 	policy := harness.ConflictReplace
 	if !enabling {
 		policy = harness.ConflictError
@@ -401,12 +384,8 @@ func runUnattended(ctx context.Context, detector *harness.Detector, scope harnes
 	results := detector.ApplyIn(ctx, scope, ids, desired, policy)
 	installer.PrintResultsWithScope(os.Stdout, results, scope, enabling, false)
 	installer.PrintReloadHints(os.Stdout, results, byID(harnesses))
-
 	if enabling {
-		if err := saveCredentialsFromFlags(ctx, credStore, cmd); err != nil {
-			fmt.Fprintf(os.Stderr, "  Could not save credentials: %v\n", err)
-			return 1
-		}
+		printLoginHint()
 	}
 	return exitCodeFor(results)
 }
@@ -442,33 +421,7 @@ func runUninstall(ctx context.Context, cmd cli.Command) int {
 		}
 		scope = harness.ProjectScopeDir(dir)
 	}
-	return runUnattended(ctx, detector, scope, nil, cmd, harness.Absent)
-}
-
-// --- Login ---
-
-func runLogin(ctx context.Context, cmd cli.Command) int {
-	credStore := secret.NewFileStore(domain.CredentialPath())
-
-	if len(cmd.Credentials) > 0 {
-		if err := saveCredentialsFromFlags(ctx, credStore, cmd); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		fmt.Printf("  Credentials saved to %s\n", credStore.Path())
-		return 0
-	}
-	if !tui.IsInteractive() {
-		fmt.Fprintln(os.Stderr, "login requires an interactive terminal, or pass credentials as flags")
-		return 1
-	}
-
-	state := &AppState{}
-	step := installer.LoginStep(ctx, domain.LoginConfig(credStore),
-		func(s *AppState) *installer.LoginState { return &s.Login },
-	)
-	f := flow.New([]flow.Step[AppState]{step}, state)
-	return tui.Run(ctx, f, tui.Options{Title: "rodin3d login"})
+	return runUnattended(ctx, detector, scope, cmd, harness.Absent)
 }
 
 // --- Doctor ---
@@ -488,17 +441,18 @@ func updateOptions() update.Options {
 	return opts
 }
 
-func newDoctor(ctx context.Context) *doctor.Runner {
+func newDoctor(svc *service.Service) *doctor.Runner {
 	opts := updateOptions()
 	r := doctor.New(
-		doctor.ExecutableCheck{},
+		executableCheck{},
 		doctor.PathCheck{Dir: opts.InstallDir},
-		credentialsCheck{path: domain.CredentialPath()},
+		configCheck{svc},
+		credentialsCheck{svc},
+		serviceCheck{svc},
+		storeCheck{svc},
+		daemonCheck{svc},
 		clientsCheck{},
 	)
-	if remote := domain.Remote(); remote != nil {
-		r.Add(remoteCheck{remote: remote})
-	}
 	if version != "dev" {
 		r.Add(doctor.UpdateCheck{Opts: opts})
 	}
@@ -506,81 +460,142 @@ func newDoctor(ctx context.Context) *doctor.Runner {
 }
 
 func runDoctor(ctx context.Context) int {
-	return newDoctor(ctx).Run(ctx, os.Stdout)
+	svc := newService()
+	defer svc.Close()
+	return newDoctor(svc).Run(ctx, os.Stdout)
 }
 
-// credentialsCheck reports whether stored credentials exist. Missing
-// credentials are a warning, not a failure, because login is optional.
-type credentialsCheck struct{ path string }
+// executableCheck is doctor.ExecutableCheck, except on Windows: there Go
+// reports no execute permission bits, so the library check always fails, and
+// a file that exists and is running is executable by definition.
+type executableCheck struct{}
 
-func (c credentialsCheck) Name() string { return "Credentials" }
+func (executableCheck) Name() string { return doctor.ExecutableCheck{}.Name() }
 
-func (c credentialsCheck) Run(_ context.Context) doctor.Result {
-	if _, err := os.Stat(c.path); err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "not signed in; run `rodin3d-mcp login`"}
+func (c executableCheck) Run(ctx context.Context) doctor.Result {
+	if runtime.GOOS != "windows" {
+		return doctor.ExecutableCheck{}.Run(ctx)
 	}
-	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: c.path}
+	path, err := os.Executable()
+	if err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: fmt.Sprintf("cannot determine executable: %v", err)}
+	}
+	if _, err := os.Stat(path); err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: fmt.Sprintf("cannot stat %s: %v", path, err)}
+	}
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: path}
 }
 
-// remoteCheck confirms the remote endpoint accepts the stored credential
-// with a single bounded MCP initialize request. It does not open a session,
-// so nothing has to be torn down afterwards.
-type remoteCheck struct{ remote *domain.RemoteConfig }
+type configCheck struct{ svc *service.Service }
 
-func (remoteCheck) Name() string { return "Remote endpoint" }
+func (configCheck) Name() string { return "Config" }
 
-func (c remoteCheck) Run(ctx context.Context) doctor.Result {
-	if err := checkRemoteURL(c.remote.URL); err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
+func (c configCheck) Run(context.Context) doctor.Result {
+	path := c.svc.Paths().Config
+	if _, err := c.svc.Config(); err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error() + " (every write is denied until it is fixed)"}
 	}
-	token, err := loadCredential(ctx, c.remote.CredentialKey)
-	if err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
+	if _, err := os.Stat(path); err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: "no " + path + ": every paid or changing operation is denied"}
 	}
-	if token == "" {
-		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "no credential stored; run `rodin3d-mcp login`"}
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rodin3d-doctor","version":"` + version + `"}}}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.remote.URL, strings.NewReader(body))
-	if err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.remote.HeaderName != "" {
-		req.Header.Set(c.remote.HeaderName, c.remote.HeaderPrefix+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: oneLine(fmt.Sprintf("%s: %v", c.remote.URL, err))}
-	}
-	defer resp.Body.Close()
-	// Tell the server we are not keeping the session it may have created.
-	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" && resp.StatusCode < 300 {
-		if del, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.remote.URL, nil); err == nil {
-			del.Header.Set("Mcp-Session-Id", sid)
-			if c.remote.HeaderName != "" {
-				del.Header.Set(c.remote.HeaderName, c.remote.HeaderPrefix+token)
-			}
-			if r, err := http.DefaultClient.Do(del); err == nil {
-				r.Body.Close()
-			}
+	cfg, _ := config.Load(path)
+	var allowed []string
+	for _, k := range config.Keys {
+		if cfg.Permission.Allowed(k.Name) {
+			allowed = append(allowed, k.Name)
 		}
 	}
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: fmt.Sprintf("%s rejected the stored credential (HTTP %d); run `rodin3d-mcp login`", c.remote.URL, resp.StatusCode)}
-	case resp.StatusCode >= 300:
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: fmt.Sprintf("%s: HTTP %d", c.remote.URL, resp.StatusCode)}
+	detail := path + ": every write denied"
+	if len(allowed) > 0 {
+		detail = path + ": allows " + strings.Join(allowed, ", ")
 	}
-	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: c.remote.URL}
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: detail}
 }
 
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+type credentialsCheck struct{ svc *service.Service }
+
+func (credentialsCheck) Name() string { return "Credentials" }
+
+func (c credentialsCheck) Run(ctx context.Context) doctor.Result {
+	creds, err := c.svc.Credentials(ctx)
+	if err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
+	}
+	switch creds.State() {
+	case auth.StateSignedOut:
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "not signed in; run `" + domain.BinaryName + " login`"}
+	case auth.StateNeedsLogin:
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: "the session ended; run `" + domain.BinaryName + " login`"}
+	}
+	left := time.Until(creds.AccessExpiresAt).Round(time.Minute)
+	detail := fmt.Sprintf("signed in as %s; access token valid for %s", creds.Username, left)
+	if left <= 0 {
+		detail = fmt.Sprintf("signed in as %s; access token expired, the next call refreshes it", creds.Username)
+	}
+	if creds.RefreshToken == "" {
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: detail + "; no refresh token"}
+	}
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: detail}
+}
+
+type serviceCheck struct{ svc *service.Service }
+
+func (serviceCheck) Name() string { return "Hyper3D" }
+
+func (c serviceCheck) Run(ctx context.Context) doctor.Result {
+	creds, err := c.svc.Credentials(ctx)
+	if err != nil || creds.State() != auth.StateSignedIn {
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "skipped: not signed in"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	info, err := c.svc.Client().GetInfo(ctx)
+	if err != nil {
+		e := service.Classify(err)
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: e.Message}
+	}
+	w := service.WalletOf(info)
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: fmt.Sprintf("%s reachable; %s plan, %.1f credits available", c.svc.Client().Base(), info.Meta.Subscriptions.HighestLevel, w.Available)}
+}
+
+type storeCheck struct{ svc *service.Service }
+
+func (storeCheck) Name() string { return "Task index" }
+
+func (c storeCheck) Run(context.Context) doctor.Result {
+	st, err := c.svc.Store()
+	if err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
+	}
+	tasks, err := st.Tasks()
+	if err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
+	}
+	state, _ := st.State()
+	detail := fmt.Sprintf("%s: %d tasks", c.svc.Paths().Database, len(tasks))
+	if !state.LastSync.IsZero() {
+		detail += ", last sync " + state.LastSync.Local().Format("2006-01-02 15:04")
+	} else {
+		detail += ", never synced"
+	}
+	if state.Phase == store.PhaseError {
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: detail + "; last error: " + state.LastError}
+	}
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: detail}
+}
+
+type daemonCheck struct{ svc *service.Service }
+
+func (daemonCheck) Name() string { return "Daemon" }
+
+func (c daemonCheck) Run(ctx context.Context) doctor.Result {
+	if c.svc.DaemonRunning() {
+		return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: "running (log " + c.svc.Paths().DaemonLog + ")"}
+	}
+	if creds, err := c.svc.Credentials(ctx); err == nil && creds.State() == auth.StateSignedIn {
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "not running; any command or tool call starts it"}
+	}
+	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: "not running (starts after login)"}
 }
 
 // clientsCheck lists the AI clients that have this server registered.
@@ -600,7 +615,7 @@ func (clientsCheck) Run(ctx context.Context) doctor.Result {
 		}
 	}
 	if len(configured) == 0 {
-		return doctor.Result{Name: "AI clients", Status: doctor.Warn, Detail: "no client is configured; run `rodin3d-mcp install`"}
+		return doctor.Result{Name: "AI clients", Status: doctor.Warn, Detail: "no client is configured; run `" + domain.BinaryName + " install`"}
 	}
 	return doctor.Result{Name: "AI clients", Status: doctor.OK, Detail: strings.Join(configured, ", ")}
 }
@@ -609,9 +624,6 @@ func (clientsCheck) Run(ctx context.Context) doctor.Result {
 
 func runUpdate(ctx context.Context, cmd cli.Command) int {
 	opts := updateOptions()
-
-	// `update --from <file>` is used by the install script, which has already
-	// downloaded and verified the new binary.
 	if len(cmd.Args) >= 2 && cmd.Args[0] == "--from" {
 		if err := update.SwapFrom(ctx, cmd.Args[1], opts); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -620,7 +632,6 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 		fmt.Println("  Updated.")
 		return 0
 	}
-
 	if version == "dev" {
 		fmt.Println("  This is a development build; build from source to update.")
 		return 0
@@ -631,10 +642,10 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 		return 1
 	}
 	if !available {
-		fmt.Printf("  rodin3d %s is up to date.\n", version)
+		fmt.Printf("  %s %s is up to date.\n", domain.BinaryName, version)
 		return 0
 	}
-	fmt.Printf("  Updating rodin3d %s -> %s\n", version, latest)
+	fmt.Printf("  Updating %s %s -> %s\n", domain.BinaryName, version, latest)
 	if err := update.SelfUpdate(ctx, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "  Update failed: %v\n", err)
 		return 1
@@ -645,8 +656,8 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 
 // --- App ---
 
-// The interactive app opens when the binary is run bare in a terminal. It
-// starts as a menu; extend appState with your own steps and screens.
+// The interactive app opens when the binary is run bare in a terminal. In
+// this phase it offers the doctor; the full app comes with phase P4.
 
 const (
 	stepMenu app.Step = iota
@@ -662,13 +673,13 @@ type appState struct {
 
 func runApp(ctx context.Context) int {
 	s := &appState{ctx: ctx}
-	s.menu = menu.New(domain.ServerName+" "+version, func() []menu.Item {
+	s.menu = menu.New(domain.BinaryName+" "+version, func() []menu.Item {
 		return []menu.Item{
 			{Label: "Run doctor", Action: "doctor"},
 			{Label: "Quit", Action: "quit"},
 		}
 	})
-	return app.Run(ctx, s, app.Options{Title: domain.ServerName, Version: version})
+	return app.Run(ctx, s, app.Options{Title: domain.BinaryName, Version: version})
 }
 
 func (m *appState) Init() tea.Cmd { return m.menu.Init() }
@@ -677,7 +688,6 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if handled, cmd := m.HandleGlobalKeys(msg); handled {
 		return m, cmd
 	}
-
 	switch msg := msg.(type) {
 	case app.ActionMsg:
 		switch msg.Source {
@@ -693,7 +703,9 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detail = detail.New("Doctor", m.Status)
 				return m, tea.Batch(m.detail.Init(), async.Load(func() (string, error) {
 					var buf bytes.Buffer
-					newDoctor(m.ctx).Run(m.ctx, &buf)
+					svc := newService()
+					defer svc.Close()
+					newDoctor(svc).Run(m.ctx, &buf)
 					return buf.String(), nil
 				}))
 			}
@@ -704,7 +716,6 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-
 	case async.Result[string]:
 		m.Status = ""
 		if msg.Err != nil {
@@ -714,7 +725,6 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-
 	switch m.Step {
 	case stepMenu:
 		return m, m.menu.Update(msg)
@@ -727,11 +737,8 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *appState) View() string {
-	switch m.Step {
-	case stepDoctor:
-		if m.detail != nil {
-			return m.detail.View()
-		}
+	if m.Step == stepDoctor && m.detail != nil {
+		return m.detail.View()
 	}
 	return m.menu.View()
 }
@@ -739,16 +746,11 @@ func (m *appState) View() string {
 // --- MCP Server ---
 
 func runMCPServer(ctx context.Context, cmd cli.Command) int {
-	transport := os.Getenv("TRANSPORT")
-
-	// --remote, or a configured remote endpoint when TRANSPORT is not set
-	// explicitly, turns this binary into a stdio bridge: the AI client talks
-	// to us, we talk to the remote with the stored credential. An explicit
-	// TRANSPORT always serves the embedded server.
-	if remoteURL, remote := bridgeTarget(cmd); remoteURL != "" && (cmd.Remote != "" || transport == "") {
-		return runBridge(ctx, remoteURL, remote)
+	if cmd.Remote != "" {
+		fmt.Fprintln(os.Stderr, "Error: "+domain.BinaryName+" serves its own tools; --remote is not supported.")
+		return 2
 	}
-
+	transport := os.Getenv("TRANSPORT")
 	if transport == "" {
 		transport = "stdio"
 	}
@@ -756,12 +758,9 @@ func runMCPServer(ctx context.Context, cmd cli.Command) int {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-
-	srv := mcpserver.New(mcpserver.Config{
-		Version:   version,
-		Transport: transport,
-		HTTPAddr:  addr,
-	})
+	svc := newService()
+	defer svc.Close()
+	srv := mcpserver.New(mcpserver.Config{Version: version, Transport: transport, HTTPAddr: addr, Service: svc})
 	err := srv.Run(ctx)
 	if err == nil || errors.Is(err, context.Canceled) || isClientHangup(err) {
 		return 0
@@ -770,59 +769,26 @@ func runMCPServer(ctx context.Context, cmd cli.Command) int {
 	return 1
 }
 
-// bridgeTarget returns the remote URL to bridge to: --remote wins, then the
-// project's RemoteConfig. The second value carries the header settings.
-func bridgeTarget(cmd cli.Command) (string, *domain.RemoteConfig) {
-	remote := domain.Remote()
-	if cmd.Remote != "" {
-		if remote == nil {
-			// Ad-hoc bridge on a project without a configured remote: a
-			// bearer token stored with `login --token`.
-			remote = &domain.RemoteConfig{HeaderName: "Authorization", HeaderPrefix: "Bearer ", CredentialKey: "token"}
-		}
-		return cmd.Remote, remote
-	}
-	if remote != nil {
-		return remote.URL, remote
-	}
-	return "", nil
-}
-
-func runBridge(ctx context.Context, remoteURL string, remote *domain.RemoteConfig) int {
-	if err := checkRemoteURL(remoteURL); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	err := proxy.Run(ctx, proxy.Config{
-		URL: remoteURL,
-		HeaderFunc: func(ctx context.Context) (map[string]string, error) {
-			if remote.HeaderName == "" || remote.CredentialKey == "" {
-				return nil, nil
-			}
-			token, err := loadCredential(ctx, remote.CredentialKey)
-			if err != nil {
-				return nil, err
-			}
-			if token == "" {
-				return nil, fmt.Errorf("no credential stored; run `rodin3d-mcp login` (or `rodin3d-mcp login --token <token>`) first")
-			}
-			return map[string]string{remote.HeaderName: remote.HeaderPrefix + token}, nil
-		},
-	})
-	if err == nil || errors.Is(err, context.Canceled) {
-		return 0
-	}
-	fmt.Fprintln(os.Stderr, err)
-	if errors.Is(err, proxy.ErrUnauthorized) {
-		fmt.Fprintln(os.Stderr, "  The stored credential was rejected; run `rodin3d-mcp login` to replace it.")
-	}
-	return 1
-}
-
 // isClientHangup reports whether the server stopped because the client closed
 // the transport (stdin EOF for stdio), which is how MCP sessions normally end.
-// The SDK formats this as "server is closing: EOF" without wrapping io.EOF, so
-// the check is textual.
 func isClientHangup(err error) bool {
 	return strings.HasSuffix(err.Error(), io.EOF.Error())
+}
+
+// openFile shows path with the operating system's default viewer.
+func openFile(path string) error {
+	var c *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		c = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+	case "darwin":
+		c = exec.Command("open", path)
+	default:
+		c = exec.Command("xdg-open", path)
+	}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go func() { _ = c.Wait() }()
+	return nil
 }

@@ -46,8 +46,14 @@ type MeshRequest struct {
 	Prompt           string
 	Settings         map[string]any
 	UseOriginalAlpha []bool
-	BatchGen         int // 0 or 1: no batch_gen field
-	Images           []UploadImage
+	// AlphaAll, when set, sends use_original_alpha as the single boolean
+	// true, as the web's 3D Editing (modelTo3d) submit does.
+	AlphaAll bool
+	BatchGen int // 0 or 1: no batch_gen field
+	Images   []UploadImage
+	// Models are the model files of a 3D Editing (modelTo3d) submit; their
+	// presence makes the task modelTo3d (notes 14 section 7).
+	Models []UploadImage
 }
 
 // Mesh calls task/rodin_mesh: submits a new image-to-3D task. The reply
@@ -57,8 +63,10 @@ func (c *Client) Mesh(ctx context.Context, req MeshRequest) (*JobReply, error) {
 	if err != nil {
 		return nil, fmt.Errorf("task/rodin_mesh: encode settings: %w", err)
 	}
-	alpha, err := json.Marshal(req.UseOriginalAlpha)
-	if err != nil {
+	var alpha []byte
+	if req.AlphaAll {
+		alpha = []byte("true")
+	} else if alpha, err = json.Marshal(req.UseOriginalAlpha); err != nil {
 		return nil, fmt.Errorf("task/rodin_mesh: encode use_original_alpha: %w", err)
 	}
 	prompt := req.Prompt
@@ -78,6 +86,11 @@ func (c *Client) Mesh(ctx context.Context, req MeshRequest) (*JobReply, error) {
 	}
 	for _, img := range req.Images {
 		if err := writeFile(mw, "images", img); err != nil {
+			return nil, err
+		}
+	}
+	for _, m := range req.Models {
+		if err := writeFile(mw, "models", m); err != nil {
 			return nil, err
 		}
 	}

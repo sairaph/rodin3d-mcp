@@ -117,7 +117,7 @@ var Settings = []Setting{
 	{Name: "private", Stage: "generate_model", Web: "is_private", Type: "bool", Default: "true"},
 	// confirm_geometry
 	{Name: "mesh", Stage: "confirm_geometry", Web: "mesh_export_type", Type: "enum", Values: "raw (Triangle), quad", Gate: "raw: RodinMeshAdditionalFeatures"},
-	{Name: "quality", Stage: "confirm_geometry", Web: "quality + quality_override", Type: "enum", Values: "extra-low 4000, low 8000, medium 18000, high 50000 faces", Default: "medium", Notes: "Quad mesh."},
+	{Name: "quality", Stage: "confirm_geometry", Web: "quality_override (quality stays medium, as the web sends it)", Type: "enum", Values: "extra-low 4000, low 8000, medium 18000, high 50000 faces", Default: "medium", Notes: "Quad mesh."},
 	{Name: "faces", Stage: "confirm_geometry", Web: "quality_override", Type: "integer", Values: "gen-2.5 high and extreme-high: 20000-2000000; other gen-2.5 tiers: 500-1000000; gen-1.5: 500-200000", Notes: "Raw mesh with Simplify; under 20000 the web warns of a low-poly model."},
 	{Name: "smart_low_poly", Stage: "confirm_geometry", Web: "task/rodin_polygen", Type: "bool + density", Values: "density low, medium, high; type raw or quad", Gate: "RodinRemeshAdditionalFeatures", Notes: "The web labels Confirm 2 Credits in this mode (not measured)."},
 	{Name: "bake_normal", Stage: "confirm_geometry", Web: "quad_normal", Type: "bool", Notes: "Raw mesh: only with Simplify and at most 20000 faces."},
@@ -137,9 +137,9 @@ var Settings = []Setting{
 	// export_model
 	{Name: "type", Stage: "export_model", Web: "type", Type: "enum", Values: "mesh, material", Default: "by stage"},
 	{Name: "format", Stage: "export_model", Web: "geometry_file_format", Type: "enum", Values: "obj, fbx, glb, usdz, stl", Default: "obj"},
-	{Name: "resolution", Stage: "export_model", Web: "resolution Basic | High", Type: "enum", Values: "1k, 2k, 6k -> Basic; 4k, 12k -> High (6k and 12k for extreme-high textures)", Default: "2k", Gate: "High: RodinPackHighResolution"},
+	{Name: "resolution", Stage: "export_model", Web: "resolution Basic | High", Type: "enum", Values: "1k, 2k, 6k -> Basic; 4k, 12k -> High (6k and 12k for extreme-high textures)", Default: "2k", Gate: "High: RodinPackHighResolution", Notes: "Material packs only; a mesh pack sends no resolution, as the web does."},
 	{Name: "geometry", Stage: "export_model", Web: "geometry Base | Lod | HighPoly", Type: "enum", Values: "base, lod, high_poly", Default: "base", Gate: "high_poly: RodinPackHighResolution"},
-	{Name: "material", Stage: "export_model", Web: "material", Type: "enum", Values: "pbr, shaded, all", Default: "all"},
+	{Name: "material", Stage: "export_model", Web: "material", Type: "enum", Values: "pbr, shaded, all", Default: "all", Notes: "Material packs only; a mesh pack sends no material, as the web does."},
 	{Name: "align_ground", Stage: "export_model", Web: "align_ground", Type: "bool", Default: "true (model on the ground)"},
 	{Name: "height", Stage: "export_model", Web: "height", Type: "number", Notes: "Custom real-world size."},
 }

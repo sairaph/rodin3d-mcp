@@ -223,7 +223,11 @@ func pickVersion(want string, versions []string, what string) (string, error) {
 }
 
 // confirmSettings builds the geometry confirm settings (web Fs builder,
-// main@fmt:28340-28440).
+// main@fmt:28340-28440). Raw and quad both send quality "medium", as the
+// web's request does: the quad quality the user picks becomes the face
+// count of quality_override, and its name E[currentQuadIndex] goes only
+// into the panel's saved preference (localStorage newRodinGeoMeshOption,
+// main@fmt:28348-28362), not into the body (T, main@fmt:28394-28408).
 func confirmSettings(in ConfirmGeometryInput, card *rodin.Card, info *rodin.UserInfo) (map[string]any, error) {
 	bad := func(msg, hint string) error { return fail(render.CodeInvalidInput, msg, hint) }
 	mesh := strings.ToLower(strings.TrimSpace(in.Mesh))
@@ -718,6 +722,11 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	if in.Height != nil && *in.Height <= 0 {
 		return Result{}, bad("height must be above 0.", "Pass the real-world height, or leave it out.")
 	}
+	// The web's pack bodies (call sites main@fmt:39864-39876 material and
+	// 39908-39922 mesh, builder Tt main@fmt:146794-146833): a mesh pack
+	// passes no resolution and no material (the builder's undefined keys
+	// drop out of the JSON) and carries the smart-UV version the task has
+	// applied; a material pack carries both and a null smart-UV version.
 	body := map[string]any{"task_uuid": uuid, "type": typ, "geometry": geoWire, "geometry_file_format": format,
 		"align_ground": optTrue(in.AlignGround), "rodin_smart_uv_version": nil}
 	if in.Height != nil {
@@ -725,6 +734,11 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	}
 	resolution := strings.ToLower(strings.TrimSpace(in.Resolution))
 	material := ""
+	if typ == "mesh" {
+		if v, ok := card.Settings["rodin_smart_uv_applied_version"]; ok && v != nil {
+			body["rodin_smart_uv_version"] = v
+		}
+	}
 	if typ == "material" {
 		if resolution == "" {
 			resolution = "2k"

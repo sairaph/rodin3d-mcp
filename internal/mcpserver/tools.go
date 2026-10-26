@@ -170,7 +170,8 @@ func (s *Server) registerTools() {
 		"List the account's Rodin tasks from the local index the background syncer keeps (every 15 minutes, and every 5 seconds for tasks "+
 			"that are running), newest first: prompt, id, stage (geometry_draft, geometry, material_draft, material), state (running, ready, "+
 			"packed), model and tier, view tags, creation time. Filter by stage, state, or query (prompt text or id start); results come in "+
-			"pages sized to fit the reply. Right after the first login it waits for the first sync. Use get_task for one task's details.",
+			"pages sized to fit the reply. Needs a signed-in account (the index is shown only to the account it belongs to); right after the "+
+			"first login it waits for the first sync. Use get_task for one task's details.",
 		readTool, list, s.listTasks)
 
 	addTool(s, "get_task", "Task details",

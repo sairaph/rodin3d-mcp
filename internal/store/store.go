@@ -480,6 +480,29 @@ func (s *Store) Files(uuid, kind string) ([]File, error) {
 	return out, rows.Err()
 }
 
+// DownloadDirs lists the folders download_model has saved into, so a sweep
+// can reach the temporaries of a caller-chosen output_dir too.
+func (s *Store) DownloadDirs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT path FROM files WHERE kind = 'download'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		if dir := filepath.Dir(p); !seen[dir] {
+			seen[dir] = true
+			out = append(out, dir)
+		}
+	}
+	return out, rows.Err()
+}
+
 // Sync phases.
 const (
 	PhaseIdle       = "idle"

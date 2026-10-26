@@ -15,8 +15,9 @@ const staleAge = time.Hour
 // Sweep removes temporary files a hard stop left behind (on Windows the
 // daemon is stopped by killing it, so deferred clean-ups never run): image
 // fetches in the cache, downloads in the default download folder, and
-// atomic writes in the data root. It returns how many it removed.
-func Sweep(paths domain.Paths, now time.Time) int {
+// atomic writes in the data root, and downloads in outputDirs (folders the
+// caller chose earlier). It returns how many it removed.
+func Sweep(paths domain.Paths, now time.Time, outputDirs ...string) int {
 	removed := 0
 	stale := func(path string, fi os.FileInfo) bool {
 		name := fi.Name()
@@ -36,9 +37,15 @@ func Sweep(paths domain.Paths, now time.Time) int {
 			return nil
 		})
 	}
-	if entries, err := os.ReadDir(paths.Root); err == nil {
+	// The data root and the folders earlier downloads went to (an output_dir
+	// the caller chose): their own files only, not their subfolders.
+	for _, dir := range append([]string{paths.Root}, outputDirs...) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
 		for _, e := range entries {
-			if fi, err := e.Info(); err == nil && stale(filepath.Join(paths.Root, e.Name()), fi) && os.Remove(filepath.Join(paths.Root, e.Name())) == nil {
+			if fi, err := e.Info(); err == nil && stale(filepath.Join(dir, e.Name()), fi) && os.Remove(filepath.Join(dir, e.Name())) == nil {
 				removed++
 			}
 		}

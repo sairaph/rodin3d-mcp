@@ -198,14 +198,15 @@ func (s *Service) RunDaemon(ctx context.Context) error {
 	}
 	defer inst.Close()
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.LUTC)
-	// Holding the lock, no other daemon writes; a temporary file older than
-	// an hour is a leftover of a hard stop.
-	if n := daemon.Sweep(s.paths, time.Now()); n > 0 {
-		logger.Printf("removed %d temporary files left by an earlier stop", n)
-	}
 	st, err := s.Store()
 	if err != nil {
 		return err
+	}
+	// Holding the lock, no other daemon writes; a temporary file older than
+	// an hour is a leftover of a hard stop.
+	dirs, _ := st.DownloadDirs()
+	if n := daemon.Sweep(s.paths, time.Now(), dirs...); n > 0 {
+		logger.Printf("removed %d temporary files left by an earlier stop", n)
 	}
 	cache, _ := s.assetCache()
 	d := &daemon.Daemon{Store: st, Client: s.client, Session: s.session, Cache: cache, Log: logger}

@@ -29,7 +29,7 @@ func job(p *pane, mode string, interactive bool) *renderJob {
 	m, maps := traceQuad()
 	cam, _ := render3d.ViewFront.Camera()
 	return &renderJob{p: p, mesh: m, maps: maps, frame: render3d.FrameOf(m),
-		key: renderKey{mode: mode, cam: cam, w: 400, h: 400, interactive: interactive, maps: true}}
+		key: renderKey{mode: mode, cam: cam, w: 400, h: 400, interactive: interactive, maps: mapCount(maps)}}
 }
 
 func recv(t *testing.T, r *renderer) renderDone {

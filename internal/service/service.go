@@ -67,7 +67,8 @@ type Service struct {
 	st    *store.Store
 	cache *assets.Cache
 
-	r3d renderState // get_preview's local renders
+	r3d  renderState // get_preview's local renders
+	view viewShare   // the viewer window's meshes and maps, shared while in use
 }
 
 // New returns a service for opts.

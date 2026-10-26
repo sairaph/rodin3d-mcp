@@ -16,6 +16,43 @@ type Maps struct {
 	Diffuse, Normal, PBR, Shaded *Texture
 }
 
+// MapKinds are the names of the Maps fields, as the card's texture_* modes
+// name them.
+var MapKinds = []string{"diffuse", "normal", "pbr", "shaded"}
+
+// Map returns the map of kind (one of MapKinds); nil when m is nil or has
+// none.
+func (m *Maps) Map(kind string) *Texture {
+	if m == nil {
+		return nil
+	}
+	switch kind {
+	case "diffuse":
+		return m.Diffuse
+	case "normal":
+		return m.Normal
+	case "pbr":
+		return m.PBR
+	case "shaded":
+		return m.Shaded
+	}
+	return nil
+}
+
+// SetMap sets the map of kind (one of MapKinds).
+func (m *Maps) SetMap(kind string, t *Texture) {
+	switch kind {
+	case "diffuse":
+		m.Diffuse = t
+	case "normal":
+		m.Normal = t
+	case "pbr":
+		m.PBR = t
+	case "shaded":
+		m.Shaded = t
+	}
+}
+
 // View is a named camera. All views look at the centre of the model's
 // bounding box from the web viewer's framing distance; they differ in
 // direction only.

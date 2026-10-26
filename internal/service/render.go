@@ -241,20 +241,30 @@ func (s *Service) stageMesh(ctx context.Context, srcFile string, src []byte, key
 	if m != nil {
 		return m, false, nil
 	}
-	keep := func(m *render3d.Mesh) {
-		r.mu.Lock()
-		r.meshKey, r.mesh = key, m
-		r.mu.Unlock()
+	// Drop the previous mesh before loading the next: both can be large.
+	r.mu.Lock()
+	r.meshKey, r.mesh = "", nil
+	r.mu.Unlock()
+	m, decoded, err = s.loadMesh(ctx, srcFile, src, key, draft)
+	if err != nil {
+		return nil, false, err
 	}
+	r.mu.Lock()
+	r.meshKey, r.mesh = key, m
+	r.mu.Unlock()
+	return m, decoded, nil
+}
+
+// loadMesh reads the mesh file beside a stage file whose content hashes to
+// key, or decodes the stage file and writes that mesh file. decoded reports
+// the decode.
+func (s *Service) loadMesh(ctx context.Context, srcFile string, src []byte, key string, draft bool) (m *render3d.Mesh, decoded bool, err error) {
 	meshFile := filepath.Join(filepath.Dir(srcFile), fmt.Sprintf("mesh-v%s-%s.r3dmesh", meshVersion, key[:16]))
 	if b, err := os.ReadFile(meshFile); err == nil {
 		if m, _, err := render3d.DecodeMesh(b); err == nil {
-			keep(m)
 			return m, false, nil
 		}
 	}
-	// Drop the previous mesh before decoding the next: both can be large.
-	keep(nil)
 	dec, err := s.decoder()
 	if err != nil {
 		return nil, false, wrapf(err, "start the Draco decoder")
@@ -284,7 +294,6 @@ func (s *Service) stageMesh(ctx context.Context, srcFile string, src []byte, key
 	// The mesh file only saves the next process a decode; a failed write
 	// costs nothing else.
 	_ = domain.WriteFileAtomic(meshFile, render3d.EncodeMesh(m, draft), 0o600)
-	keep(m)
 	return m, true, nil
 }
 
@@ -335,20 +344,11 @@ func (s *Service) stageMaps(files []mapFile) (*render3d.Maps, error) {
 	r.mu.Unlock()
 	m := &render3d.Maps{}
 	for _, f := range files {
-		t, err := render3d.DecodeTexture(f.data, f.kind == "diffuse" || f.kind == "shaded")
+		t, err := render3d.DecodeTexture(f.data, colourMap(f.kind))
 		if err != nil {
 			return nil, wrapf(err, "decode the %s texture map", f.kind)
 		}
-		switch f.kind {
-		case "diffuse":
-			m.Diffuse = t
-		case "normal":
-			m.Normal = t
-		case "pbr":
-			m.PBR = t
-		case "shaded":
-			m.Shaded = t
-		}
+		m.SetMap(f.kind, t)
 	}
 	r.mu.Lock()
 	r.mapsKey, r.maps = k, m

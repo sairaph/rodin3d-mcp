@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"math"
 	"os"
 	"path/filepath"
@@ -105,6 +106,11 @@ type thumb struct {
 
 	full        *ebiten.Image // full-size picture for the flat view
 	fullLoading bool
+
+	// Textures panel: src reads the full picture, loaded into img only
+	// while it is the one shown (syncImages).
+	src     func() (image.Image, error)
+	loading bool
 }
 
 // inputModel is the shown input set (or a task's inputs, read-only).
@@ -418,6 +424,7 @@ func (a *App) applyShow(p *prepared, params viewer.ShowParams) viewer.StateReply
 	a.rememberCamera()
 	a.contentGen++
 	a.rend.dropAll()
+	a.releaseImages()
 	a.kind = p.kind
 	a.panes = panes
 	a.mode = mode
@@ -755,7 +762,10 @@ func (a *App) setStage(st service.ViewStage) {
 	p.stage, p.modes = st, st.Modes
 	a.rend.drop(p)
 	p.gen++
-	p.mesh, p.simple, p.maps, p.img, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, nil, false, false, ""
+	release(&p.img)
+	a.releaseThumbs(a.strip)
+	a.trimSoon()
+	p.mesh, p.simple, p.maps, p.mapsWanted, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, false, false, false, ""
 	a.flat = -1
 	a.loadPane(p)
 	a.loadStrip(p.vt, st)

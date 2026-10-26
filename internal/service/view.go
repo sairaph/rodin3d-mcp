@@ -197,7 +197,8 @@ func (s *Service) cachedFile(ctx context.Context, uuid string, a assets.Asset) (
 }
 
 // ViewMesh downloads (when needed) and decodes the stage's mesh; the decode
-// is kept as a mesh file beside the download, as for get_preview.
+// is kept as a mesh file beside the download, as for get_preview. In memory
+// it is shared only while a caller still holds it (viewShare).
 func (s *Service) ViewMesh(ctx context.Context, uuid string, st ViewStage) (*render3d.Mesh, error) {
 	if !st.hasMesh {
 		return nil, fail(render.CodeConflict, "The "+st.Name+" stage of this task has no mesh.", "Show another stage.")
@@ -214,26 +215,53 @@ func (s *Service) ViewMesh(ctx context.Context, uuid string, st ViewStage) (*ren
 		return nil, fail(render.CodeConflict, "The geometry draft of this task is not a Draco mesh (an older preview format), so it cannot be drawn.",
 			"Show its poster in the image strip, or a later stage.")
 	}
-	m, _, err := s.stageMesh(ctx, file, src, sum(src), st.Draft)
-	return m, err
+	return s.viewMesh(ctx, file, src, sum(src), st.Draft)
 }
 
-// ViewMaps downloads (when needed) and decodes the stage's texture maps for
-// the textured modes; nil when the stage has none.
-func (s *Service) ViewMaps(ctx context.Context, uuid string, st ViewStage) (*render3d.Maps, error) {
-	var files []mapFile
+// ViewMaps downloads (when needed) and decodes the stage's texture maps of
+// the given kinds (diffuse, normal, pbr, shaded) that it has, for the
+// textured modes; nil when it has none of them. Like meshes, maps are shared
+// only while a caller holds them.
+func (s *Service) ViewMaps(ctx context.Context, uuid string, st ViewStage, kinds []string) (*render3d.Maps, error) {
+	var m *render3d.Maps
 	for _, a := range st.Maps {
-		f, err := s.cachedFile(ctx, uuid, a.asset)
+		kind := strings.TrimPrefix(a.Mode, "texture_")
+		if !slices.Contains(kinds, kind) {
+			continue
+		}
+		if m == nil {
+			m = &render3d.Maps{}
+		}
+		t, err := s.viewMap(ctx, uuid, a, kind)
 		if err != nil {
 			return nil, err
 		}
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, mapFile{kind: strings.TrimPrefix(a.Mode, "texture_"), data: b, sum: sum(b)})
+		m.SetMap(kind, t)
 	}
-	return s.stageMaps(files)
+	return m, nil
+}
+
+// ViewMap downloads (when needed) and decodes one texture map of the stage
+// (diffuse, normal, pbr or shaded), for the textures panel.
+func (s *Service) ViewMap(ctx context.Context, uuid string, st ViewStage, kind string) (*render3d.Texture, error) {
+	for _, a := range st.Maps {
+		if a.Mode == "texture_"+kind {
+			return s.viewMap(ctx, uuid, a, kind)
+		}
+	}
+	return nil, fail(render.CodeNotFound, fmt.Sprintf("The %s stage has no %s map.", st.Name, kind), "Show one of the maps it has.")
+}
+
+func (s *Service) viewMap(ctx context.Context, uuid string, a ViewAsset, kind string) (*render3d.Texture, error) {
+	f, err := s.cachedFile(ctx, uuid, a.asset)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return nil, err
+	}
+	return s.viewTexture(mapFile{kind: kind, data: b, sum: sum(b)})
 }
 
 // ViewModel reads a local model file.

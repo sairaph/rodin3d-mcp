@@ -68,6 +68,7 @@ type App struct {
 	closing     bool
 	closeAt     time.Time
 	raiseStep   int
+	trimAt      time.Time // when to give freed memory back (trimSoon)
 
 	// Screen.
 	sw, sh       int
@@ -168,7 +169,9 @@ func (a *App) Update() error {
 		a.dirty()
 	}
 	a.flushPendingCamera(now)
+	a.syncImages()
 	a.scheduleRenders(now)
+	a.trim(now)
 	a.serveCaptures(now)
 	if a.animating(now) {
 		a.dirty()
@@ -222,7 +225,7 @@ func modeNeedsMaps(mode string) bool { return render3d.Mode(mode).NeedsMaps() }
 // fullKey is the full-quality frame a pane should show now.
 func (a *App) fullKey(p *pane) renderKey {
 	r := a.ui.paneRect(p.index)
-	return renderKey{mode: a.mode, cam: a.cam.r3d(), w: max(r.Dx(), 16), h: max(r.Dy(), 16), bg: a.background, overlay: a.overlay, gen: p.gen, maps: p.maps != nil}
+	return renderKey{mode: a.mode, cam: a.cam.r3d(), w: max(r.Dx(), 16), h: max(r.Dy(), 16), bg: a.background, overlay: a.overlay, gen: p.gen, maps: mapCount(p.maps)}
 }
 
 // interacting reports whether quick frames are wanted.
@@ -245,7 +248,8 @@ func (a *App) scheduleRenders(now time.Time) {
 		if p.status != "ready" || p.mesh == nil {
 			continue
 		}
-		if modeNeedsMaps(a.mode) && p.maps == nil {
+		if miss := missingMaps(p, a.mode); len(miss) > 0 {
+			a.loadPaneMaps(p, miss)
 			continue
 		}
 		want := a.wantKey(p, now)
@@ -318,9 +322,9 @@ func (a *App) rendered(d renderDone) {
 		if p.img != nil {
 			p.img.Deallocate()
 		}
-		p.img = ebiten.NewImage(b.Dx(), b.Dy())
+		p.img = newImage(b.Dx(), b.Dy())
 	}
-	p.img.WritePixels(d.img.Pix)
+	writeFrame(p.img, d.img)
 	p.shown, p.hasShown, p.shownFull = k, true, d.full
 	a.dirty()
 }
@@ -389,7 +393,7 @@ func (a *App) Draw(screen *ebiten.Image) {
 		if a.off != nil {
 			a.off.Deallocate()
 		}
-		a.off = ebiten.NewImage(a.sw, a.sh)
+		a.off = newImage(a.sw, a.sh)
 		a.dirty()
 	}
 	if a.drawn != a.gen || a.drawnW != a.sw || a.drawnH != a.sh {

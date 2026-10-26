@@ -48,6 +48,21 @@ func ModesFor(draft, textured bool) []Mode {
 // NeedsMaps reports whether the mode draws the material textures.
 func (m Mode) NeedsMaps() bool { return modeDefs[m].useMaps }
 
+// MapsSampled lists the texture maps the mode samples (of MapKinds). Shaded
+// draws the diffuse map when there is no shaded one.
+func (m Mode) MapsSampled() []string {
+	d := modeDefs[m]
+	switch {
+	case !d.useMaps:
+		return nil
+	case d.mat == matBasic:
+		return []string{"shaded"}
+	case d.mat == matToon:
+		return []string{"diffuse"}
+	}
+	return []string{"diffuse", "normal", "pbr"}
+}
+
 // Known reports whether m is a mode.
 func (m Mode) Known() bool {
 	_, ok := modeDefs[m]

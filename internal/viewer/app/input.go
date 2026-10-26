@@ -440,7 +440,7 @@ func (a *App) loadFlat(t *thumb) {
 			}
 			t.fullLoading = false
 			if err == nil {
-				t.full = ebiten.NewImageFromImage(img)
+				t.full = newImageFrom(img)
 			}
 			a.dirty()
 		})

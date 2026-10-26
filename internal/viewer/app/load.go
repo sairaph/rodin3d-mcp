@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hajimehoshi/ebiten/v2"
-
 	"github.com/sairaph/rodin3d-mcp/internal/imaging"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
@@ -43,28 +41,36 @@ func (a *App) startLoads(p *prepared) {
 		vt := p.tasks[0]
 		a.loadStrip(vt, p.stages[0])
 		if st, ok := vt.Stage("material"); ok && len(st.Maps) > 0 {
-			a.loadTaskMaps(vt, st, nil)
+			a.taskMaps(vt, st, nil)
 		}
 	case viewer.KindTextures:
-		a.loadTaskMaps(p.tasks[0], p.stages[0], p.maps)
+		a.taskMaps(p.tasks[0], p.stages[0], p.maps)
 	case viewer.KindInputSet, viewer.KindTaskInputs:
 		for _, it := range a.inputs.items {
 			a.loadThumb(it, it.file)
 		}
 	case viewer.KindImages:
 		for _, f := range p.images {
-			t := &thumb{kind: "image", name: filepath.Base(f), file: f}
-			a.textures = append(a.textures, t)
-			a.loadFullImage(t)
+			a.textures = append(a.textures, &thumb{kind: "image", name: filepath.Base(f), file: f, src: func() (image.Image, error) {
+				img, _, _, err := decodeFile(f, 0)
+				return img, err
+			}})
 		}
 	}
 }
 
-// loadPane loads the pane's mesh (and maps) in the background.
+// Memory (notes 41, fix round 3): the window holds the meshes and maps of
+// the panes it shows and a GPU picture of what is on screen, nothing more.
+// A pane loads its texture maps only when its mode draws them; the textures
+// panel decodes and uploads only the selected map; pictures of content the
+// view left are freed at once and the freed memory goes back to the system
+// (trimSoon).
+
+// loadPane loads the pane's mesh in the background (a model file's maps
+// come with it; a task's are loaded by loadPaneMaps when a mode needs them).
 func (a *App) loadPane(p *pane) {
 	gen, cgen := p.gen, a.contentGen
 	p.status, p.err, p.what = "loading", "", "mesh"
-	p.mapsWanted = p.kind == viewer.KindTask && p.stage.Name == "material" && len(p.stage.Maps) > 0
 	a.dirty()
 	current := func() bool { return a.contentGen == cgen && p.gen == gen }
 	// A load ending changes no state the agent or the user set, so it does
@@ -85,7 +91,6 @@ func (a *App) loadPane(p *pane) {
 	if p.vt != nil {
 		uuid = p.vt.UUID
 	}
-	wantMaps := p.mapsWanted
 	go func() {
 		t0 := time.Now()
 		if kind == viewer.KindModelFile {
@@ -111,9 +116,10 @@ func (a *App) loadPane(p *pane) {
 					}
 				}
 				if m.Maps != nil && len(a.textures) == 0 {
-					a.textures = mapThumbs(m.Maps, nil)
+					a.textures = modelMapThumbs(m.Maps)
 				}
 				a.dirty()
+				a.trimSoon()
 			})
 			return
 		}
@@ -128,25 +134,90 @@ func (a *App) loadPane(p *pane) {
 		a.post(func() {
 			if current() {
 				p.mesh, p.simple, p.frame, p.draft, p.status = mesh, simple, frame, stage.Draft, "ready"
-				if p.mapsWanted {
-					p.what = "textures"
-				}
 				a.dirty()
+				a.trimSoon()
 			}
 		})
-		if !wantMaps {
-			return
+	}()
+}
+
+// missingMaps lists the texture maps the mode samples that a task pane has
+// not loaded yet (a model file's maps came with it). Shaded draws the
+// diffuse map when the stage has no shaded one.
+func missingMaps(p *pane, mode string) []string {
+	if p.kind != viewer.KindTask {
+		return nil
+	}
+	has := func(kind string) bool {
+		return slices.ContainsFunc(p.stage.Maps, func(m service.ViewAsset) bool { return m.Mode == "texture_"+kind })
+	}
+	var out []string
+	for _, k := range render3d.Mode(mode).MapsSampled() {
+		if k == "shaded" && !has(k) {
+			k = "diffuse"
 		}
-		maps, err := a.svc.ViewMaps(a.ctx, uuid, stage)
+		if has(k) && p.maps.Map(k) == nil && !slices.Contains(out, k) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// mapCount is how many maps m holds (part of a render key: a pane's maps
+// only grow until its stage changes).
+func mapCount(m *render3d.Maps) int {
+	n := 0
+	for _, k := range render3d.MapKinds {
+		if m.Map(k) != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// loadPaneMaps loads the texture maps of kinds into a ready task pane whose
+// mode samples them; mapsWanted marks the load. A pane keeps the maps it
+// loaded until its stage or the content changes, so switching modes back
+// and forth reads each map once.
+func (a *App) loadPaneMaps(p *pane, kinds []string) {
+	if p.mapsWanted || p.status != "ready" {
+		return
+	}
+	gen, cgen := p.gen, a.contentGen
+	p.mapsWanted = true
+	a.dirty()
+	uuid, stage := p.vt.UUID, p.stage
+	go func() {
+		t0 := time.Now()
+		maps, err := a.svc.ViewMaps(a.ctx, uuid, stage, kinds)
+		var msg string
 		if err != nil {
-			failed(err)
-			return
+			msg = service.Classify(err).Message
+		} else {
+			log.Printf("task %s %s: maps %s in %v", uuid[:8], stage.Name, strings.Join(kinds, ", "), time.Since(t0).Round(time.Millisecond))
 		}
 		a.post(func() {
-			if current() {
-				p.maps, p.mapsWanted = maps, false
-				a.dirty()
+			if a.contentGen != cgen || p.gen != gen {
+				return
 			}
+			p.mapsWanted = false
+			if err != nil {
+				p.status, p.err = "error", msg
+				a.dirty()
+				return
+			}
+			merged := &render3d.Maps{}
+			if p.maps != nil {
+				*merged = *p.maps
+			}
+			for _, k := range kinds {
+				if t := maps.Map(k); t != nil {
+					merged.SetMap(k, t)
+				}
+			}
+			p.maps = merged
+			a.dirty()
+			a.trimSoon()
 		})
 	}()
 }
@@ -211,29 +282,10 @@ func (a *App) decodeThumb(cgen uint64, t *thumb, file string) {
 		if err != nil {
 			t.err = err.Error()
 		} else {
-			t.img, t.w, t.h = ebiten.NewImageFromImage(img), w, h
+			t.img, t.w, t.h = newImageFrom(img), w, h
 		}
 		a.dirty()
 	})
-}
-
-// loadFullImage loads an image file at full size (textures layout).
-func (a *App) loadFullImage(t *thumb) {
-	cgen := a.contentGen
-	go func() {
-		img, w, h, err := decodeFile(t.file, 0)
-		a.post(func() {
-			if a.contentGen != cgen {
-				return
-			}
-			if err != nil {
-				t.err = err.Error()
-			} else {
-				t.img, t.w, t.h = ebiten.NewImageFromImage(img), w, h
-			}
-			a.dirty()
-		})
-	}()
 }
 
 // decodeFile reads a png, jpeg or webp file, fitted to edge (0: as is).
@@ -253,62 +305,117 @@ func decodeFile(file string, edge int) (image.Image, int, int, error) {
 	return img, w, h, nil
 }
 
-// loadTaskMaps loads a task's texture maps for the textures layout (only
-// names, when given).
-func (a *App) loadTaskMaps(vt *service.ViewTask, st service.ViewStage, names []string) {
-	cgen := a.contentGen
+// taskMaps lists a task's texture maps in the textures panel (only names,
+// when given); each is decoded when it is shown (loadTexture).
+func (a *App) taskMaps(vt *service.ViewTask, st service.ViewStage, names []string) {
 	for _, m := range st.Maps {
 		name := strings.TrimPrefix(m.Mode, "texture_")
 		if names != nil && !slices.Contains(names, name) {
 			continue
 		}
-		a.textures = append(a.textures, &thumb{kind: "map", name: name})
+		a.textures = append(a.textures, &thumb{kind: "map", name: name, src: func() (image.Image, error) {
+			t, err := a.svc.ViewMap(a.ctx, vt.UUID, st, name)
+			if err != nil {
+				return nil, err
+			}
+			return textureImage(t), nil
+		}})
 	}
-	go func() {
-		maps, err := a.svc.ViewMaps(a.ctx, vt.UUID, st)
-		a.post(func() {
-			if a.contentGen != cgen {
-				return
-			}
-			loaded := mapThumbs(maps, nil)
-			for _, t := range a.textures {
-				if err != nil {
-					t.err = service.Classify(err).Message
-					continue
-				}
-				for _, l := range loaded {
-					if l.name == t.name {
-						t.img, t.w, t.h = l.img, l.w, l.h
-					}
-				}
-				if t.img == nil && t.err == "" {
-					t.err = "not in the task's files"
-				}
-			}
-			a.dirty()
-		})
-	}()
 }
 
-// mapThumbs turns decoded render maps into pictures (game loop: it makes
-// ebiten images).
-func mapThumbs(m *render3d.Maps, _ []string) []*thumb {
-	if m == nil {
-		return nil
-	}
+// modelMapThumbs lists a model file's maps in the textures panel; their
+// pixels are the pane's (no copy).
+func modelMapThumbs(m *render3d.Maps) []*thumb {
 	var out []*thumb
 	add := func(name string, t *render3d.Texture) {
-		if t == nil {
-			return
+		if t != nil {
+			out = append(out, &thumb{kind: "map", name: name, w: t.W, h: t.H, src: func() (image.Image, error) { return textureImage(t), nil }})
 		}
-		img := &image.NRGBA{Pix: t.Pix, Stride: 4 * t.W, Rect: image.Rect(0, 0, t.W, t.H)}
-		out = append(out, &thumb{kind: "map", name: name, img: ebiten.NewImageFromImage(img), w: t.W, h: t.H})
 	}
 	add("diffuse", m.Diffuse)
 	add("pbr", m.PBR)
 	add("normal", m.Normal)
 	add("shaded", m.Shaded)
 	return out
+}
+
+// shownTexture is the picture the textures panel shows now, or nil.
+func (a *App) shownTexture() *thumb {
+	if a.layout != viewer.LayoutTextures || a.texSel < 0 || a.texSel >= len(a.textures) {
+		return nil
+	}
+	return a.textures[a.texSel]
+}
+
+// syncImages keeps the large pictures only while they are on screen: the
+// selected texture of the textures panel (loaded when missing) and the strip
+// picture shown flat. Others are freed.
+func (a *App) syncImages() {
+	shown := a.shownTexture()
+	for _, t := range a.textures {
+		if t != shown && t.img != nil {
+			release(&t.img)
+			a.trimSoon()
+		}
+	}
+	if shown != nil && shown.img == nil && shown.err == "" && !shown.loading {
+		a.loadTexture(shown)
+	}
+	for i, t := range a.strip {
+		if i != a.flat && t.full != nil {
+			release(&t.full)
+			a.trimSoon()
+		}
+	}
+}
+
+// loadTexture decodes a texture panel picture and uploads it if it is still
+// the one shown.
+func (a *App) loadTexture(t *thumb) {
+	t.loading = true
+	cgen := a.contentGen
+	go func() {
+		img, err := t.src()
+		var msg string
+		if err != nil {
+			msg = service.Classify(err).Message
+		}
+		a.post(func() {
+			if a.contentGen != cgen {
+				return
+			}
+			t.loading = false
+			switch {
+			case err != nil:
+				t.err = msg
+			case a.shownTexture() == t:
+				t.img = newImageFrom(img)
+				t.w, t.h = img.Bounds().Dx(), img.Bounds().Dy()
+			}
+			a.dirty()
+			a.trimSoon()
+		})
+	}()
+}
+
+// releaseImages frees the GPU pictures of the content the view leaves.
+func (a *App) releaseImages() {
+	for _, p := range a.panes {
+		release(&p.img)
+	}
+	a.releaseThumbs(a.strip)
+	a.releaseThumbs(a.textures)
+	if a.inputs != nil {
+		a.releaseThumbs(a.inputs.items)
+	}
+	a.trimSoon()
+}
+
+func (a *App) releaseThumbs(ts []*thumb) {
+	for _, t := range ts {
+		release(&t.img)
+		release(&t.full)
+	}
 }
 
 // pendingImages counts pictures still loading.
@@ -327,7 +434,9 @@ func (a *App) pendingImages() int {
 			count(a.inputs.items)
 		}
 	case viewer.LayoutTextures:
-		count(a.textures)
+		if t := a.shownTexture(); t != nil {
+			count([]*thumb{t})
+		}
 	default:
 		count(a.strip)
 	}

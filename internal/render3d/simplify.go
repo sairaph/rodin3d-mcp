@@ -1,6 +1,9 @@
 package render3d
 
-import "math"
+import (
+	"math"
+	"slices"
+)
 
 // Simplify returns a copy of m with about target triangles, for quick frames
 // while the camera moves: the vertices are clustered on a uniform grid over
@@ -57,6 +60,9 @@ func Simplify(m *Mesh, target int) *Mesh {
 	if best == nil {
 		return m
 	}
+	// cluster sizes the index slice for half the source's triangles; the
+	// copy is kept as long as the mesh is shown, so it keeps only what it uses.
+	best.Idx = slices.Clone(best.Idx)
 	return best
 }
 

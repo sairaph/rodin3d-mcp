@@ -44,7 +44,7 @@ type renderKey struct {
 	overlay     bool
 	interactive bool
 	gen         uint64
-	maps        bool
+	maps        int // texture maps the pane holds (mapCount)
 }
 
 type renderJob struct {

@@ -40,12 +40,6 @@ func LockOptions(paths domain.Paths) lock.Options {
 	return lock.Options{LockFile: paths.DaemonLock, PIDFile: paths.DaemonPID, LogFile: paths.DaemonLog}
 }
 
-// EnsureRunning starts `<exe> daemon` detached unless one runs. Losing the
-// start race to another process counts as running.
-func EnsureRunning(exe string, paths domain.Paths) bool {
-	return lock.EnsureRunning(exe, []string{"daemon"}, LockOptions(paths))
-}
-
 // IsRunning reports whether a daemon holds the lock.
 func IsRunning(paths domain.Paths) bool { return lock.IsRunning(paths.DaemonLock) }
 
@@ -67,28 +61,70 @@ type Daemon struct {
 // ErrSignedOut ends Serve: there is nothing to sync without an account.
 var ErrSignedOut = errors.New("signed out")
 
-// Serve runs cycles every Tick until ctx ends or the user signs out.
-func (d *Daemon) Serve(ctx context.Context) error {
-	if d.Now == nil {
-		d.Now = time.Now
+// Backoff is the wait after failures consecutive failed cycles: Tick,
+// doubling per failure, at most SyncInterval.
+func Backoff(failures int) time.Duration {
+	if failures <= 0 {
+		return Tick
 	}
+	d := Tick
+	for i := 1; i < failures && d < SyncInterval; i++ {
+		d *= 2
+	}
+	return min(d, SyncInterval)
+}
+
+// Serve runs cycles every Tick until ctx ends or the user signs out. After a
+// failed cycle it waits Backoff(failures) instead, so a service that is down
+// or limiting is not asked again every few seconds; a change of the
+// credentials file (a new login) ends the wait at once.
+func (d *Daemon) Serve(ctx context.Context) error {
 	d.logf("daemon started, pid %d", os.Getpid())
 	defer d.logf("daemon stopped")
+	failures := 0
+	lastErr := ""
 	for {
 		err := d.Cycle(ctx)
 		if errors.Is(err, ErrSignedOut) {
 			d.logf("signed out; nothing to sync")
 			return nil
 		}
-		if err != nil && ctx.Err() == nil {
-			d.logf("cycle: %v", err)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			failures++
+			// One line per new problem, not one per retry.
+			if msg := oneLine(err.Error()); msg != lastErr {
+				d.logf("cycle failed: %s (next try in %s)", msg, Backoff(failures))
+				lastErr = msg
+			}
+		case err == nil && failures > 0:
+			d.logf("recovered after %d failed cycles", failures)
+			failures, lastErr = 0, ""
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(Tick):
+		// The stamp is taken after the cycle: its own token refresh is not a change.
+		stamp := d.credentialsStamp()
+		wait := Backoff(failures)
+		for waited := time.Duration(0); waited < wait; waited += Tick {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(min(Tick, wait-waited)):
+			}
+			if d.credentialsStamp() != stamp {
+				failures = 0 // signed in or out meanwhile: try now
+				break
+			}
 		}
 	}
+}
+
+// credentialsStamp identifies the current credentials file version.
+func (d *Daemon) credentialsStamp() string {
+	fi, err := os.Stat(d.Session.Store().Path())
+	if err != nil {
+		return "none"
+	}
+	return fmt.Sprintf("%d-%d", fi.ModTime().UnixNano(), fi.Size())
 }
 
 func (d *Daemon) logf(format string, args ...any) {
@@ -128,9 +164,9 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 		d.logf("access token refreshed")
 	}
 
-	watching, err := d.watch(ctx)
-	if err != nil {
-		return d.fail(err)
+	watching, watchErr := d.watch(ctx)
+	if watchErr != nil && (auth.IsLoginRequired(watchErr) || errors.Is(watchErr, rodin.ErrUnauthorized)) {
+		return d.fail(watchErr)
 	}
 	st, err := d.Store.State()
 	if err != nil {
@@ -140,6 +176,10 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 		if err := d.SyncHistory(ctx, creds.UserUUID); err != nil {
 			return d.fail(err)
 		}
+	}
+	if watchErr != nil {
+		// One unreadable card does not hold up the history sync above.
+		return d.fail(watchErr)
 	}
 	phase := store.PhaseIdle
 	if watching > 0 {
@@ -156,10 +196,19 @@ func (d *Daemon) needsLogin() error {
 	return d.Store.SetPhase(store.PhaseNeedsLogin, "sign in again with `"+domain.BinaryName+" login`")
 }
 
-// fail records err as the phase. A refused session becomes needs_login.
+// fail records err as the phase and returns it, so Serve backs off. A
+// session the credentials mark as ended becomes needs_login with nothing to
+// retry; a session the service refused after a refresh becomes needs_login
+// too, and is retried with backoff in case it heals.
 func (d *Daemon) fail(err error) error {
-	if auth.IsLoginRequired(err) || errors.Is(err, rodin.ErrUnauthorized) {
+	if auth.IsLoginRequired(err) {
 		return d.needsLogin()
+	}
+	if errors.Is(err, rodin.ErrUnauthorized) {
+		if serr := d.needsLogin(); serr != nil {
+			return serr
+		}
+		return err
 	}
 	_ = d.Store.SetPhase(store.PhaseError, oneLine(err.Error()))
 	return err
@@ -168,12 +217,14 @@ func (d *Daemon) fail(err error) error {
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // watch refreshes the card of every task a job works on and returns how
-// many there were.
+// many there were. When a card could not be read it returns the first such
+// error after trying them all, so the cycle counts as failed and backs off.
 func (d *Daemon) watch(ctx context.Context) (int, error) {
 	ids, err := d.Store.InFlight()
 	if err != nil {
 		return 0, err
 	}
+	var first error
 	for _, id := range ids {
 		if err := d.refreshCard(ctx, id); err != nil {
 			var se *rodin.ServiceError
@@ -183,10 +234,12 @@ func (d *Daemon) watch(ctx context.Context) (int, error) {
 			if auth.IsLoginRequired(err) || errors.Is(err, rodin.ErrUnauthorized) {
 				return 0, err
 			}
-			d.logf("watch %s: %v", short(id), err)
+			if first == nil {
+				first = fmt.Errorf("watch %s: %w", short(id), err)
+			}
 		}
 	}
-	return len(ids), nil
+	return len(ids), first
 }
 
 // refreshCard fetches and stores one card, caching its images on a change.

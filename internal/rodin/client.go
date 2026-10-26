@@ -133,7 +133,7 @@ func (c *Client) call(ctx context.Context, req request, out any) error {
 	if err != nil {
 		return err
 	}
-	if status == http.StatusUnauthorized && !req.noAuth {
+	if refused(status, data) && !req.noAuth {
 		fresh, rerr := c.tokens.ForceRefresh(ctx, token)
 		if rerr != nil {
 			if errors.Is(rerr, ErrUnauthorized) {
@@ -201,6 +201,27 @@ type envelope struct {
 	Message json.RawMessage `json:"message"`
 }
 
+// sessionCodes are body error codes with which the service refuses the
+// session on a 2xx reply (notes 14 section 9: NO_CURRENT_USER with an OAuth
+// token on user-scoped routes). They are treated like an HTTP 401.
+var sessionCodes = map[string]bool{"NO_CURRENT_USER": true, "UNAUTHORIZED": true, "USER_NOT_FOUND": true}
+
+// bodyCode returns the body error code of a reply.
+func bodyCode(data []byte) string {
+	var env envelope
+	_ = json.Unmarshal(data, &env) // a body that is not an object has no envelope
+	return envString(env.Error)
+}
+
+// refused reports whether a reply refuses the session: HTTP 401, or a 2xx
+// reply whose body carries a session error code.
+func refused(status int, data []byte) bool {
+	if status == http.StatusUnauthorized {
+		return true
+	}
+	return status >= 200 && status < 300 && sessionCodes[bodyCode(data)]
+}
+
 // decode turns a reply into out or one of the errors of errors.go.
 func decode(procedure string, status int, data []byte, out any) error {
 	var env envelope
@@ -208,7 +229,7 @@ func decode(procedure string, status int, data []byte, out any) error {
 	code := envString(env.Error)
 	msg := envString(env.Message)
 	switch {
-	case status == http.StatusUnauthorized:
+	case refused(status, data):
 		return unauthorized(procedure, data)
 	case status < 200 || status >= 300:
 		return &HTTPError{Procedure: procedure, Status: status, Code: code, Message: msg}

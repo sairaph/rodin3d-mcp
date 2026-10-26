@@ -271,9 +271,8 @@ type settled struct {
 
 // settle reads the task's card after a call that started jobs and waits,
 // when wait is true, until the job finished: the card is not running and
-// either it moved away from before, it was seen running, or every job of
-// the reply reports done on the scheduler (the card may not show the new
-// job in the first second). The first and the last card are stored, so the
+// either it moved away from before, it was seen running, or (after two
+// polls) every job of the reply reports done on the scheduler. The first and the last card are stored, so the
 // daemon watches the task and the index shows it.
 func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, jobs []string, wait bool) (*settled, error) {
 	start := time.Now()
@@ -301,9 +300,12 @@ func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, 
 	for {
 		st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
 		out.card, out.status = card, st
+		// The card can lag the scheduler by seconds (P2a: a material
+		// confirm whose job was done while the card still showed the
+		// draft), so the scheduler alone counts only after two polls.
 		if st.State == stage.Running {
 			seenRunning = true
-		} else if st != before || seenRunning || s.jobsDone(ctx, jobs) {
+		} else if st != before || seenRunning || (time.Since(start) >= 2*WaitPoll && s.jobsDone(ctx, jobs)) {
 			break
 		}
 		left := time.Until(deadline)

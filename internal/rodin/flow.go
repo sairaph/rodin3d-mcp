@@ -207,12 +207,12 @@ func (c *Client) Fork(ctx context.Context, uuid, state string) (string, error) {
 }
 
 // SelectCandidate calls task/select_candidate: picks one draft of a batch.
-func (c *Client) SelectCandidate(ctx context.Context, uuid, selectedID string) (json.RawMessage, error) {
-	var out json.RawMessage
-	if err := c.postJSON(ctx, "task/select_candidate", map[string]string{"uuid": uuid, "selected_id": selectedID}, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+// selectedID is a number (the server refuses a string: "selected_id must be
+// a number", live 2026-10-26); the candidates are the draft's versions. A
+// success answers with plain text, not JSON (live), so the body is only
+// checked for an error code.
+func (c *Client) SelectCandidate(ctx context.Context, uuid string, selectedID int) error {
+	return c.postJSON(ctx, "task/select_candidate", map[string]any{"uuid": uuid, "selected_id": selectedID}, nil)
 }
 
 // JobStatus calls GET scheduler?uuid=<job>: Queued, Running, Succeeded,

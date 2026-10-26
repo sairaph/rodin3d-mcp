@@ -130,7 +130,7 @@ type exportArgs struct {
 type forkArgs struct {
 	TaskID          string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	Stage           string  `json:"stage" jsonschema:"geometry: a new task at the geometry draft stage; material: a new task at the material draft stage"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for fork_task on this task; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for fork_task on this task with the same stage; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the new task (default true)"`
 }
 
@@ -263,7 +263,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "fork_task", "Fork a task",
 		"Branch a new task from a task's geometry (back to a geometry draft) or material (back to a material draft); the original stays as it "+
 			"is. The web offers it for tasks younger than 30 days. Needs [permission] fork = \"allow\" and expected_credits from quote_cost "+
-			"(operation fork_task, task_id). Returns the new task.",
+			"(operation fork_task, task_id, settings.stage). Returns the new task.",
 		paidTool, fork, s.forkTask)
 
 	addTool(s, "select_candidate", "Pick a batch draft",

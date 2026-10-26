@@ -51,6 +51,7 @@ type Input struct {
 	Geometry     string // base | lod | high_poly
 	Budget       string // basic standard pro (Agentic)
 	Batch        int
+	ForkStage    string // geometry | material (fork_task)
 	// TaskCreated is the creation time of the task an operation acts on, for
 	// the 30-day fork rule; zero when not known.
 	TaskCreated time.Time
@@ -136,7 +137,8 @@ func For(in Input, acct Account) (Quote, error) {
 			}
 			return Quote{Credits: credits(2), Known: true, ChargedAt: "confirm", Basis: `web label "2 Credits" on Confirm in Smart Low-poly mode`}, nil
 		}
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "confirm", Basis: `web label "0.5 Credits" on Confirm (seen on High and Extreme-Low drafts)`}, nil
+		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "confirm",
+			Basis: `web label "0.5 Credits" on Confirm (seen on High and Extreme-Low drafts); measured 2026-10-26: an Extreme-Low confirm took the 0.5 frozen at submit, a High confirm took nothing more after the 0.5 of its submit`}, nil
 	case "generate_texture":
 		mode := strings.ToLower(in.TextureMode)
 		if mode == "" {
@@ -152,18 +154,32 @@ func For(in Input, acct Account) (Quote, error) {
 		case "extreme-high":
 			return Quote{Credits: credits(2), Known: true, ChargedAt: "submit (frozen), taken on completion", Basis: `web label "2 Credits" for the Extreme High texture tier`}, nil
 		case "low":
-			return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit (frozen), taken on completion", Basis: "wallet delta of a texture_mode low run on 2026-10-07 (the web shows no label)"}, nil
+			// Two measurements disagree; the higher one is quoted.
+			return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit (frozen), taken on completion",
+				Basis: "wallet deltas of texture_mode low runs (the web shows no label): 0.5 on 2026-10-07, 0 on 2026-10-26; the higher one is quoted"}, nil
+		case "high":
+			return Quote{Credits: credits(0), Known: true, FreeReason: "a texture_mode high run took no credits (measured once, 2026-10-26)",
+				Basis: "wallet delta of a texture_mode high run on 2026-10-26 (the web shows no label)"}, nil
 		}
 		return unknown("the web shows no price for texture tier " + mode + " and it has not been measured"), nil
 	case "confirm_material":
-		return unknown("the web shows no price for Confirm on the material stage and it has not been measured"), nil
+		return Quote{Credits: credits(0), Known: true, FreeReason: "material confirms took no credits (measured twice, 2026-10-26)",
+			Basis: "wallet deltas of material confirms on an Extreme-Low and a High task, 2026-10-26 (the web shows no label)"}, nil
 	case "export_model":
 		return export(in, acct)
 	case "fork_task":
 		if !in.TaskCreated.IsZero() && time.Since(in.TaskCreated) > 30*24*time.Hour {
 			return Quote{}, &Gate{"the web offers fork only for tasks younger than 30 days"}
 		}
-		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit", Basis: `web label "Revert to branch. (0.5 Credits)"`}, nil
+		switch strings.ToLower(in.ForkStage) {
+		case "geometry":
+			return Quote{Credits: credits(0), Known: true, FreeReason: "a geometry fork took no credits (measured 2026-10-26)",
+				Basis: `wallet delta of a geometry fork on 2026-10-26; the web's fork menu shows "0.5 Credits" only on Material and checks the balance only for it`}, nil
+		case "material", "":
+		default:
+			return Quote{}, &InvalidInput{fmt.Sprintf("fork stage %q is not geometry or material", in.ForkStage)}
+		}
+		return Quote{Credits: credits(0.5), Known: true, ChargedAt: "submit", Basis: `web label "0.5 Credits" on the Material fork ("Revert to branch. (0.5 Credits)")`}, nil
 	case "generate_agentic":
 		switch strings.ToLower(in.Budget) {
 		case "basic", "":
@@ -272,5 +288,9 @@ func export(in Input, acct Account) (Quote, error) {
 		return Quote{Credits: credits(0), Known: true, FreeReason: "downloads of Gen-2.5 Extreme-Low and Low models are free",
 			Basis: "web pack tip (i18n TIP_PACK_TITLE_3)"}, nil
 	}
-	return unknown("the web shows no price on the pack panel and it has not been measured"), nil
+	if !high {
+		return Quote{Credits: credits(0), Known: true, FreeReason: "a Basic pack of a Gen-2.5 High task took no credits (measured 2026-10-26)",
+			Basis: "wallet delta of a 2k obj pack of a Gen-2.5 High task on 2026-10-26 (the web shows no price on the pack panel)"}, nil
+	}
+	return unknown("the web shows no price for High packs and they need the Business plan; not measured"), nil
 }

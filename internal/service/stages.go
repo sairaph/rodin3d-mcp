@@ -7,6 +7,7 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/sairaph/mcp-wizard/render"
@@ -118,14 +119,16 @@ func (s *Service) RedoGeometry(ctx context.Context, in RedoGeometryInput) (Resul
 	if err != nil {
 		return Result{}, err
 	}
-	detail := redoDetail{}
-	if h, err := s.client.GeometryHistory(ctx, uuid); err == nil {
-		detail.Version = assets.LatestVersion(keysOf(h))
-		left := stage.RedosLeft(geoLimit, len(h))
-		detail.RedoLeft = &left
+	// The new version is in the history once the job finished; a redo
+	// still running reports none rather than the old count.
+	var detail any
+	if set.status.State == stage.Ready {
+		if h, err := s.client.GeometryHistory(ctx, uuid); err == nil {
+			left := stage.RedosLeft(geoLimit, len(h))
+			detail = redoDetail{Version: assets.LatestVersion(keysOf(h)), RedoLeft: &left}
+		}
 	}
-	res := s.finishFlow(ctx, sp, set, "Geometry redo sent.", detail)
-	return res, nil
+	return s.finishFlow(ctx, sp, set, "Geometry redo sent.", detail), nil
 }
 
 // --- confirm_geometry ---
@@ -443,7 +446,12 @@ func (s *Service) GenerateTexture(ctx context.Context, in TextureInput) (Result,
 	if err != nil {
 		return Result{}, err
 	}
+	// The web's texture panel starts with the task's prompt; the server
+	// stores what is sent as the task's prompt, so an empty one would erase it.
 	req := rodin.TextureRequest{UUID: uuid, Prompt: strings.TrimSpace(in.Prompt)}
+	if req.Prompt == "" {
+		req.Prompt = card.Prompt
+	}
 	names := inputNames(card)
 	ref := strings.TrimSpace(in.ReferenceImage)
 	switch {
@@ -589,11 +597,12 @@ func (s *Service) RedoMaterial(ctx context.Context, in TextureInput) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
-	detail := redoDetail{}
-	if _, now, err := s.materialRef(ctx, uuid, set.card); err == nil {
-		detail.Version = assets.LatestVersion(now)
-		left := stage.RedosLeft(matLimit, len(now))
-		detail.RedoLeft = &left
+	var detail any
+	if set.status.State == stage.Ready {
+		if _, now, err := s.materialRef(ctx, uuid, set.card); err == nil {
+			left := stage.RedosLeft(matLimit, len(now))
+			detail = redoDetail{Version: assets.LatestVersion(now), RedoLeft: &left}
+		}
 	}
 	return s.finishFlow(ctx, sp, set, fmt.Sprintf("Material redo (%s) sent for reference %s.", mode, ref), detail), nil
 }
@@ -816,7 +825,7 @@ func (s *Service) Fork(ctx context.Context, in ForkInput) (Result, error) {
 	if from == "material" && st.Stage != stage.MaterialDraft && st.Stage != stage.Material {
 		return Result{}, fail(render.CodeConflict, "The task has no material to fork from yet.", "Fork stage geometry, or texture the task first.")
 	}
-	pin := price.Input{}
+	pin := price.Input{ForkStage: from}
 	pinFromCard(&pin, card)
 	sp, err := s.prepare(ctx, "fork_task", uuid, pin, in.Expected, true)
 	if err != nil {
@@ -867,14 +876,18 @@ func (s *Service) SelectCandidate(ctx context.Context, in SelectInput) (Result, 
 	if err != nil {
 		return Result{}, wrapf(err, "read the geometry versions")
 	}
-	cand := strings.TrimSpace(in.Candidate)
-	if cand == "" || !contains(keysOf(hist), cand) {
+	cand := strings.ToLower(strings.TrimSpace(in.Candidate))
+	if !strings.HasPrefix(cand, "v") {
+		cand = "v" + cand // "2" names v2 too
+	}
+	n, convErr := strconv.Atoi(strings.TrimPrefix(cand, "v"))
+	if convErr != nil || n < 1 || !contains(keysOf(hist), cand) {
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("candidate %q is not a version of the draft.", in.Candidate),
 			"Pass one of: "+orNone(assets.SortVersions(keysOf(hist)))+" (get_task lists them).")
 	}
 
 	sp.open()
-	if _, err := s.client.SelectCandidate(ctx, uuid, cand); err != nil {
+	if err := s.client.SelectCandidate(ctx, uuid, n); err != nil {
 		sp.close(ctx, err)
 		return Result{}, sendFailure("select_candidate", uuid, err)
 	}

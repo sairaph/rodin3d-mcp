@@ -233,7 +233,7 @@ func quote(ctx context.Context, s *service.Service, a args) (service.Result, err
 	}
 	return s.Quote(ctx, service.QuoteInput{
 		Operation: a.arg(0), TaskID: a.opts["task"], Model: a.opts["model"], Tier: a.opts["tier"], TextureMode: a.opts["texture_mode"],
-		SmartLowPoly: smart, Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Budget: a.opts["budget"], Batch: batch,
+		SmartLowPoly: smart, Resolution: a.opts["resolution"], Geometry: a.opts["geometry"], Budget: a.opts["budget"], Batch: batch, ForkStage: a.opts["stage"],
 	})
 }
 

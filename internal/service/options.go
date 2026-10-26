@@ -206,6 +206,7 @@ type QuoteInput struct {
 	Geometry     string
 	Budget       string
 	Batch        int
+	ForkStage    string
 }
 
 type permissionFront struct {
@@ -236,7 +237,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	}
 	pin := price.Input{
 		Operation: in.Operation, Model: in.Model, Tier: in.Tier, TextureMode: in.TextureMode, SmartLowPoly: in.SmartLowPoly,
-		Resolution: in.Resolution, Geometry: in.Geometry, Budget: in.Budget, Batch: in.Batch,
+		Resolution: in.Resolution, Geometry: in.Geometry, Budget: in.Budget, Batch: in.Batch, ForkStage: in.ForkStage,
 	}
 	var task *TaskFront
 	if strings.TrimSpace(in.TaskID) != "" {
@@ -267,9 +268,9 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		Permission: permissionFront{Key: key, Value: value, File: s.paths.Config},
 	}
 	if q.Known && q.Credits != nil && *q.Credits > 0 { // a free operation needs no balance
-		// Frozen credits are counted as spent: whether prepaid_available already
-		// excludes them is not measured, and erring low never overspends.
-		ok := front.Wallet.Available-front.Wallet.Frozen >= *q.Credits
+		// prepaid_available already excludes frozen credits (measured
+		// 2026-10-26: a 0.5 freeze moved available from 53.5 to 53).
+		ok := front.Wallet.Available >= *q.Credits
 		front.Affordable = &ok
 	}
 

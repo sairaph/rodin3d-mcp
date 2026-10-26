@@ -70,6 +70,7 @@ type quoteSettings struct {
 	Geometry     *string `json:"geometry,omitempty" jsonschema:"export_model: pack geometry"`
 	Budget       *string `json:"budget,omitempty" jsonschema:"generate_agentic: the Agentic budget"`
 	Batch        *int    `json:"batch,omitempty" jsonschema:"generate_model: drafts per submit (more than 1 needs the Business plan)"`
+	Stage        *string `json:"stage,omitempty" jsonschema:"fork_task: the stage to fork from (default material, the priced one)"`
 }
 
 type quoteInput struct {
@@ -154,6 +155,7 @@ func (s *Server) registerTools() {
 	withEnum(settings, "geometry", "base", "lod", "high_poly")
 	withEnum(settings, "budget", "basic", "standard", "pro")
 	withRange(settings, 1, 10, "batch")
+	withEnum(settings, "stage", "geometry", "material")
 	addTool(s, "quote_cost", "Price of an operation",
 		"Quote what an operation costs before it is run: credits, when they are taken, why it may be free, and where the number comes from "+
 			"(the web app shows fixed price labels and the server freezes the real amount; operations without a label say the price is not "+
@@ -242,6 +244,7 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 		q.SmartLowPoly = optBool(st.SmartLowPoly, false)
 		q.Resolution, q.Geometry, q.Budget = optString(st.Resolution), optString(st.Geometry), optString(st.Budget)
 		q.Batch = optInt(st.Batch, 0)
+		q.ForkStage = optString(st.Stage)
 	}
 	return reply(s.svc.Quote(ctx, q)), nil, nil
 }

@@ -1,16 +1,22 @@
-// Package glb reads binary glTF 2.0 files: plain and KHR_draco_mesh_compression
-// triangle primitives, node transforms, embedded images. It reads what Rodin
-// GLBs and the web viewer's own assets use; other glTF features (sparse
-// accessors, external buffers, morph targets, skins) are not read.
+// Package glb reads glTF 2.0 files: binary GLBs and .gltf files with one
+// buffer; plain and KHR_draco_mesh_compression triangle primitives, node
+// transforms, embedded or external images and the textures of a single
+// material. It reads what Rodin GLBs use; other glTF features (sparse
+// accessors, several buffers, morph targets, skins) are not read.
 package glb
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
 )
@@ -40,6 +46,7 @@ type Doc struct {
 		Max           []float64 `json:"max"`
 	} `json:"accessors"`
 	BufferViews []struct {
+		Buffer     int `json:"buffer"`
 		ByteOffset int `json:"byteOffset"`
 		ByteLength int `json:"byteLength"`
 		ByteStride int `json:"byteStride"`
@@ -47,7 +54,28 @@ type Doc struct {
 	Images []struct {
 		BufferView *int   `json:"bufferView"`
 		MimeType   string `json:"mimeType"`
+		URI        string `json:"uri"`
 	} `json:"images"`
+	Buffers []struct {
+		URI        string `json:"uri"`
+		ByteLength int    `json:"byteLength"`
+	} `json:"buffers"`
+	Textures []struct {
+		Source *int `json:"source"`
+	} `json:"textures"`
+	Materials []struct {
+		PBR struct {
+			BaseColorTexture         *TextureRef `json:"baseColorTexture"`
+			MetallicRoughnessTexture *TextureRef `json:"metallicRoughnessTexture"`
+		} `json:"pbrMetallicRoughness"`
+		NormalTexture *TextureRef `json:"normalTexture"`
+	} `json:"materials"`
+}
+
+// TextureRef points at a texture of the file.
+type TextureRef struct {
+	Index    int `json:"index"`
+	TexCoord int `json:"texCoord"`
 }
 
 // Node is a scene node.
@@ -74,10 +102,11 @@ type Primitive struct {
 	} `json:"extensions"`
 }
 
-// File is a parsed GLB.
+// File is a parsed GLB (or a .gltf with its one buffer loaded).
 type File struct {
 	Doc Doc
 	Bin []byte
+	Dir string // folder of a .gltf, for its external images; empty for a GLB
 }
 
 // Parse splits a GLB into its JSON and BIN chunks.
@@ -110,11 +139,109 @@ func Parse(b []byte) (*File, error) {
 	return f, nil
 }
 
+// ParseGLTF reads a .gltf JSON file whose folder is dir, loading its one
+// buffer (a file next to it or a data: address) as the binary chunk. Files
+// with several buffers are not read.
+func ParseGLTF(data []byte, dir string) (*File, error) {
+	f := &File{Dir: dir}
+	if err := json.Unmarshal(data, &f.Doc); err != nil {
+		return nil, fmt.Errorf("gltf: json: %w", err)
+	}
+	switch len(f.Doc.Buffers) {
+	case 0:
+		return f, nil
+	case 1:
+	default:
+		return nil, fmt.Errorf("gltf: %d buffers; only files with one buffer are read", len(f.Doc.Buffers))
+	}
+	bin, err := f.uriBytes(f.Doc.Buffers[0].URI)
+	if err != nil {
+		return nil, fmt.Errorf("gltf: buffer: %w", err)
+	}
+	if n := f.Doc.Buffers[0].ByteLength; n > len(bin) {
+		return nil, fmt.Errorf("gltf: buffer holds %d bytes, the file says %d", len(bin), n)
+	}
+	f.Bin = bin
+	return f, nil
+}
+
+// uriBytes reads a glTF uri: a data: address or a file relative to f.Dir.
+func (f *File) uriBytes(uri string) ([]byte, error) {
+	if uri == "" {
+		return nil, errors.New("no uri")
+	}
+	if strings.HasPrefix(uri, "data:") {
+		_, payload, ok := strings.Cut(uri, ",")
+		if !ok || !strings.Contains(uri[:len(uri)-len(payload)], ";base64") {
+			return nil, errors.New("only base64 data addresses are read")
+		}
+		return base64.StdEncoding.DecodeString(payload)
+	}
+	if f.Dir == "" {
+		return nil, errors.New("an external file needs the .gltf's folder")
+	}
+	name, err := url.PathUnescape(uri)
+	if err != nil {
+		name = uri
+	}
+	return os.ReadFile(filepath.Join(f.Dir, filepath.FromSlash(name)))
+}
+
+// ImageData returns the bytes of image i: embedded in a buffer view, or
+// from its uri.
+func (f *File) ImageData(i int) ([]byte, error) {
+	if i < 0 || i >= len(f.Doc.Images) {
+		return nil, fmt.Errorf("glb: image %d missing", i)
+	}
+	im := f.Doc.Images[i]
+	if im.BufferView != nil {
+		return f.view(*im.BufferView)
+	}
+	return f.uriBytes(im.URI)
+}
+
+// MaterialImages returns the images of the base colour, metallic-roughness
+// and normal textures (-1 when absent) of the material that every triangle
+// primitive of the file uses; ok is false when primitives use different
+// materials or none.
+func (f *File) MaterialImages() (base, metalRough, normal int, ok bool) {
+	mat := -2
+	for _, m := range f.Doc.Meshes {
+		for _, p := range m.Primitives {
+			if p.Mode != nil && *p.Mode != 4 {
+				continue
+			}
+			pm := -1
+			if p.Material != nil {
+				pm = *p.Material
+			}
+			if mat != -2 && pm != mat {
+				return -1, -1, -1, false
+			}
+			mat = pm
+		}
+	}
+	if mat < 0 || mat >= len(f.Doc.Materials) {
+		return -1, -1, -1, false
+	}
+	img := func(r *TextureRef) int {
+		if r == nil || r.TexCoord != 0 || r.Index < 0 || r.Index >= len(f.Doc.Textures) || f.Doc.Textures[r.Index].Source == nil {
+			return -1
+		}
+		return *f.Doc.Textures[r.Index].Source
+	}
+	m := f.Doc.Materials[mat]
+	return img(m.PBR.BaseColorTexture), img(m.PBR.MetallicRoughnessTexture), img(m.NormalTexture), true
+}
+
 func (f *File) view(i int) ([]byte, error) {
 	if i < 0 || i >= len(f.Doc.BufferViews) {
 		return nil, fmt.Errorf("glb: bufferView %d missing", i)
 	}
 	v := f.Doc.BufferViews[i]
+	if v.Buffer != 0 {
+		return nil, fmt.Errorf("glb: bufferView %d is in buffer %d; only one buffer is read", i, v.Buffer)
+	}
 	if v.ByteOffset < 0 || v.ByteLength < 0 || v.ByteOffset+v.ByteLength > len(f.Bin) {
 		return nil, fmt.Errorf("glb: bufferView %d out of range", i)
 	}

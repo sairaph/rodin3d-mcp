@@ -38,7 +38,8 @@ type advancedArg struct {
 }
 
 type generateArgs struct {
-	Images           []imageArg   `json:"images" jsonschema:"1-5 images of one object; several need views tagged for a good result"`
+	Images           []imageArg   `json:"images,omitempty" jsonschema:"1-5 images of one object; several need views tagged for a good result (or input_set)"`
+	InputSet         *string      `json:"input_set,omitempty" jsonschema:"instead of images: the id of an input set arranged in the viewer (show_in_viewer input_set or task_inputs), with its order, view tags and weights"`
 	Prompt           *string      `json:"prompt,omitempty" jsonschema:"caption override (at most 1024 characters); default the caption Hyper3D writes for the first image"`
 	Model            *string      `json:"model,omitempty" jsonschema:"gen-2.5 (default) or gen-1.5"`
 	Tier             *string      `json:"tier,omitempty" jsonschema:"gen-2.5 tier (required for gen-2.5 unless copy_settings_from gives it)"`
@@ -204,7 +205,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "generate_model", "Generate a 3D draft",
 		"Start a Rodin image-to-3D task from 1-5 local images: each image is preprocessed by Hyper3D (free; it writes the caption), "+
 			"then the geometry draft is submitted. Tag each image's view (F front, B back, L, R, FL, FR, BL, BR, U up, D down, ? unknown) "+
-			"for multi-view input. Needs [permission] generate = \"allow\" in config.toml and expected_credits from quote_cost "+
+			"for multi-view input; input_set instead takes the images as the user and agent arranged and tagged them in the viewer. Needs [permission] generate = \"allow\" in config.toml and expected_credits from quote_cost "+
 			"(operation generate_model, same model, tier and batch). copy_settings_from reuses a task's recipe (get_generation_options lists "+
 			"the account's recipes). The new task is made private unless public is true. Returns the new task (geometry_draft once ready, "+
 			"its poster attached), the quote and the wallet before and after. Next: get_preview, redo_geometry or confirm_geometry. Never "+
@@ -297,7 +298,7 @@ func (s *Server) generateModel(ctx context.Context, _ *mcp.CallToolRequest, in g
 		Prompt: optString(in.Prompt), Model: optString(in.Model), Tier: optString(in.Tier), Mode: optString(in.Mode),
 		ImageMode: optString(in.ImageMode), FaceEnhance: in.FaceEnhance, BBox: in.BBox, Batch: optInt(in.Batch, 0),
 		CopySettingsFrom: optString(in.CopySettingsFrom), Public: optBool(in.Public, false), Expected: expectedPtr(in.ExpectedCredits),
-		Wait: optBool(in.Wait, true),
+		Wait: optBool(in.Wait, true), InputSet: optString(in.InputSet),
 	}
 	for _, img := range in.Images {
 		g.Images = append(g.Images, service.GenerateImage{Path: img.Path, View: optString(img.View), Weight: img.Weight})

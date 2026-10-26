@@ -40,7 +40,7 @@ func EnsureRunning(exe string, paths domain.Paths) bool {
 		cmd := exec.Command(exe, "daemon")
 		cmd.Dir = filepath.Dir(exe)
 		cmd.Stdout, cmd.Stderr = out, out // stdin is the null device
-		cmd.SysProcAttr = detachAttr(breakaway)
+		cmd.SysProcAttr = DetachAttr(breakaway)
 		if err := cmd.Start(); err != nil {
 			return err
 		}

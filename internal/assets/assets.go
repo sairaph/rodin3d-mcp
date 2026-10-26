@@ -224,6 +224,36 @@ func MeshAsset(card *rodin.Card, hist History, stg string) (Asset, bool) {
 	return Asset{}, false
 }
 
+// StageInputs is the Asset.Stage of a task's input images.
+const StageInputs = "inputs"
+
+// Inputs lists the task's input images in upload order (the order its
+// image_label and view_weights refer to; names sort by the upload index the
+// service gives them), with their names. Asset.Mode is "input_" plus the
+// name without its extension; the files are cached under inputs/.
+func Inputs(card *rodin.Card, order func([]string)) (names []string, list []Asset) {
+	names = make([]string, 0, len(card.Info.MeshInputImages))
+	for n := range card.Info.MeshInputImages {
+		names = append(names, n)
+	}
+	order(names)
+	list = make([]Asset, 0, len(names))
+	for _, n := range names {
+		base := strings.TrimSuffix(n, path.Ext(n))
+		list = append(list, Asset{Stage: StageInputs, Mode: "input_" + unsafeName.Replace(base), Step: StageInputs, URL: card.Info.MeshInputImages[n]})
+	}
+	return names, list
+}
+
+// GeometryDraftAt returns the draft mesh and poster of geometry version v
+// from the history (empty addresses when the history lacks them).
+func GeometryDraftAt(hist History, v string) (mesh, poster Asset) {
+	gv := hist.Geometry[v]
+	mesh = Asset{Stage: StageGeometryDraft, Mode: MeshDraft, Step: rodin.StepModelGenerate, Version: v, URL: gv.PreviewDRC}
+	poster = Asset{Stage: StageGeometryDraft, Mode: ModePoster, Step: rodin.StepModelGenerate, Version: v, URL: gv.PreviewCover}
+	return mesh, poster
+}
+
 // MaterialRef is the material history reference a card's material belongs
 // to: its reference_image setting ("ALL" or an input image name); when that
 // is empty and the history has exactly one reference, that one. Index and

@@ -36,6 +36,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/mcpserver"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/store"
+	viewerapp "github.com/sairaph/rodin3d-mcp/internal/viewer/app"
 )
 
 // version is set by goreleaser via -ldflags "-X main.version=...".
@@ -68,6 +69,7 @@ var usageSpecs = []cli.Spec{
 	{Name: "add", Description: "Register the server in this project's AI client configs"},
 	{Name: "login", Description: "Sign in to Hyper3D (login [no-browser] [\"<final address>\"]: quote the address, it holds &)"},
 	{Name: "daemon", Description: "Run the background syncer (daemon --stop stops it)"},
+	{Name: "viewer", Description: "Run the viewer window (open-viewer or the open_viewer tool starts it)"},
 	{Name: "doctor", Description: "Diagnose the installation"},
 	{Name: "update", Description: "Update to the latest release"},
 	{Name: "version", Description: "Print the version"},
@@ -87,6 +89,14 @@ func main() {
 	// would refuse (--no-browser) or misread, so it is dispatched first.
 	if len(os.Args) > 1 && os.Args[1] == "login" {
 		os.Exit(commands.Login(ctx, commandEnv(), os.Args[2:]))
+	}
+	// The viewer window's loop must own the main thread (macOS), so it runs
+	// here on the main goroutine.
+	if len(os.Args) > 1 && os.Args[1] == "viewer" {
+		svc := newService()
+		code := viewerapp.Run(ctx, svc, version)
+		svc.Close()
+		os.Exit(code)
 	}
 	if len(os.Args) == 1 && tui.IsInteractive() {
 		os.Exit(runApp(ctx))
@@ -678,7 +688,8 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 // --- App ---
 
 // The interactive app opens when the binary is run bare in a terminal. In
-// this phase it offers the doctor; the full app comes with phase P4.
+// this phase it offers the doctor and the viewer window; the full app comes
+// with phase P4.
 
 const (
 	stepMenu app.Step = iota
@@ -697,6 +708,7 @@ func runApp(ctx context.Context) int {
 	s.menu = menu.New(domain.BinaryName+" "+version, func() []menu.Item {
 		return []menu.Item{
 			{Label: "Run doctor", Action: "doctor"},
+			{Label: "Open viewer", Action: "viewer"},
 			{Label: "Quit", Action: "quit"},
 		}
 	})
@@ -717,6 +729,21 @@ func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Value == "quit" || action == "quit" {
 				m.Quit = true
 				return m, tea.Quit
+			}
+			if action == "viewer" {
+				m.Step = stepDoctor
+				m.Status = "Opening the viewer..."
+				m.detail = detail.New("Viewer", m.Status)
+				return m, tea.Batch(m.detail.Init(), async.Load(func() (string, error) {
+					svc := newService()
+					defer svc.Close()
+					res, err := svc.OpenViewer(m.ctx, service.ViewerOpenInput{})
+					if err != nil {
+						e := service.Classify(err)
+						return e.Message + "\n" + e.Hint, nil
+					}
+					return res.Body, nil
+				}))
 			}
 			if action == "doctor" {
 				m.Step = stepDoctor

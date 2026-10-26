@@ -57,6 +57,7 @@ type Advanced struct {
 // GenerateInput is the input of generate_model (plan 2.6.3).
 type GenerateInput struct {
 	Images           []GenerateImage
+	InputSet         string // an input set arranged in the viewer, instead of Images
 	Prompt           string
 	Model            string // gen-2.5 | gen-1.5
 	Tier             string
@@ -140,6 +141,18 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if err := checkModel(model, tier, &mode); err != nil {
 		return Result{}, err
+	}
+	if id := strings.TrimSpace(in.InputSet); id != "" {
+		if len(in.Images) > 0 {
+			return Result{}, fail(render.CodeInvalidInput, "Give images or input_set, not both.", "Pass the input set id alone to use the images, order, tags and weights arranged in the viewer.")
+		}
+		set, err := s.LoadInputSet(id)
+		if err != nil {
+			return Result{}, err
+		}
+		for _, im := range set.Images {
+			in.Images = append(in.Images, GenerateImage{Path: im.Path, View: im.View, Weight: im.Weight})
+		}
 	}
 	images, err := prepareImages(in.Images)
 	if err != nil {
@@ -272,7 +285,7 @@ func oneOf(v string, set ...string) bool {
 // scales the input images.
 func prepareImages(list []GenerateImage) ([]preparedImage, error) {
 	if len(list) == 0 || len(list) > MaxImages {
-		return nil, fail(render.CodeInvalidInput, fmt.Sprintf("generate_model takes 1 to %d images; got %d.", MaxImages, len(list)), "Pass images as a list of {path, view, weight}.")
+		return nil, fail(render.CodeInvalidInput, fmt.Sprintf("generate_model takes 1 to %d images; got %d.", MaxImages, len(list)), "Pass images as a list of {path, view, weight}, or input_set: the id of an input set arranged in the viewer.")
 	}
 	tags := map[string]bool{}
 	for _, t := range catalog.ViewTags {

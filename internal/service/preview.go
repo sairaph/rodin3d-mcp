@@ -43,6 +43,15 @@ func PreviewModes() []string {
 	return out
 }
 
+// RenderModes lists every local render mode.
+func RenderModes() []string {
+	out := make([]string, len(render3d.AllModes))
+	for i, m := range render3d.AllModes {
+		out[i] = string(m)
+	}
+	return out
+}
+
 // PreviewViews lists the views of a render, the default first.
 func PreviewViews() []string {
 	out := make([]string, len(render3d.Views))

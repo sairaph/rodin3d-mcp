@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/gofrs/flock v0.13.1
 	github.com/google/jsonschema-go v0.4.3
+	github.com/hajimehoshi/ebiten/v2 v2.10.5
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/sairaph/mcp-wizard v0.1.1
@@ -31,7 +32,11 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/ebitengine/gomobile v0.0.0-20260820040257-d11f821a26a6 // indirect
+	github.com/ebitengine/hideconsole v1.0.0 // indirect
+	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
+	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -46,6 +51,7 @@ require (
 	github.com/sairaph/detect-harness v0.3.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
+	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a // indirect
 	github.com/tiktoken-go/tokenizer v0.8.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
@@ -58,3 +64,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace github.com/ebitengine/hideconsole => ./third_party/hideconsole

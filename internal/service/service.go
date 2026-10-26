@@ -29,6 +29,7 @@ var Tools = []string{
 	"list_tasks", "get_task", "wait_task", "get_preview", "download_model",
 	"generate_model", "redo_geometry", "confirm_geometry", "select_candidate", "generate_texture", "redo_material",
 	"confirm_material", "export_model", "fork_task", "set_private",
+	"open_viewer", "show_in_viewer", "control_viewer", "get_viewer_state", "close_viewer",
 }
 
 func registered(tool string) bool {

@@ -503,6 +503,24 @@ func (s *Store) DownloadDirs() ([]string, error) {
 	return out, rows.Err()
 }
 
+// SaveInputSet stores (or replaces) the input set id: its images, order,
+// view tags and weights as JSON, written by the viewer.
+func (s *Store) SaveInputSet(id string, data []byte) error {
+	_, err := s.db.Exec(`INSERT INTO input_sets (id, created_ms, json) VALUES (?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET json = excluded.json`, id, nowMS(), string(data))
+	return err
+}
+
+// InputSet returns the JSON of input set id, or ErrNotFound.
+func (s *Store) InputSet(id string) ([]byte, error) {
+	var data string
+	err := s.db.QueryRow(`SELECT json FROM input_sets WHERE id = ?`, id).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return []byte(data), err
+}
+
 // Sync phases.
 const (
 	PhaseIdle       = "idle"

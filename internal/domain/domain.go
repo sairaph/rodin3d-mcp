@@ -43,6 +43,10 @@ type Paths struct {
 	Cache           string // cache/<task>/<step>-<version>/: stage images
 	Downloads       string // downloads/<id8>-<slug>/: packed model files
 	Previews        string // previews/: PNGs written by get_preview
+	Viewer          string // viewer/: the viewer window's socket, lock, PID, log and cameras
+	ViewerPID       string
+	ViewerLog       string
+	ViewerCameras   string // viewer/cameras.json: the last camera per task
 }
 
 // PathsUnder builds every path under root.
@@ -62,6 +66,10 @@ func PathsUnder(root string) Paths {
 		Cache:           filepath.Join(root, "cache"),
 		Downloads:       filepath.Join(root, "downloads"),
 		Previews:        filepath.Join(root, "previews"),
+		Viewer:          filepath.Join(root, "viewer"),
+		ViewerPID:       filepath.Join(root, "viewer", "viewer.pid"),
+		ViewerLog:       filepath.Join(root, "viewer", "viewer.log"),
+		ViewerCameras:   filepath.Join(root, "viewer", "cameras.json"),
 	}
 }
 

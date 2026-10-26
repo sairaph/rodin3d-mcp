@@ -324,7 +324,7 @@ type taskDetailFront struct {
 	Versions  versionsFront   `yaml:"versions,omitempty"`
 	Confirmed *confirmedFront `yaml:"confirmed,omitempty"`
 	Previews  []previewFront  `yaml:"previews"`
-	Files     filesFront      `yaml:"files"`
+	Files     filesFront      `yaml:"files,omitempty"`
 }
 
 var settingGroups = map[string]string{}
@@ -680,11 +680,11 @@ func (s *Service) WaitTask(ctx context.Context, id string, timeout time.Duration
 	var b strings.Builder
 	switch {
 	case first.State != stage.Running:
-		fmt.Fprintf(&b, "No job is running on this task: it is at the %s, %s.", describeStage(now), now.State)
+		fmt.Fprintf(&b, "No job is running on this task (%s, %s).", describeStage(now), now.State)
 	case front.Changed:
 		fmt.Fprintf(&b, "The task moved from %s (%s) to %s (%s).", describeStage(first), first.State, describeStage(now), now.State)
 	default:
-		fmt.Fprintf(&b, "Still %s at the %s after %d seconds.", now.State, describeStage(now), front.Waited)
+		fmt.Fprintf(&b, "Still %s (%s) after %d seconds.", now.State, describeStage(now), front.Waited)
 	}
 	if front.TimedOut {
 		b.WriteString("\n\nNext: wait_task again with the same id.")

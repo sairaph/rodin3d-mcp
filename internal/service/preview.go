@@ -131,7 +131,7 @@ func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) 
 		Task:    s.taskFront(d.card),
 		Other:   avail,
 	}
-	body := fmt.Sprintf("The %s %s image of %q (%dx%d), saved to %s.", stg, mode, clip(d.card.Prompt, 60), w, h, out)
+	body := fmt.Sprintf("The %s image of the %s stage of %q (%dx%d), saved to %s.", mode, stg, clip(d.card.Prompt, 60), w, h, out)
 	body += "\n\nNext: get_preview with another stage or mode from available; get_task for the settings."
 	return Result{Front: front, Body: body, Images: []Image{{PNG: png, What: stg + " " + mode}}}, nil
 }

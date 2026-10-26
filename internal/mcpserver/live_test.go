@@ -8,6 +8,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,4 +213,30 @@ func first(xs []any) any {
 		return nil
 	}
 	return xs[0]
+}
+
+// TestLiveLogoutRevokes signs out through the logout tool and checks that
+// Hyper3D then refuses the old refresh token. It ends the session, so it
+// runs only with RODIN_LIVE_LOGOUT=1 as well.
+func TestLiveLogoutRevokes(t *testing.T) {
+	if os.Getenv("RODIN_LIVE_LOGOUT") != "1" {
+		t.Skip("set RODIN_LIVE_LOGOUT=1 as well to end the live session")
+	}
+	f := liveFixture(t)
+	ctx := context.Background()
+	before, _ := f.svc.Credentials(ctx)
+	r := f.liveCall("logout", nil)
+	if r.res.IsError || r.front["revoked"] != true {
+		t.Fatalf("logout: %s", firstLine(r.text, 400))
+	}
+	oauth := auth.NewOAuth(auth.EndpointsFor(f.svc.Client().Base()), "live-test")
+	_, err := oauth.Refresh(ctx, before.ClientID, before.RefreshToken)
+	var oe *auth.OAuthError
+	if !errors.As(err, &oe) || oe.Code != "invalid_grant" {
+		t.Fatalf("refresh after logout: %v, want invalid_grant", err)
+	}
+	if c, _ := f.svc.Credentials(ctx); c != nil {
+		t.Fatal("credentials still stored")
+	}
+	t.Logf("revoked; the old refresh token is refused (%s)", oe.Code)
 }

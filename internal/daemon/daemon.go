@@ -272,6 +272,7 @@ func (d *Daemon) SyncHistory(ctx context.Context, userUUID string) error {
 	go func() { wg.Wait(); close(results) }()
 
 	var firstAuthErr, saveErr error
+	var changedCards []*rodin.Card
 	failed := 0
 	for r := range results { // writes stay on this goroutine; always drain
 		if saveErr != nil {
@@ -291,7 +292,7 @@ func (d *Daemon) SyncHistory(ctx context.Context, userUUID string) error {
 			continue
 		}
 		if changed {
-			d.cacheImages(ctx, r.card)
+			changedCards = append(changedCards, r.card)
 		}
 	}
 	if saveErr != nil {
@@ -315,7 +316,18 @@ func (d *Daemon) SyncHistory(ctx context.Context, userUUID string) error {
 	} else {
 		d.logf("history sync: %d tasks, %d cards fetched", len(seen), len(need))
 	}
-	return d.Store.MarkSynced(d.now())
+	if err := d.Store.MarkSynced(d.now()); err != nil {
+		return err
+	}
+	// The index is complete; the images follow, so a first list after a
+	// login does not wait for them.
+	for _, card := range changedCards {
+		if ctx.Err() != nil {
+			break
+		}
+		d.cacheImages(ctx, card)
+	}
+	return nil
 }
 
 // cacheImages stores the card's own stage images (poster, geometry,

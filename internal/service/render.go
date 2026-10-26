@@ -178,7 +178,12 @@ func (s *Service) renderStage(ctx context.Context, uuid string, d *taskDetail, s
 		return out, err
 	}
 	t1 := time.Now()
-	img, _, err := render3d.Render(mesh, tex, render3d.Options{Mode: mode, View: view, Size: size, Draft: draft})
+	// A call that ends (cancelled, timed out) stops its render, so the
+	// render slot is free for the next preview.
+	img, _, err := render3d.Render(mesh, tex, render3d.Options{Mode: mode, View: view, Size: size, Draft: draft, Cancel: ctx.Done()})
+	if errors.Is(err, render3d.ErrCanceled) && ctx.Err() != nil {
+		return out, ctx.Err()
+	}
 	var ie *render3d.InputError
 	if errors.As(err, &ie) {
 		return out, fail(render.CodeConflict, fmt.Sprintf("The %s mesh of this task cannot be drawn in mode %s: it %s.", stg, mode, ie.Reason),

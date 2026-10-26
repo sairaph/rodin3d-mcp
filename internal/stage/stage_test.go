@@ -43,6 +43,28 @@ func TestActions(t *testing.T) {
 	if a := Actions(Of("TextureRefine", "DoneBasic", 0)); !slices.Contains(a, "download_model") || !slices.Contains(a, "get_preview") {
 		t.Errorf("packed: %v", a)
 	}
+	// L5: Bang (split_parts) works on the geometry draft only (notes 14
+	// section 5); rigging stays at the confirmed stages.
+	for _, c := range []struct {
+		step, state string
+		split, rig  bool
+	}{
+		{"ModelGenerate", "DonePreview", true, false},
+		{"ModelRefine", "DonePreview", false, true},
+		{"ModelRefine", "DoneBasic", false, true},
+		{"TextureGenerate", "DonePreview", false, false},
+		{"TextureRefine", "DonePreview", false, true},
+		{"TextureRefine", "DoneHigh", false, true},
+	} {
+		a := Actions(Of(c.step, c.state, 0))
+		if slices.Contains(a, "split_parts") != c.split || slices.Contains(a, "rig_model") != c.rig {
+			t.Errorf("%s/%s: %v", c.step, c.state, a)
+		}
+	}
+	// L18: a state this build does not know offers only looking.
+	if a := Actions(Of("TextureRefine", "Failedish", 0)); !slices.Equal(a, []string{"get_preview"}) {
+		t.Errorf("unknown state: %v", a)
+	}
 }
 
 func TestRedo(t *testing.T) {

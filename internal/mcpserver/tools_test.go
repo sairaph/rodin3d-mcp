@@ -457,6 +457,156 @@ func TestOptionsRecipes(t *testing.T) {
 	}
 }
 
+// M2: a pasted address that is cut short keeps the pending sign-in, and the
+// hint asks for the whole address instead of starting over.
+func TestLoginWithATruncatedAddress(t *testing.T) {
+	f := newFixture(t, false, false)
+	r := f.call("login", map[string]any{"open_browser": false})
+	authURL, _ := r.front["authorize_url"].(string)
+	redirect, err := f.fake.Approve(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cut := range []string{redirect[:strings.Index(redirect, "?")], redirect[:strings.Index(redirect, "&")]} {
+		r = f.call("login", map[string]any{"redirect_url": cut})
+		hint, _ := get(r.front, "error", "hint").(string)
+		if r.code() != "invalid_input" || !strings.Contains(hint, "still pending") || !strings.Contains(hint, "redirect_url") {
+			t.Fatalf("truncated %q: %s", cut, r.text)
+		}
+	}
+	r = f.call("login", map[string]any{"redirect_url": redirect})
+	if r.res.IsError || get(r.front, "user", "username") != "owner" {
+		t.Fatalf("the whole address after a bad paste: %s", r.text)
+	}
+}
+
+// M4: 8k is not a pack resolution (it is the sharp_texture chip).
+func TestQuoteRefusesTheEightKPack(t *testing.T) {
+	f := newFixture(t, true, false)
+	if r := f.call("quote_cost", map[string]any{"operation": "export_model", "settings": map[string]any{"resolution": "8k"}}); r.code() != "invalid_input" {
+		t.Fatalf("8k: %s", r.text)
+	}
+	if r := f.call("quote_cost", map[string]any{"operation": "export_model", "settings": map[string]any{"resolution": "2k", "tier": "low"}}); r.res.IsError || get(r.front, "quote", "credits") != 0 {
+		t.Fatalf("2k low: %s", r.text)
+	}
+}
+
+// L11: frozen credits count as spent when deciding affordable.
+func TestQuoteAffordableCountsFrozenCredits(t *testing.T) {
+	f := newFixture(t, true, false)
+	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 533 }) // 53.5 available, 53.3 frozen
+	r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry"})
+	if r.res.IsError || r.front["affordable"] != false || num(get(r.front, "wallet", "frozen")) != 53.3 {
+		t.Fatalf("frozen: %s", r.text)
+	}
+	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 0 })
+	if r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry"}); r.front["affordable"] != true {
+		t.Fatalf("unfrozen: %s", r.text)
+	}
+	// An unknown price has no affordable at all.
+	if r := f.call("quote_cost", map[string]any{"operation": "rig_model"}); r.front["affordable"] != nil {
+		t.Fatalf("unknown price: %s", r.text)
+	}
+}
+
+// L3: the material redo counter and the material previews use the same
+// reference, also when the card's reference_image setting is empty.
+func TestMaterialReferenceFallback(t *testing.T) {
+	f := newFixture(t, true, false)
+	// Creator: 6 material redos; versions v1, v2 of reference 0000.webp -> 5.
+	r := f.call("get_task", map[string]any{"task_id": fakehyper.MatDraftID})
+	if get(r.front, "task", "redo_left", "material") != 5 {
+		t.Fatalf("with the setting: %s", r.text)
+	}
+	delete(f.fake.Tasks(fakehyper.MatDraftID).Settings, "reference_image")
+	r = f.call("get_task", map[string]any{"task_id": fakehyper.MatDraftID})
+	if get(r.front, "task", "redo_left", "material") != 5 {
+		t.Fatalf("without the setting: %s", r.text)
+	}
+	// The history's only reference also gives the material images.
+	if r := f.call("get_preview", map[string]any{"task_id": fakehyper.MatDraftID, "stage": "material", "mode": "diffuse", "size": 256}); r.res.IsError {
+		t.Fatalf("material preview without the setting: %s", r.text)
+	}
+}
+
+// L4: an address nested in a setting (a list of maps) is hidden like a
+// top-level one. call() fails on any signature in the reply.
+func TestGetTaskHidesNestedAddresses(t *testing.T) {
+	f := newFixture(t, true, false)
+	f.fake.Tasks(fakehyper.PackedID).Settings["texture_partial_reference_images"] = []any{
+		map[string]any{"image": f.fake.HTTP.URL + "/files/x.webp?sig=" + fakehyper.SignatureMark + "nested", "weight": 0.5},
+	}
+	r := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID})
+	if r.res.IsError {
+		t.Fatal(r.text)
+	}
+	list, _ := get(r.front, "settings", "other", "texture_partial_reference_images").([]any)
+	if len(list) != 1 || list[0].(map[string]any)["image"] != "(file address)" || list[0].(map[string]any)["weight"] != 0.5 {
+		t.Fatalf("nested setting: %v", list)
+	}
+}
+
+// L9 and R4: why a download is refused, and file host failures.
+func TestDownloadRefusalsAndFileHostFailures(t *testing.T) {
+	f := newFixture(t, true, false)
+	// Packed, but Hyper3D lists no file (seen on a material draft marked
+	// DoneBasic): no download_model action, and a clear conflict.
+	f.fake.Tasks(fakehyper.MatDraftID).UserState = "DoneBasic"
+	f.fake.Tasks(fakehyper.MatDraftID).Pack = []string{}
+	r := f.call("get_task", map[string]any{"task_id": fakehyper.MatDraftID})
+	if get(r.front, "task", "state") != "packed" || slices.Contains(get(r.front, "task", "actions").([]any), any("download_model")) {
+		t.Fatalf("packed without files: %s", r.text)
+	}
+	r = f.call("download_model", map[string]any{"task_id": fakehyper.MatDraftID})
+	if r.code() != "conflict" || !strings.Contains(r.text, "lists no files") {
+		t.Fatalf("download of an empty pack: %s", r.text)
+	}
+	r = f.call("download_model", map[string]any{"task_id": fakehyper.RunningID})
+	if r.code() != "conflict" || !strings.Contains(r.text, "still working") || !strings.Contains(r.text, "wait_task") {
+		t.Fatalf("download of a running task: %s", r.text)
+	}
+	r = f.call("download_model", map[string]any{"task_id": fakehyper.DraftID})
+	if r.code() != "conflict" || !strings.Contains(r.text, "geometry draft") {
+		t.Fatalf("download of a draft: %s", r.text)
+	}
+
+	// An expired signature (the file host answers 403) is unavailable with
+	// a fresh-address hint, not a plan or id problem.
+	f.fake.SetFileStatus(403)
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"download_model", map[string]any{"task_id": fakehyper.PackedID, "output_dir": t.TempDir()}},
+		{"get_preview", map[string]any{"task_id": fakehyper.PackedID, "stage": "material", "mode": "pbr"}},
+	} {
+		r := f.call(c.tool, c.args)
+		if r.code() != "unavailable" || !strings.Contains(r.text, "fresh addresses") {
+			t.Errorf("%s with a 403 file host: %s", c.tool, r.text)
+		}
+	}
+}
+
+// L12: after a login as another account, the index of the previous one is
+// not shown until the daemon has synced the new one.
+func TestListTasksOfAnotherAccountWaitsForItsSync(t *testing.T) {
+	f := newFixture(t, true, true)
+	if r := f.call("list_tasks", nil); r.front["total"] != 5 {
+		t.Fatalf("first account: %s", r.text)
+	}
+	f.call("logout", nil)
+	f.fake.SetUser(func(u *fakehyper.User) { u.UUID, u.Username = "u-1111-1111", "other" })
+	f.signIn()
+	r := f.call("list_tasks", nil)
+	if r.res.IsError || r.front["total"] != 0 || !strings.Contains(r.text, "first history sync has not finished") {
+		t.Fatalf("other account before its sync: %s", r.text)
+	}
+	f.sync()
+	if r := f.call("list_tasks", nil); r.front["total"] != 5 {
+		t.Fatalf("other account after its sync: %s", r.text)
+	}
+}
+
 func TestExpiredTokenIsRefreshedForTheCall(t *testing.T) {
 	f := newFixture(t, true, false)
 	f.fake.ExpireAccess()

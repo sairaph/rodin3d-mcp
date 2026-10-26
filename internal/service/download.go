@@ -143,24 +143,28 @@ func (s *Service) Download(ctx context.Context, in DownloadInput) (Result, error
 func notPacked(t TaskFront) error {
 	st := stage.Status{Stage: t.Stage, State: t.State, Step: t.Step, UserState: t.UserState}
 	where := describeStage(st)
-	pack := "pack it in the Hyper3D web app (Download panel)"
+	// Name the tool when this build has it, else the web app.
+	packWith, confirmWith := "in the Hyper3D web app (Download panel)", "in the Hyper3D web app"
 	if registered("export_model") {
-		pack = "pack it with export_model"
+		packWith = "with export_model"
+	}
+	if registered("confirm_geometry") {
+		confirmWith = "with confirm_geometry"
 	}
 	var msg, hint string
 	switch {
 	case t.State == stage.Packed:
 		msg = fmt.Sprintf("Hyper3D lists no files for the pack of this task (%s), so there is nothing to download.", where)
-		hint = "Pack it again (" + pack + "), then call download_model."
+		hint = "Pack it again " + packWith + ", then call download_model."
 	case t.State == stage.Running:
 		msg = fmt.Sprintf("A job is still working on this task (%s); it has no finished pack yet.", where)
-		hint = "Call wait_task until the task is ready, then " + pack + " and call download_model."
+		hint = "Call wait_task until the task is ready, then pack it " + packWith + " and call download_model."
 	case t.Stage == stage.GeometryDraft:
 		msg = "The task is a geometry draft: files can be downloaded only after the geometry is confirmed and packed."
-		hint = "Confirm the geometry, " + pack + ", then call download_model."
+		hint = "Confirm the geometry " + confirmWith + ", pack it " + packWith + ", then call download_model."
 	default:
 		msg = fmt.Sprintf("The task (%s) has no finished pack yet.", where)
-		hint = strings.ToUpper(pack[:1]) + pack[1:] + ", then call download_model again."
+		hint = "Pack it " + packWith + ", then call download_model again."
 	}
 	return fail(render.CodeConflict, msg, hint)
 }

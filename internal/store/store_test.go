@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -117,6 +118,42 @@ func TestFilesAndPhase(t *testing.T) {
 	s.SetPhase(PhaseError, "boom")
 	if st, _ := s.State(); st.Phase != PhaseError || st.LastError != "boom" {
 		t.Errorf("state %+v", st)
+	}
+}
+
+// L16: a data folder whose name holds URI characters (a home folder like
+// "C:\Users\50%#off") opens the database at exactly that path.
+func TestOpenUnderAFolderWithURICharacters(t *testing.T) {
+	names := []string{"50% #off", "a%20b", "x%25y#z", "semi;colon&amp=1"}
+	if os.PathSeparator == '/' {
+		names = append(names, "what?")
+	}
+	for _, name := range names {
+		dir := filepath.Join(t.TempDir(), name)
+		p := filepath.Join(dir, "rodin.db")
+		s, err := Open(p)
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		if _, err := s.UpsertListRow(ListRow{UUID: "a"}); err != nil {
+			t.Fatalf("%q: write: %v", name, err)
+		}
+		s.Close()
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%q: the database is not at its path: %v", name, err)
+		}
+		entries, _ := os.ReadDir(filepath.Dir(dir))
+		if len(entries) != 1 || entries[0].Name() != name {
+			t.Fatalf("%q: folders created: %v", name, entries)
+		}
+		s, err = Open(p)
+		if err != nil {
+			t.Fatalf("%q: reopen: %v", name, err)
+		}
+		if tasks, _ := s.Tasks(); len(tasks) != 1 {
+			t.Fatalf("%q: reopened a different database (%d tasks)", name, len(tasks))
+		}
+		s.Close()
 	}
 }
 

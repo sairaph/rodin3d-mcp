@@ -2,6 +2,7 @@ package price
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,8 +77,27 @@ func TestGates(t *testing.T) {
 	if _, err := For(Input{Operation: "generate_model", Tier: "extreme-high"}, Account{Plan: "Free"}); !errors.As(err, &gate) {
 		t.Errorf("extreme-high without privilege: %v", err)
 	}
-	if _, err := For(Input{Operation: "generate_model", Tier: "high", Batch: 3}, Account{Plan: "Business"}); err != nil {
-		t.Errorf("business batch: %v", err)
+	// L11: a batch the plan allows has no measured price, so no number.
+	if q, err := For(Input{Operation: "generate_model", Tier: "high", Batch: 3}, Account{Plan: "Business"}); err != nil || q.Known || q.Credits != nil {
+		t.Errorf("business batch: %+v %v", q, err)
+	}
+	// M4: 4K/12K and high-poly packs pass with the privilege.
+	pack := Account{Plan: "Business", Privileges: []string{"RodinPackHighResolution"}}
+	for _, in := range []Input{{Operation: "export_model", Resolution: "4k"}, {Operation: "export_model", Resolution: "12k", Geometry: "high_poly"}} {
+		if _, err := For(in, pack); err != nil {
+			t.Errorf("%+v with the privilege: %v", in, err)
+		}
+	}
+}
+
+// M4: 8k is the sharp_texture chip, not a pack resolution, on every plan.
+func TestEightKIsNotAPackResolution(t *testing.T) {
+	var bad *InvalidInput
+	for _, acct := range []Account{creator, {Plan: "Business", Privileges: []string{"RodinPackHighResolution"}}} {
+		_, err := For(Input{Operation: "export_model", Resolution: "8K"}, acct)
+		if !errors.As(err, &bad) || !strings.Contains(bad.Reason, "sharp_texture") {
+			t.Errorf("%s: %v", acct.Plan, err)
+		}
 	}
 }
 

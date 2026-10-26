@@ -35,10 +35,17 @@ func TestLabelTable(t *testing.T) {
 		{Input{Operation: "confirm_geometry", SmartLowPoly: true}, 2},
 		{Input{Operation: "generate_texture", TextureMode: "extreme-high"}, 2},
 		{Input{Operation: "generate_texture", TextureMode: "low"}, 0.5},
+		{Input{Operation: "generate_texture", TextureMode: "high"}, 0},
+		{Input{Operation: "confirm_material"}, 0},
 		{Input{Operation: "fork_task"}, 0.5},
+		{Input{Operation: "fork_task", ForkStage: "geometry"}, 0},
 		{Input{Operation: "generate_agentic", Budget: "pro"}, 2},
 		{Input{Operation: "split_parts"}, 0.5},
 		{Input{Operation: "export_model", Tier: "low"}, 0},
+		{Input{Operation: "export_model", Tier: "high"}, 0},
+		{Input{Operation: "redo_geometry", Tier: "extreme-high"}, 2},
+		{Input{Operation: "redo_material"}, 0},
+		{Input{Operation: "select_candidate"}, 0},
 	}
 	for _, c := range cases {
 		if got, _ := credit(t, c.in); got != c.want {
@@ -52,7 +59,7 @@ func TestLabelTable(t *testing.T) {
 
 func TestUnknownPrices(t *testing.T) {
 	for _, in := range []Input{
-		{Operation: "generate_texture"}, {Operation: "confirm_material"}, {Operation: "export_model", Tier: "high"},
+		{Operation: "generate_texture", TextureMode: "medium"}, {Operation: "generate_texture", Model: "gen-1.5"},
 		{Operation: "rig_model"}, {Operation: "animate_model"}, {Operation: "texture_model"},
 	} {
 		q, err := For(in, creator)

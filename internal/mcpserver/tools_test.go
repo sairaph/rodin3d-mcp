@@ -491,10 +491,11 @@ func TestQuoteRefusesTheEightKPack(t *testing.T) {
 	}
 }
 
-// L11: frozen credits count as spent when deciding affordable.
+// L11: frozen credits are not available when deciding affordable (the
+// service's prepaid_available already excludes them, measured in P2).
 func TestQuoteAffordableCountsFrozenCredits(t *testing.T) {
 	f := newFixture(t, true, false)
-	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 533 }) // 53.5 available, 53.3 frozen
+	f.fake.SetUser(func(u *fakehyper.User) { u.Frozen = 533 }) // 0.2 available, 53.3 frozen
 	r := f.call("quote_cost", map[string]any{"operation": "confirm_geometry"})
 	if r.res.IsError || r.front["affordable"] != false || num(get(r.front, "wallet", "frozen")) != 53.3 {
 		t.Fatalf("frozen: %s", r.text)

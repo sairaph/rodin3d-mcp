@@ -491,7 +491,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		u := s.User
 		writeJSON(w, 201, map[string]any{"meta": map[string]any{
 			"user_uuid": u.UUID, "username": u.Username, "email": u.Email, "balance": u.Balance, "frozen": u.Frozen,
-			"prepaid_available": u.Balance + u.Subscription, "privileges": u.Privileges, "features": []string{"RodinTextureAdditionalFeatures"},
+			// Like the live service: frozen credits are not available (P2, 2026-10-26).
+			"prepaid_available": u.Balance + u.Subscription - u.Frozen, "privileges": u.Privileges, "features": []string{"RodinTextureAdditionalFeatures"},
 			"subscriptions": map[string]any{"current_active": true, "highest_level": u.Plan, "active_subscriptions": []any{
 				map[string]any{"active": true, "plan_level": u.Plan, "wallet_balance": u.Subscription, "start_time": "2026-10-16T00:00:00.000Z", "end_time": "2026-11-16T00:00:00.000Z"},
 			}},

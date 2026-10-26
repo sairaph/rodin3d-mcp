@@ -61,26 +61,24 @@ func TestNotPackedSaysWhy(t *testing.T) {
 		notInHints []string
 	}{
 		{TaskFront{Stage: stage.Material, State: stage.Packed, Step: "TextureRefine", UserState: "DoneBasic"},
-			"lists no files", "Pack it again in the Hyper3D web app", nil},
+			"lists no files", "Pack it again with export_model", nil},
 		{TaskFront{Stage: stage.MaterialDraft, State: stage.Packed, Step: "TextureGenerate", UserState: "DoneBasic"},
 			"(material draft)", "Pack it again", nil},
 		{TaskFront{Stage: stage.GeometryDraft, State: stage.Running, Step: "ModelGenerate", UserState: "Generating"},
 			"still working", "Call wait_task", nil},
 		{TaskFront{Stage: stage.GeometryDraft, State: stage.Ready, Step: "ModelGenerate", UserState: "DonePreview"},
-			"geometry draft", "Confirm the geometry in the Hyper3D web app", nil},
+			"geometry draft", "Confirm the geometry with confirm_geometry", nil},
 		{TaskFront{Stage: stage.Geometry, State: stage.Ready, Step: "ModelRefine", UserState: "DonePreview"},
-			"(geometry confirmed) has no finished pack", "Pack it in the Hyper3D web app", nil},
+			"(geometry confirmed) has no finished pack", "Pack it with export_model", nil},
 	}
 	for _, c := range cases {
 		e := Classify(notPacked(c.front))
 		if e.Code != render.CodeConflict || !strings.Contains(e.Message, c.msg) || !strings.Contains(e.Hint, c.hint) {
 			t.Errorf("%s/%s: %s | %s", c.front.Stage, c.front.State, e.Message, e.Hint)
 		}
-		// P1 has neither tool, so no hint may name them.
-		for _, tool := range []string{"export_model", "confirm_geometry"} {
-			if strings.Contains(e.Hint, tool) {
-				t.Errorf("%s/%s: hint names %s, which this build lacks: %s", c.front.Stage, c.front.State, tool, e.Hint)
-			}
+		// Since P2 both tools exist, so no hint sends the user to the web app.
+		if strings.Contains(e.Hint, "web app") {
+			t.Errorf("%s/%s: hint names the web app although this build packs and confirms: %s", c.front.Stage, c.front.State, e.Hint)
 		}
 		if strings.Contains(e.Message+e.Hint, "((") || strings.Contains(e.Message+e.Hint, "))") {
 			t.Errorf("nested parentheses: %s | %s", e.Message, e.Hint)

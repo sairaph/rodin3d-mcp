@@ -26,8 +26,8 @@ const (
 
 // Hints shared by several errors.
 const (
-	hintLogin     = "Call login with no arguments, give the user the link it returns, and after they approve call get_account."
-	hintNewLogin  = "Call login with no arguments to get a new sign-in link."
+	hintLogin      = "Call login with no arguments, give the user the link it returns, and after they approve call get_account."
+	hintNewLogin   = "Call login with no arguments to get a new sign-in link."
 	hintPasteAgain = "The sign-in is still pending. Ask the user for the whole address of the page that cannot connect " +
 		"(it starts with http://127.0.0.1:) and call login again with it as redirect_url. Start a new sign-in only if the link expired."
 	hintOlderAddress = "The sign-in is still pending. Ask the user for the address shown after approving the latest link " +

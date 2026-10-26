@@ -389,7 +389,6 @@ func (m *Manager) Pending() (redirect string, expires time.Time, ok bool) {
 	return p.RedirectURI, p.CreatedAt.Add(LoginWindow), true
 }
 
-
 // LogoutResult says what Logout did.
 type LogoutResult struct {
 	WasSignedIn bool

@@ -104,10 +104,10 @@ func optErrs(errs ...error) error {
 
 func registerFlow(reg *command.Registry, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
 	reg.Register(command.Handler{Name: "generate", Description: "Submit a geometry draft from 1-5 images (paid)",
-		Usage: "generate <image>[:VIEW[:weight]]... [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [copy=<id>] [public=true] expected=<credits> [nowait] [json]",
+		Usage: "generate <image>[:VIEW[:weight]]... | input_set=<id> [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [copy=<id>] [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.GenerateInput{Wait: waitOf(&a), Model: a.opts["model"], Tier: a.opts["tier"], Mode: a.opts["mode"], Prompt: a.opts["prompt"],
-				ImageMode: a.opts["image_mode"], CopySettingsFrom: a.opts["copy"]}
+				ImageMode: a.opts["image_mode"], CopySettingsFrom: a.opts["copy"], InputSet: a.opts["input_set"]}
 			for _, p := range a.pos {
 				img, err := parseImage(p)
 				if err != nil {

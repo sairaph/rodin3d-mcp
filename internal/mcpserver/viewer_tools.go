@@ -27,7 +27,7 @@ type taskRefArg struct {
 type inputImageArg struct {
 	Path   string   `json:"path" jsonschema:"absolute path of a png, jpeg or webp image"`
 	View   *string  `json:"view,omitempty" jsonschema:"the side the image shows the object from (default ?, unknown)"`
-	Weight *float64 `json:"weight,omitempty" jsonschema:"relative weight 0-1 (default: the web's table)"`
+	Weight *float64 `json:"weight,omitempty" jsonschema:"relative weight above 0, at most 1 (normalised to sum 1); give one on every image or on none (none: the web's table)"`
 }
 
 type inputSetArg struct {
@@ -110,7 +110,7 @@ type selectArg struct {
 type setTagArg struct {
 	ImageIndex int      `json:"image_index" jsonschema:"the input_set image to retag"`
 	View       string   `json:"view" jsonschema:"its new view tag"`
-	Weight     *float64 `json:"weight,omitempty" jsonschema:"its new weight 0-1"`
+	Weight     *float64 `json:"weight,omitempty" jsonschema:"its new weight above 0, at most 1; images of the set without a weight get the even share 1/N"`
 }
 
 type reorderArg struct {
@@ -166,7 +166,7 @@ func contentSchema(c *jsonschema.Schema) {
 	imgs.MinItems, imgs.MaxItems = jsonschema.Ptr(1), jsonschema.Ptr(service.MaxImages)
 	nonNullDeep(imgs.Items)
 	withEnum(imgs.Items, "view", viewer.ViewTags...)
-	withRange(imgs.Items, 0, 1, "weight")
+	withOpenMinRange(imgs.Items, 0, 1, "weight")
 	tex := property(c, "textures")
 	nonNullDeep(tex)
 	withEnum(tex, "maps", viewer.TextureMaps...)
@@ -209,7 +209,7 @@ func (s *Server) registerViewerTools() {
 	withRange(ctl, 0.1, 10, "zoom")
 	withRange(property(ctl, "orbit"), -90, 90, "elevation_deg")
 	withEnum(property(ctl, "set_tag"), "view", viewer.ViewTags...)
-	withRange(property(ctl, "set_tag"), 0, 1, "weight")
+	withOpenMinRange(property(ctl, "set_tag"), 0, 1, "weight")
 	withEnum(property(ctl, "highlight"), "view", viewer.ViewTags...)
 	addTool(s, "control_viewer", "Change the viewer",
 		"Change what the open viewer shows: layout, stage, version, render mode, named view, orbit, zoom, pan, turntable, wireframe "+

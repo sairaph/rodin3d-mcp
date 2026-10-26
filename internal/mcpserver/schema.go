@@ -57,6 +57,16 @@ func withRange(s *jsonschema.Schema, lo, hi float64, names ...string) *jsonschem
 	return s
 }
 
+// withOpenMinRange sets an exclusive minimum and an inclusive maximum on
+// numeric properties: (lo, hi].
+func withOpenMinRange(s *jsonschema.Schema, lo, hi float64, names ...string) *jsonschema.Schema {
+	for _, name := range names {
+		prop := property(s, name)
+		prop.ExclusiveMinimum, prop.Maximum = jsonschema.Ptr(lo), jsonschema.Ptr(hi)
+	}
+	return s
+}
+
 // withMin sets an inclusive minimum on a numeric property.
 func withMin(s *jsonschema.Schema, lo float64, name string) *jsonschema.Schema {
 	property(s, name).Minimum = jsonschema.Ptr(lo)

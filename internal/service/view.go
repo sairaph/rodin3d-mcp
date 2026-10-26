@@ -310,20 +310,27 @@ func NewInputSetID() string {
 
 // CheckInputSet checks the images of an input set the way generate_model
 // checks its images: 1-5 files of png, jpeg or webp, known view tags,
-// weights from 0 to 1.
+// weights above 0 and at most 1, on every image or on none.
 func CheckInputSet(images []viewer.InputImage) error {
 	if len(images) == 0 || len(images) > MaxImages {
 		return fail(render.CodeInvalidInput, fmt.Sprintf("An input set holds 1 to %d images; got %d.", MaxImages, len(images)), "Pass 1 to 5 images.")
 	}
 	paths := make([]string, len(images))
+	weighted := 0
 	for i, im := range images {
 		paths[i] = im.Path
 		if im.View != "" && !slices.Contains(viewer.ViewTags, im.View) {
 			return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the view tag %q.", i, im.View), "Use one of "+strings.Join(viewer.ViewTags, " ")+".")
 		}
-		if im.Weight != nil && (*im.Weight < 0 || *im.Weight > 1) {
-			return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the weight %g.", i, *im.Weight), "Weights are from 0 to 1.")
+		if im.Weight != nil {
+			if w := *im.Weight; !(w > 0 && w <= 1) {
+				return fail(render.CodeInvalidInput, fmt.Sprintf("Image %d has the weight %g.", i, w), "Weights are above 0 and at most 1; they are normalised to sum 1.")
+			}
+			weighted++
 		}
+	}
+	if weighted != 0 && weighted != len(images) {
+		return fail(render.CodeInvalidInput, fmt.Sprintf("%d of %d images have a weight.", weighted, len(images)), "Give every image a weight, or none for the default weights.")
 	}
 	return CheckImageFiles(paths)
 }

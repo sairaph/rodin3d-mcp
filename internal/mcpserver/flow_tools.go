@@ -17,7 +17,7 @@ var paidTool = &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(fa
 type imageArg struct {
 	Path   string   `json:"path" jsonschema:"absolute path of a jpg, png or webp image (larger than 1024 px is scaled down like the web does)"`
 	View   *string  `json:"view,omitempty" jsonschema:"the direction the image shows the object from (default ?, unknown)"`
-	Weight *float64 `json:"weight,omitempty" jsonschema:"relative weight of this image (0-1); give every image one or none; normalised to sum 1"`
+	Weight *float64 `json:"weight,omitempty" jsonschema:"relative weight of this image, above 0 and at most 1; give every image one or none; normalised to sum 1"`
 }
 
 type presetsArg struct {
@@ -39,7 +39,7 @@ type advancedArg struct {
 
 type generateArgs struct {
 	Images           []imageArg   `json:"images,omitempty" jsonschema:"1-5 images of one object; several need views tagged for a good result (or input_set)"`
-	InputSet         *string      `json:"input_set,omitempty" jsonschema:"instead of images: the id of an input set arranged in the viewer (show_in_viewer input_set or task_inputs), with its order, view tags and weights"`
+	InputSet         *string      `json:"input_set,omitempty" jsonschema:"instead of images: the id of an input set arranged in the viewer (show_in_viewer input_set or task_inputs), with its order, view tags and weights as stored when this call runs (the user may change them in the window: read get_viewer_state first)"`
 	Prompt           *string      `json:"prompt,omitempty" jsonschema:"caption override (at most 1024 characters); default the caption Hyper3D writes for the first image"`
 	Model            *string      `json:"model,omitempty" jsonschema:"gen-2.5 (default) or gen-1.5"`
 	Tier             *string      `json:"tier,omitempty" jsonschema:"gen-2.5 tier (required for gen-2.5 unless copy_settings_from gives it)"`
@@ -184,7 +184,7 @@ func (s *Server) registerFlowTools() {
 	images := property(gen, "images")
 	images.MinItems, images.MaxItems = jsonschema.Ptr(1), jsonschema.Ptr(service.MaxImages)
 	withEnum(images.Items, "view", viewTags()...)
-	withRange(images.Items, 0, 1, "weight")
+	withOpenMinRange(images.Items, 0, 1, "weight")
 	withEnum(gen, "model", "gen-2.5", "gen-1.5")
 	withEnum(gen, "tier", "extreme-low", "low", "medium", "high", "extreme-high")
 	withEnum(gen, "mode", "default", "focal", "zero", "speedy")

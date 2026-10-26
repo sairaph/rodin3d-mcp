@@ -132,15 +132,26 @@ func Index(card *rodin.Card, hist History) []Asset {
 		matVersion = firstNonEmpty(card.Confirmed("texture_version"), LatestVersion(keys(versions)))
 		mv = versions[matVersion]
 	}
-	matTag := strings.Trim(ref+"-"+matVersion, "-")
+	// Images on the card are the current ones (tag: the reference); images
+	// from the history carry their version. The cache path then does not
+	// depend on whether the history was read.
 	step := card.Step
-	add(StageMaterial, "poster", step, matTag, card.Poster["preview_image"])
+	cardTag := ref
+	histTag := strings.Trim(ref+"-"+matVersion, "-")
+	pick := func(mode, fromCard, fromHist string) {
+		if fromCard != "" {
+			add(StageMaterial, mode, step, cardTag, fromCard)
+		} else {
+			add(StageMaterial, mode, rodin.StepTextureGenerate, histTag, fromHist)
+		}
+	}
+	add(StageMaterial, "poster", step, cardTag, card.Poster["preview_image"])
 	add(StageMaterial, "geometry", rodin.StepModelRefine, geoVersion, card.Poster["geometry_image"])
-	add(StageMaterial, "material", step, matTag, firstNonEmpty(card.Poster["material_image"], mv.PreviewImage))
-	add(StageMaterial, "diffuse", step, matTag, firstNonEmpty(card.Preview["texture_diffuse"], mv.TextureDiffuse))
-	add(StageMaterial, "pbr", step, matTag, firstNonEmpty(card.Preview["texture_pbr"], mv.TexturePBR))
-	add(StageMaterial, "normal", step, matTag, firstNonEmpty(card.Preview["texture_normal"], mv.TextureNormal))
-	add(StageMaterial, "shaded", step, matTag, firstNonEmpty(card.Preview["texture_shaded"], mv.TextureShaded))
+	pick("material", card.Poster["material_image"], mv.PreviewImage)
+	pick("diffuse", card.Preview["texture_diffuse"], mv.TextureDiffuse)
+	pick("pbr", card.Preview["texture_pbr"], mv.TexturePBR)
+	pick("normal", card.Preview["texture_normal"], mv.TextureNormal)
+	pick("shaded", card.Preview["texture_shaded"], mv.TextureShaded)
 	return out
 }
 
@@ -244,14 +255,14 @@ func sourceKey(a Asset) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-func kind(a Asset) string { return "cache:" + a.Stage + "/" + a.Mode }
+func kind(a Asset) string { return "cache:" + a.Mode }
 
 var unsafeName = strings.NewReplacer("/", "_", "\\", "_", ":", "_", "..", "_")
 
 // Path is where asset a of task uuid is stored.
 func (c *Cache) Path(uuid string, a Asset) string {
 	dir := unsafeName.Replace(strings.Trim(a.Step+"-"+a.Version, "-"))
-	return filepath.Join(c.dir, unsafeName.Replace(uuid), dir, a.Stage+"-"+a.Mode+a.Ext())
+	return filepath.Join(c.dir, unsafeName.Replace(uuid), dir, a.Mode+a.Ext())
 }
 
 // Get returns the cached file of asset a, fetching it when it is missing or

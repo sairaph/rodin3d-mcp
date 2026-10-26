@@ -631,8 +631,9 @@ type waitFront struct {
 	Waited   int       `yaml:"waited_seconds"`
 }
 
-// waitPoll is the card poll period of wait_task (plan 2.4: 5 s).
-var waitPoll = 5 * time.Second
+// WaitPoll is the card poll period of wait_task (plan 2.4: 5 s); tests
+// shorten it.
+var WaitPoll = 5 * time.Second
 
 // WaitTask is wait_task: poll the card until the task's stage or state
 // changes, up to timeout.
@@ -659,7 +660,7 @@ func (s *Service) WaitTask(ctx context.Context, id string, timeout time.Duration
 			select {
 			case <-ctx.Done():
 				return Result{}, ctx.Err()
-			case <-time.After(min(waitPoll, left)):
+			case <-time.After(min(WaitPoll, left)):
 			}
 			next, err := s.client.Card(ctx, uuid)
 			if err != nil {

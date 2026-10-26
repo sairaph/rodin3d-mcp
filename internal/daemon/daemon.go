@@ -136,7 +136,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if st.LastSync.IsZero() || d.Now().Sub(st.LastSync) >= SyncInterval {
+	if st.LastSync.IsZero() || d.now().Sub(st.LastSync) >= SyncInterval {
 		if err := d.SyncHistory(ctx, creds.UserUUID); err != nil {
 			return d.fail(err)
 		}
@@ -315,7 +315,7 @@ func (d *Daemon) SyncHistory(ctx context.Context, userUUID string) error {
 	} else {
 		d.logf("history sync: %d tasks, %d cards fetched", len(seen), len(need))
 	}
-	return d.Store.MarkSynced(d.Now())
+	return d.Store.MarkSynced(d.now())
 }
 
 // cacheImages stores the card's own stage images (poster, geometry,
@@ -373,4 +373,11 @@ func Summarize(card *rodin.Card) store.CardSummary {
 		Mode: mode, Tier: tier, Views: views, Private: card.IsPrivate,
 		PendingJobs: int(card.PendingJobs), Created: card.Time, Updated: card.GenerateTime,
 	}
+}
+
+func (d *Daemon) now() time.Time {
+	if d.Now == nil {
+		return time.Now()
+	}
+	return d.Now()
 }

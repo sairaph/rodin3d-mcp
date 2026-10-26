@@ -419,25 +419,57 @@ func sampleVNDF(v vec3, alpha, u1, u2 float64) vec3 {
 	return vec3{alpha * nh[0], alpha * nh[1], math.Max(1e-6, nh[2])}.norm()
 }
 
-// rng is splitmix64, seeded per pixel and sample.
-type rng struct{ s uint64 }
+// rng gives the numbers of one sample of one pixel. The first len(kronecker)
+// numbers a path draws (its dimensions) follow additive recurrences over
+// the sample index, each shifted by a random offset per pixel and
+// dimension (Cranley-Patterson rotation), so the samples of a pixel spread
+// evenly in every dimension; later dimensions are splitmix64 numbers.
+type rng struct {
+	s   uint64 // splitmix64 state
+	pix uint64 // pixel seed (offsets)
+	i   float64
+	d   int
+}
+
+// kronecker are the fractional parts of the square roots of the primes 2
+// to 47: one irrational step per dimension.
+var kronecker = func() []float64 {
+	out := make([]float64, 0, 15)
+	for _, p := range []float64{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47} {
+		r := math.Sqrt(p)
+		out = append(out, r-math.Floor(r))
+	}
+	return out
+}()
 
 func newRNG(x, y, i uint32) rng {
-	r := rng{s: uint64(x)*0x9E3779B97F4A7C15 ^ uint64(y)*0xC2B2AE3D27D4EB4F ^ uint64(i)*0x165667B19E3779F9}
-	r.next()
+	r := rng{pix: mix64(uint64(x)*0x9E3779B97F4A7C15 ^ uint64(y)*0xC2B2AE3D27D4EB4F), i: float64(i)}
+	r.s = mix64(r.pix ^ uint64(i)*0x165667B19E3779F9)
 	return r
 }
 
-func (r *rng) next() uint64 {
-	r.s += 0x9E3779B97F4A7C15
-	z := r.s
+func mix64(z uint64) uint64 {
 	z = (z ^ z>>30) * 0xBF58476D1CE4E5B9
 	z = (z ^ z>>27) * 0x94D049BB133111EB
 	return z ^ z>>31
 }
 
+func (r *rng) next() uint64 {
+	r.s += 0x9E3779B97F4A7C15
+	return mix64(r.s)
+}
+
 // float returns a number in [0, 1).
-func (r *rng) float() float64 { return float64(r.next()>>11) / (1 << 53) }
+func (r *rng) float() float64 {
+	d := r.d
+	r.d++
+	if d < len(kronecker) {
+		off := float64(mix64(r.pix+uint64(d+1)*0xD1B54A32D192ED03)>>11) / (1 << 53)
+		v := off + r.i*kronecker[d]
+		return v - math.Floor(v)
+	}
+	return float64(r.next()>>11) / (1 << 53)
+}
 
 // envSampler draws directions from an environment's sharp level in
 // proportion to its brightness (a texel's weight is its brightest

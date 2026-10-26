@@ -212,15 +212,19 @@ func TestEnvSamplerDensity(t *testing.T) {
 			t.Fatalf("sample %d: density %g, pdf %g", i, p, q)
 		}
 	}
-	// Integrate pdf over the sphere with uniform directions.
-	sum, n := 0.0, 400000
-	for i := 0; i < n; i++ {
-		z := rg.float()*2 - 1
-		phi := rg.float() * 2 * math.Pi
-		r := math.Sqrt(1 - z*z)
-		sum += s.pdf(vec3{r * math.Cos(phi), z, r * math.Sin(phi)})
+	// Integrate pdf over the sphere on a grid of 4 x 4 points inside every
+	// texel of the map, with the equirect Jacobian (2 pi^2 sin theta): the
+	// density is constant per texel, so this sum is exact.
+	w, h := s.lv.w*4, s.lv.h*4
+	sum := 0.0
+	for y := 0; y < h; y++ {
+		tt := (float64(y) + 0.5) / float64(h)
+		sinT := math.Cos((0.5 - tt) * math.Pi)
+		for x := 0; x < w; x++ {
+			sum += s.pdf(equirectDir((float64(x)+0.5)/float64(w), tt)) * 2 * math.Pi * math.Pi * sinT
+		}
 	}
-	if got := sum / float64(n) * 4 * math.Pi; math.Abs(got-1) > 0.03 {
-		t.Fatalf("pdf integrates to %.4f, want 1", got)
+	if got := sum / float64(w*h); math.Abs(got-1) > 1e-6 {
+		t.Fatalf("pdf integrates to %.8f, want 1", got)
 	}
 }

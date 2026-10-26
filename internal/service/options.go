@@ -281,7 +281,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		fmt.Fprintf(&b, "The price of %s is not known: %s.", in.Operation, q.Basis)
 	}
 	if q.FrozenAtSubmit != nil {
-		fmt.Fprintf(&b, " The server was seen to freeze %s credits at submit; the freeze is released when the draft is never confirmed.", num(*q.FrozenAtSubmit))
+		fmt.Fprintf(&b, " The server was seen to freeze %s credits at submit; confirm_geometry took them, and a draft left unconfirmed kept them frozen for over an hour.", num(*q.FrozenAtSubmit))
 	}
 	fmt.Fprintf(&b, "\n\nWallet: %s credits available, %s frozen.", num(front.Wallet.Available), num(front.Wallet.Frozen))
 	fmt.Fprintf(&b, " Permission %s is %q in %s.", key, value, s.paths.Config)

@@ -243,8 +243,9 @@ func generate(in Input, acct Account) (Quote, error) {
 			FreeReason: "Free Preview: the draft is free; confirming the geometry costs credits",
 			Basis:      `web label "Free Preview" on GENERATE for tier ` + tier}
 		if tier == "extreme-low" {
-			// 2026-10-07: the web froze 0.5 at an Extreme-Low submit; the
-			// freeze is released when the draft is never confirmed.
+			// The web froze 0.5 at an Extreme-Low submit (2026-10-07, again
+			// 2026-10-26); confirm_geometry took it, and an unconfirmed draft
+			// kept it frozen for over an hour (notes 35).
 			q.FrozenAtSubmit = credits(0.5)
 		}
 		return q, nil

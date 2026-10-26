@@ -1,0 +1,12 @@
+references/
+notes/
+data/
+tmp/
+.env
+src/rodin-bridge/
+# build outputs
+/rodin3d-mcp
+/rodin3d-mcp.exe
+/dist/
+*.test
+*.out

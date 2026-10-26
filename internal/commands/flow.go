@@ -104,7 +104,7 @@ func optErrs(errs ...error) error {
 
 func registerFlow(reg *command.Registry, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
 	reg.Register(command.Handler{Name: "generate", Description: "Submit a geometry draft from 1-5 images (paid)",
-		Usage: "generate <image>[:VIEW[:weight]]... [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [copy=<id>] expected=<credits> [nowait] [json]",
+		Usage: "generate <image>[:VIEW[:weight]]... [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [copy=<id>] [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.GenerateInput{Wait: waitOf(&a), Model: a.opts["model"], Tier: a.opts["tier"], Mode: a.opts["mode"], Prompt: a.opts["prompt"],
 				ImageMode: a.opts["image_mode"], CopySettingsFrom: a.opts["copy"]}
@@ -115,18 +115,20 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 				}
 				in.Images = append(in.Images, img)
 			}
-			var e1, e2, e3, e4 error
+			var e1, e2, e3, e4, e5 error
 			in.Expected, e1 = floatOpt(a, "expected")
 			in.FaceEnhance, e2 = boolOpt(a, "face_enhance")
 			seed, e3 := intPtrOpt(a, "seed")
 			batch, e4 := intOpt(a, "batch", 0)
-			if err := optErrs(e1, e2, e3, e4); err != nil {
+			public, e5 := boolOpt(a, "public")
+			if err := optErrs(e1, e2, e3, e4, e5); err != nil {
 				return service.Result{}, err
 			}
 			if seed != nil {
 				in.Advanced = &service.Advanced{Seed: seed}
 			}
 			in.Batch = batch
+			in.Public = public != nil && *public
 			return s.Generate(ctx, in)
 		})})
 
@@ -232,14 +234,27 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		})})
 
 	reg.Register(command.Handler{Name: "fork", Description: "Branch a new task from a task's geometry or material (paid)",
-		Usage: "fork <id> geometry|material expected=<credits> [nowait] [json]",
+		Usage: "fork <id> geometry|material [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.ForkInput{Wait: waitOf(&a), TaskID: a.arg(0), Stage: a.arg(1)}
-			var err error
-			if in.Expected, err = floatOpt(a, "expected"); err != nil {
+			var e1, e2 error
+			in.Expected, e1 = floatOpt(a, "expected")
+			public, e2 := boolOpt(a, "public")
+			if err := optErrs(e1, e2); err != nil {
 				return service.Result{}, err
 			}
+			in.Public = public != nil && *public
 			return s.Fork(ctx, in)
+		})})
+
+	reg.Register(command.Handler{Name: "set-private", Description: "Make a task private, or public with private=false (free)",
+		Usage: "set-private <id> [private=false] [json]",
+		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
+			private, err := boolOpt(a, "private")
+			if err != nil {
+				return service.Result{}, err
+			}
+			return s.SetPrivate(ctx, service.SetPrivateInput{TaskID: a.arg(0), Private: private == nil || *private})
 		})})
 
 	reg.Register(command.Handler{Name: "select-candidate", Description: "Keep one draft of a batch",

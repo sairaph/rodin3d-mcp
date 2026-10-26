@@ -16,7 +16,7 @@ import (
 // rodin_mesh (draft) -> rodin_update (redo) -> rodin_confirm or rodin_polygen
 // (geometry) -> rodin_texture (material draft) -> rodin_update (material
 // redo) -> rodin_confirm stage material -> rodin_unlock (pack), plus
-// rodin_fork and select_candidate. Every one of them spends credits or
+// rodin_fork, select_candidate and set_private. Every one of them spends credits or
 // changes a task, so none is ever sent twice by this package: a 401 or a
 // body-level session refusal (the request was not processed) gets the one
 // refresh and resend of call, a network failure is returned as it is.
@@ -213,6 +213,19 @@ func (c *Client) Fork(ctx context.Context, uuid, state string) (string, error) {
 // checked for an error code.
 func (c *Client) SelectCandidate(ctx context.Context, uuid string, selectedID int) error {
 	return c.postJSON(ctx, "task/select_candidate", map[string]any{"uuid": uuid, "selected_id": selectedID}, nil)
+}
+
+// SetPrivate calls task/set_private {task_uuid}: it flips the task's
+// privacy. The web sends the same call to make a task private and to make it
+// public (privacy button, main@fmt:82830) and right after a submit when its
+// "private" switch is on (main@fmt:86906); rodin_mesh and rodin_fork carry no
+// privacy field. Live 2026-10-26: HTTP 201 with {} and the card's is_private
+// turned true at once. A plan without UnlimitedPrivateModel has a quota
+// (user/get_info chances_left_to_set_private_task) and is refused with
+// INSUFFICIENT_CHANCES. Since a second call flips the task back, callers read
+// the card instead of resending.
+func (c *Client) SetPrivate(ctx context.Context, uuid string) error {
+	return c.postJSON(ctx, "task/set_private", map[string]string{"task_uuid": uuid}, nil)
 }
 
 // JobStatus calls GET scheduler?uuid=<job>: Queued, Running, Succeeded,

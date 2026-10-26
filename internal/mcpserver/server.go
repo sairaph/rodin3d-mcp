@@ -38,7 +38,9 @@ const instructions = "Rodin (Hyper3D) image-to-3D generations of the signed-in a
 	"The staged flow is generate_model (draft), redo_geometry, confirm_geometry, generate_texture, redo_material, confirm_material, " +
 	"export_model (pack), then download_model; fork_task branches a task. Each of these needs its [permission] key set to allow in " +
 	"config.toml (get_account shows them), and the paid ones need expected_credits: the credits quote_cost returned for the same call. " +
-	"Never resend a paid call that timed out; get_task or list_tasks shows whether it started."
+	"Never resend a paid call that timed out; get_task or list_tasks shows whether it started. " +
+	"New tasks are private; set_private (free, no permission key) changes the privacy of a task, and public true on generate_model " +
+	"or fork_task keeps a new task public: use either for public only when the user asks for it."
 
 // New creates the server and registers its tools.
 func New(config Config) *Server {

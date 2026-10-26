@@ -50,6 +50,7 @@ type generateArgs struct {
 	BBox             []float64    `json:"bbox,omitempty" jsonschema:"bounding box control [width, height, length], each 1-300"`
 	Batch            *int         `json:"batch,omitempty" jsonschema:"drafts per submit; more than 1 needs the Business plan"`
 	CopySettingsFrom *string      `json:"copy_settings_from,omitempty" jsonschema:"a task id whose model, tier, mode and presets fill the fields left out; the reply's recipe lists its later-stage settings"`
+	Public           *bool        `json:"public,omitempty" jsonschema:"true keeps the new task public on Hyper3D; default false: the task is made private right after the submit"`
 	ExpectedCredits  float64      `json:"expected_credits" jsonschema:"the credits quote_cost returned for generate_model with the same model, tier and batch; -1 accepts a price quote_cost reports as not known"`
 	Wait             *bool        `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the draft (default true); after a time-out call wait_task"`
 }
@@ -130,6 +131,7 @@ type exportArgs struct {
 type forkArgs struct {
 	TaskID          string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	Stage           string  `json:"stage" jsonschema:"geometry: a new task at the geometry draft stage; material: a new task at the material draft stage"`
+	Public          *bool   `json:"public,omitempty" jsonschema:"true keeps the new task public on Hyper3D; default false: the new task is made private right after the fork"`
 	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for fork_task on this task with the same stage; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the new task (default true)"`
 }
@@ -138,6 +140,15 @@ type selectArgs struct {
 	TaskID    string `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	Candidate string `json:"candidate" jsonschema:"the draft version to keep (v1, v2, ...; get_task lists versions)"`
 }
+
+type setPrivateArgs struct {
+	TaskID  string `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
+	Private *bool  `json:"private,omitempty" jsonschema:"true (default) makes the task private; false makes it public"`
+}
+
+// privacyTool: changes a task's privacy on Hyper3D, free; the same call
+// twice leaves the same state.
+var privacyTool = &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(true)}
 
 // nonNullDeep drops the null alternatives of s and of its nested objects.
 func nonNullDeep(s *jsonschema.Schema) *jsonschema.Schema {
@@ -168,7 +179,7 @@ func textureMode(s *jsonschema.Schema) {
 }
 
 func (s *Server) registerFlowTools() {
-	gen := nonNullDeep(inputSchema[generateArgs](map[string]string{"model": `"gen-2.5"`, "wait": "true"}))
+	gen := nonNullDeep(inputSchema[generateArgs](map[string]string{"model": `"gen-2.5"`, "wait": "true", "public": "false"}))
 	images := property(gen, "images")
 	images.MinItems, images.MaxItems = jsonschema.Ptr(1), jsonschema.Ptr(service.MaxImages)
 	withEnum(images.Items, "view", viewTags()...)
@@ -195,8 +206,9 @@ func (s *Server) registerFlowTools() {
 			"then the geometry draft is submitted. Tag each image's view (F front, B back, L, R, FL, FR, BL, BR, U up, D down, ? unknown) "+
 			"for multi-view input. Needs [permission] generate = \"allow\" in config.toml and expected_credits from quote_cost "+
 			"(operation generate_model, same model, tier and batch). copy_settings_from reuses a task's recipe (get_generation_options lists "+
-			"the account's recipes). Returns the new task (geometry_draft once ready, its poster attached), the quote and the wallet before "+
-			"and after. Next: get_preview, redo_geometry or confirm_geometry. Never resend after a time-out: list_tasks shows whether it started.",
+			"the account's recipes). The new task is made private unless public is true. Returns the new task (geometry_draft once ready, "+
+			"its poster attached), the quote and the wallet before and after. Next: get_preview, redo_geometry or confirm_geometry. Never "+
+			"resend after a time-out: list_tasks shows whether it started.",
 		paidTool, gen, s.generateModel)
 
 	redo := nonNullDeep(inputSchema[redoGeometryArgs](map[string]string{"wait": "true"}))
@@ -258,17 +270,22 @@ func (s *Server) registerFlowTools() {
 			"names; next download_model.",
 		paidTool, exp, s.exportModel)
 
-	fork := nonNullDeep(inputSchema[forkArgs](map[string]string{"wait": "true"}))
+	fork := nonNullDeep(inputSchema[forkArgs](map[string]string{"wait": "true", "public": "false"}))
 	withEnum(fork, "stage", "geometry", "material")
 	addTool(s, "fork_task", "Fork a task",
 		"Branch a new task from a task's geometry (back to a geometry draft) or material (back to a material draft); the original stays as it "+
 			"is. The web offers it for tasks younger than 30 days. Needs [permission] fork = \"allow\" and expected_credits from quote_cost "+
-			"(operation fork_task, task_id, settings.stage). Returns the new task.",
+			"(operation fork_task, task_id, settings.stage). The new task is made private unless public is true. Returns the new task.",
 		paidTool, fork, s.forkTask)
 
 	addTool(s, "select_candidate", "Pick a batch draft",
 		"Keep one draft of a batch submit (stage geometry_draft): candidate is its version. Free. Needs [permission] redo = \"allow\".",
 		paidTool, nonNullDeep(inputSchema[selectArgs](nil)), s.selectCandidate)
+
+	addTool(s, "set_private", "Make a task private or public",
+		"Make an existing task private (default) or, with private false, public on Hyper3D. Free and needs no [permission] key; a task "+
+			"already in that state is left as it is. Make a task public only when the user asks for it. Returns the task with its private flag.",
+		privacyTool, nonNull(inputSchema[setPrivateArgs](map[string]string{"private": "true"})), s.setPrivate)
 }
 
 // --- handlers ---
@@ -279,7 +296,8 @@ func (s *Server) generateModel(ctx context.Context, _ *mcp.CallToolRequest, in g
 	g := service.GenerateInput{
 		Prompt: optString(in.Prompt), Model: optString(in.Model), Tier: optString(in.Tier), Mode: optString(in.Mode),
 		ImageMode: optString(in.ImageMode), FaceEnhance: in.FaceEnhance, BBox: in.BBox, Batch: optInt(in.Batch, 0),
-		CopySettingsFrom: optString(in.CopySettingsFrom), Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true),
+		CopySettingsFrom: optString(in.CopySettingsFrom), Public: optBool(in.Public, false), Expected: expectedPtr(in.ExpectedCredits),
+		Wait: optBool(in.Wait, true),
 	}
 	for _, img := range in.Images {
 		g.Images = append(g.Images, service.GenerateImage{Path: img.Path, View: optString(img.View), Weight: img.Weight})
@@ -343,7 +361,12 @@ func (s *Server) exportModel(ctx context.Context, _ *mcp.CallToolRequest, in exp
 }
 
 func (s *Server) forkTask(ctx context.Context, _ *mcp.CallToolRequest, in forkArgs) (*mcp.CallToolResult, any, error) {
-	return reply(s.svc.Fork(ctx, service.ForkInput{TaskID: in.TaskID, Stage: in.Stage, Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true)})), nil, nil
+	return reply(s.svc.Fork(ctx, service.ForkInput{TaskID: in.TaskID, Stage: in.Stage, Public: optBool(in.Public, false),
+		Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true)})), nil, nil
+}
+
+func (s *Server) setPrivate(ctx context.Context, _ *mcp.CallToolRequest, in setPrivateArgs) (*mcp.CallToolResult, any, error) {
+	return reply(s.svc.SetPrivate(ctx, service.SetPrivateInput{TaskID: in.TaskID, Private: optBool(in.Private, true)})), nil, nil
 }
 
 func (s *Server) selectCandidate(ctx context.Context, _ *mcp.CallToolRequest, in selectArgs) (*mcp.CallToolResult, any, error) {

@@ -803,6 +803,7 @@ func rodinJobs(raw []byte) ([]string, error) {
 type ForkInput struct {
 	TaskID   string
 	Stage    string // geometry | material
+	Public   bool   // keep the new task public; default private
 	Expected *float64
 	Wait     bool
 }
@@ -839,13 +840,18 @@ func (s *Service) Fork(ctx context.Context, in ForkInput) (Result, error) {
 		return Result{}, sendFailure("fork_task", uuid, err)
 	}
 	sp.uuid = newID
+	privacy, privacyNote := s.privacyOfNew(ctx, newID, in.Public)
 	set, err := s.settle(ctx, newID, stage.Status{}, nil, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
 		return Result{}, wrapf(err, "the fork %s was created; read its card", newID)
 	}
-	return s.finishFlow(ctx, sp, set, fmt.Sprintf("Forked %s at the %s stage as new task %s.", short(uuid), from, newID),
-		map[string]any{"forked_from": uuid, "stage": from}), nil
+	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Forked %s at the %s stage as new task %s.", short(uuid), from, newID),
+		map[string]any{"forked_from": uuid, "stage": from, "privacy": privacy})
+	if privacyNote != "" {
+		res.Body += "\n\n" + privacyNote
+	}
+	return res, nil
 }
 
 // --- select_candidate ---

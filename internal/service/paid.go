@@ -276,17 +276,7 @@ type settled struct {
 // daemon watches the task and the index shows it.
 func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, jobs []string, wait bool) (*settled, error) {
 	start := time.Now()
-	card, err := s.client.Card(ctx, uuid)
-	// A task created a moment ago may not have a card yet: ask again a few
-	// times before giving up.
-	for i := 0; i < 5 && isNoSuchTask(err); i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-		card, err = s.client.Card(ctx, uuid)
-	}
+	card, err := s.newCard(ctx, uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -327,6 +317,21 @@ func (s *Service) settle(ctx context.Context, uuid string, before stage.Status, 
 	s.saveCard(out.card)
 	out.waited = int(time.Since(start).Round(time.Second).Seconds())
 	return out, nil
+}
+
+// newCard reads the card of a task. A task created a moment ago may not
+// have a card yet: it asks again a few times before giving up.
+func (s *Service) newCard(ctx context.Context, uuid string) (*rodin.Card, error) {
+	card, err := s.client.Card(ctx, uuid)
+	for i := 0; i < 5 && isNoSuchTask(err); i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		card, err = s.client.Card(ctx, uuid)
+	}
+	return card, err
 }
 
 func isNoSuchTask(err error) bool {

@@ -68,6 +68,7 @@ type GenerateInput struct {
 	BBox             []float64 // width, height, length
 	Batch            int
 	CopySettingsFrom string
+	Public           bool // keep the new task public; default private
 	Expected         *float64
 	Wait             bool
 }
@@ -95,6 +96,7 @@ type generateDetail struct {
 	Tier      string        `yaml:"tier,omitempty"`
 	Mode      string        `yaml:"mode,omitempty"`
 	Multiview string        `yaml:"multiview_warning,omitempty"`
+	Privacy   *privacyFront `yaml:"privacy"`
 	Recipe    *copiedRecipe `yaml:"recipe,omitempty"`
 }
 
@@ -199,6 +201,10 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 		return Result{}, sendFailure("generate_model", "", err)
 	}
 	sp.uuid = reply.UUID
+	// Private first, like the web right after its submit, so the draft is
+	// never public longer than the two calls take.
+	privacy, privacyNote := s.privacyOfNew(ctx, reply.UUID, in.Public)
+	detail.Privacy = privacy
 	set, err := s.settle(ctx, reply.UUID, stage.Status{}, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
@@ -206,6 +212,9 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 	}
 	lead := fmt.Sprintf("Submitted %d image(s) as task %s (%s).", len(images), reply.UUID, strings.TrimSpace(model+" "+tier+" "+mode))
 	res := s.finishFlow(ctx, sp, set, lead, detail)
+	if privacyNote != "" {
+		res.Body += "\n\n" + privacyNote
+	}
 	if multiview != "" {
 		res.Body += "\n\n" + multiview
 	}

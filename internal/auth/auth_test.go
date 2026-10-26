@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -250,6 +251,129 @@ func TestLogoutRevokes(t *testing.T) {
 	}
 	if _, err := e.session.Token(context.Background()); !auth.IsLoginRequired(err) {
 		t.Fatalf("token after logout: %v", err)
+	}
+}
+
+// A request to the callback that carries no code (a stray reload, a probe,
+// a second tab) does not end the listener: the real redirect still finishes
+// the sign-in by itself.
+func TestListenerSurvivesAHitWithoutACode(t *testing.T) {
+	e := newEnv(t)
+	started, err := e.mgr.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.mgr.StopListener()
+	for _, stray := range []string{started.RedirectURI, started.RedirectURI + "?state=x"} {
+		resp, err := http.Get(stray)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(page), "Sign-in not finished") {
+			t.Fatalf("stray hit %q: %d %s", stray, resp.StatusCode, page)
+		}
+	}
+	select {
+	case o := <-started.Done:
+		t.Fatalf("the listener ended after a stray hit: %+v", o)
+	default:
+	}
+	redirect, err := e.fake.Approve(started.AuthorizeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("real redirect: %d", resp.StatusCode)
+	}
+	select {
+	case o := <-started.Done:
+		if o.Err != nil || o.Credentials == nil || o.Credentials.Username != "owner" {
+			t.Fatalf("outcome %+v", o)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("listener did not finish")
+	}
+}
+
+// A revoke that fails for a passing reason keeps the grant for the next
+// logout, which revokes it and forgets it.
+func TestFailedRevokeIsRetriedByTheNextLogout(t *testing.T) {
+	e := newEnv(t)
+	e.signIn(t)
+	e.fake.FailRevokes(1)
+	res, err := e.mgr.Logout(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.WasSignedIn || res.Revoked || !res.RevokePending || res.RevokeError == nil || e.fake.GrantRevoked() {
+		t.Fatalf("first logout %+v", res)
+	}
+	if c, _ := e.store.Load(context.Background()); c != nil {
+		t.Fatal("credentials kept after the failed revoke")
+	}
+	if !e.store.RevokePending() {
+		t.Fatal("no pending revoke recorded")
+	}
+	data, err := os.ReadFile(e.paths.RevokePending)
+	if err != nil || strings.Contains(string(data), "at.") || !strings.Contains(string(data), `"refresh_token"`) {
+		t.Fatalf("pending record: %v (only the refresh token belongs in it)", err)
+	}
+	if fi, err := os.Stat(e.paths.RevokePending); err != nil || (fi.Mode().Perm()&0o077 != 0 && os.PathSeparator == '/') {
+		t.Fatalf("pending record mode: %v", err)
+	}
+
+	res, err = e.mgr.Logout(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.WasSignedIn || !res.Revoked || res.RevokePending || res.RevokeError != nil || !e.fake.GrantRevoked() {
+		t.Fatalf("second logout %+v", res)
+	}
+	if e.store.RevokePending() {
+		t.Fatal("the pending revoke outlived its retry")
+	}
+	if _, err := os.Stat(e.paths.RevokePending); !os.IsNotExist(err) {
+		t.Fatalf("revoke-pending.json still there: %v", err)
+	}
+	// Nothing left: a third logout calls nobody.
+	before := e.fake.Revokes()
+	if res, _ := e.mgr.Logout(context.Background()); res.Revoked || res.RevokePending || e.fake.Revokes() != before {
+		t.Fatalf("third logout %+v", res)
+	}
+}
+
+// A revoke the server refuses with a 4xx answer is final: it is reported,
+// and not kept for a retry that would get the same answer.
+func TestRefusedRevokeIsNotKept(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		io.WriteString(w, `{"error":"invalid_client"}`)
+	}))
+	defer stub.Close()
+	paths := domain.PathsUnder(t.TempDir())
+	st := auth.NewStore(paths)
+	mgr := auth.NewManager(st, auth.NewOAuth(auth.EndpointsFor(stub.URL+"/api"), "test"), nil)
+	if err := st.Save(context.Background(), &auth.Credentials{ClientID: "c", RefreshToken: "r", AccessToken: "a", AccessExpiresAt: time.Now().Add(time.Hour), UserUUID: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := mgr.Logout(context.Background())
+	var oe *auth.OAuthError
+	if err != nil || res.Revoked || res.RevokePending || !errors.As(res.RevokeError, &oe) || oe.Code != "invalid_client" {
+		t.Fatalf("logout %+v %v", res, err)
+	}
+	if st.RevokePending() {
+		t.Fatal("a refused revoke was kept for a retry")
+	}
+	if c, _ := st.Load(context.Background()); c != nil {
+		t.Fatal("credentials kept")
 	}
 }
 

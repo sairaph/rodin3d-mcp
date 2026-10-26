@@ -393,7 +393,9 @@ func (m *Manager) Pending() (redirect string, expires time.Time, ok bool) {
 type LogoutResult struct {
 	WasSignedIn bool
 	Revoked     bool
-	RevokeError error // why the revoke failed; the grant is then kept for a retry
+	// RevokeError is why a revoke failed. Only a failure that a retry may
+	// cure (no answer, 429, 5xx) keeps the grant for one (RevokePending).
+	RevokeError error
 	// RevokePending is true when a grant still waits for its revoke: the
 	// refresh token is kept in revoke-pending.json and the next logout
 	// tries again.
@@ -403,9 +405,10 @@ type LogoutResult struct {
 // Logout revokes the refresh token (ending the grant session on the
 // server), then deletes the credentials and any pending sign-in. The access
 // token cannot be revoked server-side and lapses within the hour; it is
-// deleted with the rest. When the revoke fails (no network), the refresh
-// token alone is kept in revoke-pending.json, never used for anything but
-// the revoke, and the next Logout retries it. The registered client
+// deleted with the rest. When the revoke fails in a way a retry may cure (no
+// network, 429, 5xx), the refresh token alone is kept in revoke-pending.json,
+// never used for anything but the revoke, and the next Logout retries it.
+// A revoke the server refuses (4xx) is reported and not kept. The registered client
 // (client.json) is kept.
 func (m *Manager) Logout(ctx context.Context) (LogoutResult, error) {
 	m.stopActive()
@@ -418,23 +421,26 @@ func (m *Manager) Logout(ctx context.Context) (LogoutResult, error) {
 		m.store.deletePending()
 		// Grants whose revoke failed earlier first, then the current one.
 		var left []revokeRecord
-		for _, r := range m.store.loadRevokes() {
-			if err := m.oauth.Revoke(ctx, r.ClientID, r.RefreshToken); err != nil {
+		revoke := func(r revokeRecord) {
+			err := m.oauth.Revoke(ctx, r.ClientID, r.RefreshToken)
+			switch {
+			case err == nil:
+				res.Revoked = true
+			case revokeRetryable(err):
 				res.RevokeError = err
 				left = append(left, r)
-			} else {
-				res.Revoked = true
+			default:
+				// The server answered and refused: a retry gets the same answer.
+				res.RevokeError = err
 			}
+		}
+		for _, r := range m.store.loadRevokes() {
+			revoke(r)
 		}
 		if c != nil {
 			res.WasSignedIn = c.State() == StateSignedIn
 			if c.RefreshToken != "" && c.ClientID != "" {
-				if err := m.oauth.Revoke(ctx, c.ClientID, c.RefreshToken); err != nil {
-					res.RevokeError = err
-					left = append(left, revokeRecord{ClientID: c.ClientID, RefreshToken: c.RefreshToken, Since: m.now().UTC()})
-				} else {
-					res.Revoked = true
-				}
+				revoke(revokeRecord{ClientID: c.ClientID, RefreshToken: c.RefreshToken, Since: m.now().UTC()})
 			}
 		}
 		if err := m.store.saveRevokes(left); err != nil {
@@ -447,4 +453,15 @@ func (m *Manager) Logout(ctx context.Context) (LogoutResult, error) {
 		return m.store.Delete(ctx)
 	})
 	return res, err
+}
+
+// revokeRetryable reports whether a failed revoke may succeed later: the
+// server gave no answer, limited the rate, or failed (5xx). A 4xx answer is
+// final (RFC 7009 answers 200 even for a token that is already invalid).
+func revokeRetryable(err error) bool {
+	var oe *OAuthError
+	if errors.As(err, &oe) {
+		return oe.Status >= 500 || oe.Status == http.StatusTooManyRequests
+	}
+	return true
 }

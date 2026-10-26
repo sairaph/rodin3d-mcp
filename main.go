@@ -527,11 +527,23 @@ func (c credentialsCheck) Run(ctx context.Context) doctor.Result {
 	if err != nil {
 		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
 	}
+	// A grant an earlier logout could not revoke stays valid on the server
+	// until logout reaches Hyper3D.
+	pending := ""
+	if c.svc.RevokePending() {
+		pending = "; an earlier logout could not get Hyper3D to revoke its grant, which stays valid until `" + domain.BinaryName + " logout` runs again"
+	}
 	switch creds.State() {
 	case auth.StateSignedOut:
+		if pending != "" {
+			return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "not signed in" + pending}
+		}
 		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: "not signed in; run `" + domain.BinaryName + " login`"}
 	case auth.StateNeedsLogin:
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: "the session ended; run `" + domain.BinaryName + " login`"}
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: "the session ended; run `" + domain.BinaryName + " login`" + pending}
+	}
+	if pending != "" {
+		pending += " (that also signs this session out)"
 	}
 	left := time.Until(creds.AccessExpiresAt).Round(time.Minute)
 	detail := fmt.Sprintf("signed in as %s; access token valid for %s", creds.Username, left)
@@ -539,7 +551,10 @@ func (c credentialsCheck) Run(ctx context.Context) doctor.Result {
 		detail = fmt.Sprintf("signed in as %s; access token expired, the next call refreshes it", creds.Username)
 	}
 	if creds.RefreshToken == "" {
-		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: detail + "; no refresh token"}
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: detail + "; no refresh token" + pending}
+	}
+	if pending != "" {
+		return doctor.Result{Name: c.Name(), Status: doctor.Warn, Detail: detail + pending}
 	}
 	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: detail}
 }

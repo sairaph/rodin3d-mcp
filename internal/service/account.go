@@ -300,6 +300,9 @@ func (s *Service) Logout(ctx context.Context) (Result, error) {
 		fmt.Fprintf(&b, "Signed out on this computer, but Hyper3D could not be asked to revoke the grant (%s). "+
 			"Its refresh token is kept in %s for one purpose, the revoke, and the grant stays valid until then "+
 			"(its lifetime is not measured). Call logout again when the network is back to finish the revoke.", front.RevokeError, s.paths.RevokePending)
+	case res.RevokeError != nil && !res.Revoked:
+		fmt.Fprintf(&b, "Signed out on this computer: the tokens are deleted. Hyper3D refused to revoke the grant (%s), "+
+			"which a retry would not change; the grant ends when its refresh token lapses (its lifetime is not measured).", front.RevokeError)
 	case !res.WasSignedIn && !res.Revoked:
 		b.WriteString("Not signed in; nothing to sign out of.")
 	default:

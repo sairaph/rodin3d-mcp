@@ -139,7 +139,7 @@ func TestSignInCopiesTheLink(t *testing.T) {
 	s, _ := startSignIn(t)
 	link := s.started.AuthorizeURL
 	view := s.View()
-	for _, want := range []string{"Press c to copy the sign-in link", "c copy link", "o open again", "p paste address", "esc cancel"} {
+	for _, want := range []string{"Press c to copy the sign-in link", "No browser? `rodin3d-mcp login` prints the link.", "c copy link", "o open again", "p paste address", "esc cancel"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the waiting screen lacks %q:\n%s", want, view)
 		}
@@ -153,8 +153,9 @@ func TestSignInCopiesTheLink(t *testing.T) {
 	}
 	copyErr = errors.New("no clipboard utilities")
 	s.Update(runes("c"))
-	if want := ansi.SetSystemClipboard(link); !strings.Contains(s.View(), want) || !strings.Contains(s.View(), "OSC 52") {
-		t.Fatalf("no OSC 52 copy after a clipboard failure:\n%q", s.View())
+	if want := ansi.SetSystemClipboard(link); !strings.Contains(s.View(), want) ||
+		!strings.Contains(s.View(), "Link sent to the terminal's clipboard (not every terminal supports this).") || strings.Contains(s.View(), "Link copied") {
+		t.Fatalf("no unconfirmed OSC 52 copy after a clipboard failure:\n%q", s.View())
 	}
 	s.Update(runes("p"))
 	if strings.Contains(s.View(), "Link copied") {

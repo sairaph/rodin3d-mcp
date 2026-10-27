@@ -90,20 +90,56 @@ func TestBadValuesAllow(t *testing.T) {
 	}
 }
 
-// A file that cannot be used allows everything and says why.
-func TestUnusableFilesAllowEverything(t *testing.T) {
-	for name, body := range map[string]string{
-		"syntax":      "[permission\ngenerate = allow",
-		"not a value": "[permission]\nexport = \"deny\"\ngenerate = true\n",
-		"unknown key": "[permission]\nexport = \"deny\"\nspend_everything = \"deny\"\n",
-		"other table": "[sync]\ninterval = 5\n",
+// A file that cannot be parsed allows everything and says why.
+func TestUnparsableFileAllowsEverything(t *testing.T) {
+	cfg, err := Load(write(t, "[permission\ngenerate = allow"))
+	if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "every operation is allowed until it is fixed") {
+		t.Fatalf("err = %v, want ErrMalformed saying everything is allowed", err)
+	}
+	allAllowed(t, cfg.Permission, "from an unparsable file")
+}
+
+// An unknown key or a wrong-typed value counts as allow for itself only: the
+// valid keys of the same file still apply, and the error names each bad line.
+func TestBadLinesKeepTheOtherKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body   string
+		denied string
+		says   []string
+	}{
+		"unknown key": {
+			body:   "[permission]\nexport = \"deny\"\nrigg = \"deny\"\n",
+			denied: "export",
+			says:   []string{`unknown key "rigg"`},
+		},
+		"wrong type": {
+			body:   "[permission]\ngenerate = false\nfork = \"deny\"\n",
+			denied: "fork",
+			says:   []string{"generate = false (not a string)"},
+		},
+		"other table and not a table": {
+			body:   "spend = 1\n[sync]\ninterval = 5\n[permission]\nrig = \"deny\"\nanimate = 3\n",
+			denied: "rig",
+			says:   []string{`unknown key "spend" outside the table`, `unknown key "sync" outside the table`, "animate = 3 (not a string)"},
+		},
+		"permission not a table": {
+			body: "permission = \"deny\"\n",
+			says: []string{"permission is not a table"},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := Load(write(t, body))
-			if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "every operation is allowed until it is fixed") {
-				t.Fatalf("err = %v, want ErrMalformed saying everything is allowed", err)
+			cfg, err := Load(write(t, tc.body))
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
 			}
-			allAllowed(t, cfg.Permission, "from a malformed file")
+			for _, want := range append(tc.says, "the other keys apply") {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not say %s", err, want)
+				}
+			}
+			if d := strings.Join(cfg.Permission.Denied(), ","); d != tc.denied {
+				t.Errorf("Denied() = %q, want %q", d, tc.denied)
+			}
 		})
 	}
 }

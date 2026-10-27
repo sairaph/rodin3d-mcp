@@ -4,8 +4,9 @@
 //
 // The file is read again on every call that needs it, so an edit applies
 // without a restart. Every operation is allowed unless its key is set to
-// "deny" (D5): a missing file, a missing key, a file that cannot be used and
-// a value other than "deny" all mean allow.
+// "deny" (D5): a missing file, a missing key, a file that cannot be read or
+// parsed and a value other than "deny" all mean allow. A bad line never
+// drops the other keys of the file.
 package config
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -188,11 +190,11 @@ var ErrMalformed = errors.New("config.toml is malformed")
 // Load reads path and returns the configuration in force; an error only
 // reports a problem and never denies anything. A missing file is the
 // defaults (every key allowed) and no error, and a missing key is allowed.
-// A file that cannot be read or parsed, or has an unknown key, is the
-// defaults and an error naming the problem (wrapping ErrMalformed unless the
-// read failed). A value other than allow or deny counts as allow, the other
-// keys keep their values, and the error wrapping ErrMalformed names each
-// such key.
+// A file that cannot be read or parsed is the defaults and an error naming
+// the problem (wrapping ErrMalformed unless the read failed). Otherwise every
+// known key set to allow or deny applies; an unknown key or table, a value
+// that is not a string and a string other than allow or deny count as allow,
+// and the error wrapping ErrMalformed names each of them.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
@@ -202,31 +204,52 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read %s: %w; every operation is allowed until it can be read", path, err)
 	}
-	var parsed Config
-	dec := toml.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&parsed); err != nil {
-		var strict *toml.StrictMissingError
-		if errors.As(err, &strict) {
-			return cfg, fmt.Errorf("%w: %s: unknown key: %s; every operation is allowed until it is fixed", ErrMalformed, path, strings.TrimSpace(strict.String()))
-		}
+	var doc map[string]any
+	if err := toml.Unmarshal(data, &doc); err != nil {
 		return cfg, fmt.Errorf("%w: %s: %v; every operation is allowed until it is fixed", ErrMalformed, path, err)
 	}
 	var bad []string
-	for _, k := range Keys {
-		v := strings.TrimSpace(*parsed.Permission.field(k.Name))
-		switch v {
-		case "":
-			// Not set: keep the default.
+	for _, name := range sortedKeys(doc) {
+		if name != "permission" {
+			bad = append(bad, fmt.Sprintf("unknown key %q outside the table", name))
+		}
+	}
+	table, isTable := doc["permission"].(map[string]any)
+	if _, set := doc["permission"]; set && !isTable {
+		bad = append(bad, "permission is not a table")
+	}
+	for _, name := range sortedKeys(table) {
+		f := cfg.Permission.field(name)
+		if f == nil {
+			bad = append(bad, fmt.Sprintf("unknown key %q", name))
+			continue
+		}
+		s, isString := table[name].(string)
+		if !isString {
+			bad = append(bad, fmt.Sprintf("%s = %v (not a string)", name, table[name]))
+			continue
+		}
+		switch v := strings.TrimSpace(s); v {
 		case Allow, Deny:
-			*cfg.Permission.field(k.Name) = v
+			*f = v
 		default:
 			// Only "deny" denies: the key keeps the default, allow.
-			bad = append(bad, fmt.Sprintf("%s = %q", k.Name, v))
+			bad = append(bad, fmt.Sprintf("%s = %q", name, s))
 		}
 	}
 	if len(bad) > 0 {
-		return cfg, fmt.Errorf("%w: %s: [permission] %s: only \"deny\" denies, so each counts as \"allow\"; use \"allow\" or \"deny\"", ErrMalformed, path, strings.Join(bad, ", "))
+		return cfg, fmt.Errorf("%w: %s: [permission] %s: only \"deny\" denies, so each counts as \"allow\" and the other keys apply; use \"allow\" or \"deny\"", ErrMalformed, path, strings.Join(bad, ", "))
 	}
 	return cfg, nil
+}
+
+// sortedKeys returns the keys of m in order, so the error reads the same
+// every time.
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

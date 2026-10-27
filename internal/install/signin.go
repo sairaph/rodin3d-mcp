@@ -286,8 +286,9 @@ func (s *SignIn) waitingKey(k tea.KeyMsg) (SignInEvent, tea.Cmd) {
 		s.message, s.osc52 = "", ""
 		if err := copyText(s.started.AuthorizeURL); err != nil {
 			// No clipboard tool here (a Linux without xclip, xsel or
-			// wl-copy, often over SSH): ask the terminal to copy it.
-			s.osc52, s.copied = ansi.SetSystemClipboard(s.started.AuthorizeURL), "Link copied through the terminal (OSC 52)."
+			// wl-copy, often over SSH): ask the terminal to copy it. Many
+			// terminals ignore OSC 52 and nothing can confirm it worked.
+			s.osc52, s.copied = ansi.SetSystemClipboard(s.started.AuthorizeURL), "Link sent to the terminal's clipboard (not every terminal supports this)."
 		} else {
 			s.copied = "Link copied."
 		}
@@ -380,7 +381,8 @@ func (s *SignIn) View() string {
 }
 
 // viewWaiting is the waiting screen: what to do, the confirmation of c, and
-// the paste field once p showed it. The link itself is never printed.
+// the paste field once p showed it. The link itself is never printed here;
+// one line names the command that prints it.
 func (s *SignIn) viewWaiting(b *strings.Builder) {
 	st := tui.DefaultTheme.Styles()
 	var lead string
@@ -396,6 +398,8 @@ func (s *SignIn) viewWaiting(b *strings.Builder) {
 	if s.opened {
 		s.para(b, "Signing in on another device? Press c to copy the link, then p to paste the address it ends on.")
 	}
+	// The way out when no copy reaches a clipboard: the command prints it.
+	b.WriteString(st.Dim.Render("  No browser? `rodin3d-mcp login` prints the link.") + "\n")
 	if s.copied != "" {
 		// The OSC 52 sequence of a copy through the terminal rides on this
 		// line: it has no width, and the terminal acts on it once shown.

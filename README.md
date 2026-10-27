@@ -136,8 +136,10 @@ texture_model    = "allow" # texture_model
 ```
 
 Only `"deny"` blocks an operation: without the file, without a key, with a
-file that cannot be read, and with any other value the operation is allowed
-(`get_account` and `rodin3d-mcp doctor` report a file with a problem). Set
+file that cannot be read or parsed, and with any other value the operation is
+allowed. An unknown key or a wrong value counts only for itself; the other
+keys still apply (`get_account` and `rodin3d-mcp doctor` report a file with a
+problem). Set
 them in the setup, under **Permissions** in the app (`rodin3d-mcp` with no
 arguments), or by editing the file; every call reads it again, so a change
 applies at once. A denied call fails and names the key to change.

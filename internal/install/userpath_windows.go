@@ -10,10 +10,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// registryUserPath is the user PATH install.ps1 writes with
-// [Environment]::SetEnvironmentVariable('Path', ..., 'User'):
-// HKEY_CURRENT_USER\Environment, value Path. key is a field so a test can
-// use a scratch key.
+// registryUserPath is the user PATH install.ps1 writes: the raw value Path
+// under HKEY_CURRENT_USER\Environment, set with its own registry type and
+// %VAR% left unexpanded. key is a field so a test can use a scratch key.
 type registryUserPath struct{ key string }
 
 func systemUserPath() userPathStore { return registryUserPath{key: environmentKey} }

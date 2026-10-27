@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,9 +33,16 @@ func setup(t *testing.T) (*command.Registry, *bytes.Buffer, *bytes.Buffer, *fake
 	return reg, &out, &errOut, fake, newSvc
 }
 
+// TestParse: options are key=value with a plain-word key; a path or an
+// address holding an = is positional on every operating system, whichever
+// system's path form it is.
 func TestParse(t *testing.T) {
-	a := parse([]string{"abc", "tier=high", "json", "C:\\x=y\\f.png", "http://127.0.0.1:1/callback?code=a&state=b"})
-	if !a.json || a.opts["tier"] != "high" || len(a.pos) != 3 {
+	pos := []string{"abc", `C:\x=y\f.png`, `\\host\share\a=b.png`, "/tmp/a=b.png", "out/a=b.png",
+		"http://127.0.0.1:1/callback?code=a&state=b", "?code=a"}
+	raw := append([]string{"tier=high", "json", "Bang_Version = b1", `fbx=C:\x=y\f.fbx`}, pos...)
+	a := parse(raw)
+	if !a.json || a.opts["tier"] != "high" || a.opts["bang_version"] != "b1" || a.opts["fbx"] != `C:\x=y\f.fbx` ||
+		len(a.opts) != 3 || !slices.Equal(a.pos, pos) {
 		t.Fatalf("%+v", a)
 	}
 }

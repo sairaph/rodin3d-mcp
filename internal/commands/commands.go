@@ -50,15 +50,22 @@ type args struct {
 	json bool
 }
 
+// optionKey is the shape of an option name. An argument is an option only
+// when the text before its first = has this shape, so a path or an address
+// that holds an = (C:\x=y\f.png, /tmp/a=b.png, ?code=a, http://h/?a=b)
+// stays positional on every operating system.
+var optionKey = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
 func parse(raw []string) args {
 	a := args{opts: map[string]string{}}
 	for _, r := range raw {
+		k, v, isOpt := strings.Cut(r, "=")
+		k = strings.TrimSpace(k)
 		switch {
 		case r == "json" || r == "--json":
 			a.json = true
-		case strings.Contains(r, "=") && !strings.Contains(r, "://") && !strings.HasPrefix(r, "?") && !filepath.IsAbs(r):
-			k, v, _ := strings.Cut(r, "=")
-			a.opts[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		case isOpt && optionKey.MatchString(k):
+			a.opts[strings.ToLower(k)] = strings.TrimSpace(v)
 		default:
 			a.pos = append(a.pos, r)
 		}

@@ -23,11 +23,13 @@ type viewShare struct {
 	mapLoad  sync.Mutex // one map decode at a time
 }
 
-// shared returns the live entry of key in m.
-func shared[T any](mu *sync.Mutex, m map[string]weak.Pointer[T], key string) *T {
+// shared returns the live entry of key in *m. It takes the map by pointer
+// and reads it under mu: share replaces the map itself, so reading the
+// field outside the lock would race with it.
+func shared[T any](mu *sync.Mutex, m *map[string]weak.Pointer[T], key string) *T {
 	mu.Lock()
 	defer mu.Unlock()
-	return m[key].Value()
+	return (*m)[key].Value()
 }
 
 // share records v as the entry of key in *m and forgets entries that died.
@@ -49,12 +51,12 @@ func share[T any](mu *sync.Mutex, m *map[string]weak.Pointer[T], key string, v *
 // with any other user of it; else read from the mesh file or decoded.
 func (s *Service) viewMesh(ctx context.Context, srcFile string, src []byte, key string, draft bool) (*render3d.Mesh, error) {
 	v := &s.view
-	if m := shared(&v.mu, v.meshes, key); m != nil {
+	if m := shared(&v.mu, &v.meshes, key); m != nil {
 		return m, nil
 	}
 	v.meshLoad.Lock()
 	defer v.meshLoad.Unlock()
-	if m := shared(&v.mu, v.meshes, key); m != nil {
+	if m := shared(&v.mu, &v.meshes, key); m != nil {
 		return m, nil
 	}
 	m, _, err := s.loadMesh(ctx, srcFile, src, key, draft)
@@ -70,12 +72,12 @@ func (s *Service) viewMesh(ctx context.Context, srcFile string, src []byte, key 
 func (s *Service) viewTexture(f mapFile) (*render3d.Texture, error) {
 	v := &s.view
 	key := f.kind + " " + f.sum
-	if t := shared(&v.mu, v.maps, key); t != nil {
+	if t := shared(&v.mu, &v.maps, key); t != nil {
 		return t, nil
 	}
 	v.mapLoad.Lock()
 	defer v.mapLoad.Unlock()
-	if t := shared(&v.mu, v.maps, key); t != nil {
+	if t := shared(&v.mu, &v.maps, key); t != nil {
 		return t, nil
 	}
 	t, err := render3d.DecodeTexture(f.data, colourMap(f.kind))

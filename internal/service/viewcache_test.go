@@ -52,7 +52,7 @@ func TestViewShare(t *testing.T) {
 	a, b, c = nil, nil, nil
 	runtime.GC()
 	key := f.kind + " " + f.sum
-	if shared(&s.view.mu, s.view.maps, key) != nil {
+	if shared(&s.view.mu, &s.view.maps, key) != nil {
 		t.Fatal("the share kept a map nobody holds")
 	}
 }
@@ -142,7 +142,7 @@ func TestViewMeshShare(t *testing.T) {
 	runtime.KeepAlive(c)
 	a, b, c = nil, nil, nil
 	runtime.GC()
-	if shared(&s.view.mu, s.view.meshes, key) != nil || shared(&s.view.mu, s.view.meshes, key2) != nil {
+	if shared(&s.view.mu, &s.view.meshes, key) != nil || shared(&s.view.mu, &s.view.meshes, key2) != nil {
 		t.Fatal("the share kept a mesh nobody holds")
 	}
 	d, err := s.viewMesh(context.Background(), src, nil, key, false)

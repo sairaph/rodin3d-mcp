@@ -47,7 +47,7 @@ func TestLabelTable(t *testing.T) {
 		{Input{Operation: "texture_model"}, 0},
 		{Input{Operation: "generate_agentic", Budget: "basic"}, 0.5},
 		{Input{Operation: "animate_model", Tier: "high", PackType: "material", Animations: 1}, 0},
-		{Input{Operation: "confirm_geometry", Tier: "extreme-low", Mesh: "raw", Bang: true}, 0.5},
+		{Input{Operation: "confirm_geometry", Tier: "extreme-low", Mesh: "raw", Bang: true, Forked: true}, 0.5},
 		{Input{Operation: "export_model", Tier: "low"}, 0},
 		{Input{Operation: "export_model", Tier: "high", PackType: "material"}, 0},
 		{Input{Operation: "redo_geometry", Tier: "extreme-high"}, 2},
@@ -95,6 +95,19 @@ func TestGates(t *testing.T) {
 	}
 	if _, err := For(Input{Operation: "generate_model", Tier: "extreme-high"}, Account{Plan: "Free"}); !errors.As(err, &gate) {
 		t.Errorf("extreme-high without privilege: %v", err)
+	}
+	// L1: smart low-poly needs its privilege on every confirm, a Bang
+	// result's too, whatever the tier, mesh or fork.
+	noRemesh := Account{Plan: "Free", Privileges: []string{"RodinMeshAdditionalFeatures"}}
+	for _, in := range []Input{
+		{Operation: "confirm_geometry", SmartLowPoly: true},
+		{Operation: "confirm_geometry", SmartLowPoly: true, Tier: "extreme-low", Mesh: "raw", Bang: true, Forked: true},
+		{Operation: "confirm_geometry", SmartLowPoly: true, Tier: "high", Mesh: "quad", Bang: true},
+		{Operation: "confirm_geometry", SmartLowPoly: true, Model: "gen-1.5", Bang: true},
+	} {
+		if _, err := For(in, noRemesh); !errors.As(err, &gate) || !strings.Contains(gate.Reason, "RodinRemeshAdditionalFeatures") {
+			t.Errorf("%+v without RodinRemeshAdditionalFeatures: %v", in, err)
+		}
 	}
 	// L11: a batch the plan allows has no measured price, so no number.
 	if q, err := For(Input{Operation: "generate_model", Tier: "high", Batch: 3}, Account{Plan: "Business"}); err != nil || q.Known || q.Credits != nil {
@@ -162,13 +175,16 @@ func TestMeasuredOnlyForTheMeasuredCase(t *testing.T) {
 		in   Input
 		want want
 	}{
-		// Confirm of a Bang result: measured raw on gen-2.5 extreme-low only.
-		{"bang confirm measured", Input{Operation: "confirm_geometry", Tier: el, Mesh: "raw", Bang: true}, measuredAt(0.5)},
-		{"bang confirm default mesh", Input{Operation: "confirm_geometry", Tier: el, Bang: true}, measuredAt(0.5)},
-		{"bang confirm high", Input{Operation: "confirm_geometry", Tier: "high", Mesh: "raw", Bang: true}, none},
-		{"bang confirm quad", Input{Operation: "confirm_geometry", Tier: el, Mesh: "quad", Bang: true}, none},
-		{"bang confirm smart", Input{Operation: "confirm_geometry", Tier: el, SmartLowPoly: true, Bang: true}, none},
-		{"bang confirm gen-1.5", Input{Operation: "confirm_geometry", Model: "gen-1.5", Bang: true}, none},
+		// Confirm of a Bang result: measured raw on a gen-2.5 extreme-low
+		// draft fork_task made (no submit freeze) only.
+		{"bang confirm measured", Input{Operation: "confirm_geometry", Tier: el, Mesh: "raw", Bang: true, Forked: true}, measuredAt(0.5)},
+		{"bang confirm default mesh", Input{Operation: "confirm_geometry", Tier: el, Bang: true, Forked: true}, measuredAt(0.5)},
+		{"bang confirm not forked", Input{Operation: "confirm_geometry", Tier: el, Mesh: "raw", Bang: true}, none},
+		{"bang confirm high", Input{Operation: "confirm_geometry", Tier: "high", Mesh: "raw", Bang: true, Forked: true}, none},
+		{"bang confirm quad", Input{Operation: "confirm_geometry", Tier: el, Mesh: "quad", Bang: true, Forked: true}, none},
+		{"bang confirm smart", Input{Operation: "confirm_geometry", Tier: el, SmartLowPoly: true, Bang: true, Forked: true}, none},
+		{"bang confirm gen-1.5", Input{Operation: "confirm_geometry", Model: "gen-1.5", Bang: true, Forked: true}, none},
+		{"plain confirm forked stays", Input{Operation: "confirm_geometry", Tier: el, Mesh: "raw", Forked: true}, measuredAt(0.5)},
 		{"plain confirm high stays", Input{Operation: "confirm_geometry", Tier: "high", Mesh: "raw"}, measuredAt(0)},
 		// split_parts: plan, split and both at strength 5 of the whole model
 		// of a gen-2.5 extreme-low draft.

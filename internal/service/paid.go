@@ -81,8 +81,8 @@ func (s *Service) actionCardAs(ctx context.Context, id, tool, action string) (st
 	front := s.taskFront(card)
 	if card.Type == rodin.TypeAgentic {
 		return "", nil, stage.Status{}, failFields(render.CodeConflict,
-			fmt.Sprintf("%s is not possible: the task is a %s task (the n-gons result of generate_agentic), which has its own versions and pack, and no tool here acts on it.", tool, card.Type),
-			"Allowed on it: get_task, wait_task and get_preview, which read its card.",
+			fmt.Sprintf("%s is not possible: the task is a %s task (the n-gons result of generate_agentic), which has its own versions and pack, and no paid or stage tool here acts on it.", tool, card.Type),
+			"Allowed on it: get_task, wait_task and get_preview, which read its card, and set_private.",
 			map[string]any{"type": card.Type, "actions": front.Actions})
 	}
 	actions := stage.Actions(st)
@@ -442,6 +442,25 @@ func pinFromCard(pin *price.Input, card *rodin.Card) {
 	if ts, err := time.Parse(time.RFC3339, card.Time); err == nil {
 		pin.TaskCreated = ts
 	}
+}
+
+// forkedHere reports whether fork_task made task uuid: its finished ledger
+// row names the new task (the price of a Bang confirm depends on it).
+func (s *Service) forkedHere(uuid string) bool {
+	st, err := s.Store()
+	if err != nil {
+		return false
+	}
+	rows, err := st.LedgerFor(uuid)
+	if err != nil {
+		return false
+	}
+	for _, e := range rows {
+		if e.Op == "fork_task" && e.Result == "ok" {
+			return true
+		}
+	}
+	return false
 }
 
 // packType is the pack export_model makes at status st: the textured model

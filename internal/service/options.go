@@ -271,6 +271,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		t := s.taskFront(card)
 		task = &t
 		pinFromCard(&pin, card)
+		pin.Forked = s.forkedHere(uuid)
 		if in.Operation == "redo_material" {
 			base = card.Settings
 		}

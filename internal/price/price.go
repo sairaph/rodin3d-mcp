@@ -54,6 +54,9 @@ type Input struct {
 	// Bang is true when confirm_geometry confirms a Bang result
 	// (bang_version) of the draft.
 	Bang bool
+	// Forked is true when the task is a fork this tool made (fork_task's
+	// ledger row names it): it holds no freeze of a submit.
+	Forked bool
 	// generate_texture and redo_material options as the call sends them
 	// (generate_texture: unset is off; redo_material: unset is the draft's).
 	HD, Sharp, FaceEnhance, Delight bool
@@ -447,13 +450,14 @@ func generate(in Input, acct Account) (Quote, error) {
 }
 
 func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) {
+	// The gate comes first: it holds for every confirm, a Bang result's too.
+	if in.SmartLowPoly && !acct.has("RodinRemeshAdditionalFeatures") {
+		return Quote{}, &Gate{"smart low-poly needs the RodinRemeshAdditionalFeatures privilege (Creator plan or higher)"}
+	}
 	if in.Bang {
 		return confirmBang(in, acct, model, tier)
 	}
 	if in.SmartLowPoly {
-		if !acct.has("RodinRemeshAdditionalFeatures") {
-			return Quote{}, &Gate{"smart low-poly needs the RodinRemeshAdditionalFeatures privilege (Creator plan or higher)"}
-		}
 		return label(2, "confirm", `web label "2 Credits" on Confirm in Smart Low-poly mode`), nil
 	}
 	mesh := strings.ToLower(in.Mesh)
@@ -483,9 +487,11 @@ func confirmGeometry(in Input, acct Account, model, tier string) (Quote, error) 
 }
 
 // confirmBang prices the confirm of a Bang result (split_parts). One was
-// measured: a raw confirm of a Bang result of a forked gen-2.5 extreme-low
-// draft, which had no submit freeze, took 0.5 (notes 35, P3-4). Every other
-// case is not known.
+// measured: a raw confirm of a Bang result of a gen-2.5 extreme-low draft
+// that fork_task had made, which held no submit freeze, took 0.5 (notes 35,
+// P3-4, step 15). A submitted extreme-low draft holds 0.5 frozen at its
+// submit, and whether its Bang confirm takes that, a new 0.5 or both was not
+// recorded; that and every other case is not known.
 func confirmBang(in Input, acct Account, model, tier string) (Quote, error) {
 	mesh := strings.ToLower(in.Mesh)
 	if mesh == "" {
@@ -494,15 +500,19 @@ func confirmBang(in Input, acct Account, model, tier string) (Quote, error) {
 	if mesh != "raw" && mesh != "quad" {
 		return Quote{}, &InvalidInput{fmt.Sprintf("mesh %q is not raw or quad", in.Mesh)}
 	}
-	if !in.SmartLowPoly && model == "gen-2.5" && tier == "extreme-low" && mesh == "raw" {
-		return measured(0.5, "confirm", `wallet delta of a raw confirm of a Bang result of a gen-2.5 extreme-low draft, 2026-10-27: 0.5 taken (the web's Confirm label reads "0.5 Credits")`), nil
+	if !in.SmartLowPoly && model == "gen-2.5" && tier == "extreme-low" && mesh == "raw" && in.Forked {
+		return measured(0.5, "confirm", `wallet delta of a raw confirm of a Bang result of a gen-2.5 extreme-low draft made by fork_task (no submit freeze), 2026-10-27: 0.5 taken (the web's Confirm label reads "0.5 Credits")`), nil
 	}
 	shape := mesh
 	if in.SmartLowPoly {
 		shape = "smart low-poly"
 	}
-	return unknown(fmt.Sprintf("the confirm of a Bang result was measured only as a raw confirm of a gen-2.5 extreme-low draft (0.5 taken); this is a %s confirm of a %s draft",
-		shape, task(model, tier))), nil
+	draft := "draft fork_task made"
+	if !in.Forked {
+		draft = "draft this tool did not fork (a submitted extreme-low draft holds 0.5 frozen at its submit; whether the confirm takes that, a new 0.5 or both is not recorded)"
+	}
+	return unknown(fmt.Sprintf("the confirm of a Bang result was measured only as a raw confirm on a gen-2.5 extreme-low draft that fork_task made, with no submit freeze (0.5 taken); this is a %s confirm on a %s %s",
+		shape, task(model, tier), draft)), nil
 }
 
 const noOptions = "no options"

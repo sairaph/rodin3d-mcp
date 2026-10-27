@@ -36,6 +36,7 @@ release:
     - glob: ./install.sh
     - glob: ./install.ps1
     - glob: ./THIRD_PARTY_NOTICES.txt
+    - glob: ./LICENSE
 
 changelog:
   disable: true

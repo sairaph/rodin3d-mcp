@@ -57,9 +57,36 @@ questions; `rodin3d-mcp add` registers the server in the current project's
 client configs only; `--dry-run` shows what would change.
 Restart your AI client after the setup so it loads the server.
 
-`rodin3d-mcp update` updates to the latest release, `rodin3d-mcp doctor`
-checks the installation, and `rodin3d-mcp uninstall` removes the client
-registrations (your data in `~/.rodin3d-mcp` stays until you delete it).
+`rodin3d-mcp update` updates to the latest release and `rodin3d-mcp doctor`
+checks the installation.
+
+## Uninstall
+
+`rodin3d-mcp uninstall` removes everything the installers and the program
+put on this computer. It lists all of it first and asks before removing
+anything (`--yes` skips the question, `--dry-run` only lists):
+
+1. Signs out: revokes the Hyper3D grant and deletes the tokens, like
+   `logout`. Without a network the grant cannot be revoked; its token is
+   still deleted, so nothing on the computer can use it.
+2. Stops the background syncer and closes the viewer window.
+3. Removes the `rodin3d` entry from every AI client config that has it,
+   and nothing else in those files.
+4. Deletes `~/.rodin3d-mcp`: the task index, downloads, previews, cache,
+   permissions, sign-in and logs, and on Linux and macOS the program in
+   `~/.rodin3d-mcp/bin`. Model files you downloaded to a folder of your own
+   stay.
+5. On Windows, deletes `%LOCALAPPDATA%\rodin3d-mcp` and removes its `bin`
+   folder from your user PATH. On Linux and macOS, removes the PATH line
+   the installer added to your shell profile.
+
+The running program goes last. Windows cannot delete a running program, so
+on Windows `rodin3d-mcp.exe` stays and the summary names the folder to
+delete afterwards. The summary also reports anything that could not be
+removed and any other `rodin3d-mcp` still on your PATH.
+
+Registrations made with `rodin3d-mcp add` live in that project's own files:
+remove them first with `rodin3d-mcp uninstall --scope project --dir <project>`.
 
 ## Sign in
 
@@ -198,6 +225,8 @@ The Draco mesh decoder runs as an embedded WebAssembly module;
 `tools/draco-wasm` rebuilds it reproducibly from pinned sources.
 
 ## Licenses
+
+rodin3d-mcp is MIT-licensed (see `LICENSE`).
 
 `THIRD_PARTY_NOTICES.txt` (shipped with every release, and printed by
 `rodin3d-mcp licenses`) holds the licenses of the third-party code in the

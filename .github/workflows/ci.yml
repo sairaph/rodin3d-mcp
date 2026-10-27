@@ -6,18 +6,65 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.1"
+          cache: true
 
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./...
+      # Live tests against Hyper3D need RODIN_LIVE=1 and a signed-in
+      # session; CI has neither, so they skip.
+      - name: Test (race)
+        run: go test -race ./...
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^references/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Third-party notices up to date
+        if: runner.os == 'Linux'
+        run: go run ./tools/notices -check
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+          cache: true
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null .

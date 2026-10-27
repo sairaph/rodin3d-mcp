@@ -164,7 +164,13 @@ func (c claim) fill(jobs []string, detail map[string]string) int64 {
 		_ = st.DropJob(c.id)
 		return 0
 	}
-	_ = st.SetJobs(c.id, jobs, detail)
+	// One retry: a store held past its busy timeout by another process is
+	// the usual cause, and an unrecorded call is followed only until
+	// store.ClaimBound (60-L1).
+	if err := st.SetJobs(c.id, jobs, detail); err != nil {
+		time.Sleep(time.Second)
+		_ = st.SetJobs(c.id, jobs, detail)
+	}
 	return c.id
 }
 

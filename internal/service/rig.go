@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -285,6 +286,12 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if fbxPath != "" {
 		if !in.Reskin && rig.State == "succeeded" {
 			call, block = s.reskinFor(ctx, uuid, source, fbxPath, bones, true)
+			if call != nil && before != "" && call.gen == before {
+				// The result still shows the rig from before this call (a
+				// re-rig of a custom rig): its joints are not the FBX rig's.
+				call, block = nil, &reskinBlock{why: "the rig's result does not show the new rig yet",
+					hint: "Call rig_model with the same fbx_skeleton_path and reskin true again in a moment; animate_model already works with the rig as it is.", retry: true}
+			}
 			if call != nil {
 				// The reskin is claimed like the rig: another session's
 				// reskin true may have started since the rig ended.
@@ -428,7 +435,9 @@ const (
 )
 
 // rigGen is the task's rig as a rodin_rigging_result read answered: its
-// generation_time, or rigNone; read is false when the read failed.
+// generation_time, or rigNone; read is false when the read failed or the
+// result has no generation_time (an empty name would match every rig
+// without one).
 func rigGen(res *rodin.RigResult, err error) (gen string, read bool) {
 	switch {
 	case isCode(err, "RIGGING_NOT_FOUND"):
@@ -436,7 +445,8 @@ func rigGen(res *rodin.RigResult, err error) (gen string, read bool) {
 	case err != nil:
 		return "", false
 	}
-	return scalarOf(res.Raw["generation_time"]), true
+	gen = scalarOf(res.Raw["generation_time"])
+	return gen, gen != ""
 }
 
 // noteRigEnd records, for the rig or reskin call j whose end state was read
@@ -582,11 +592,24 @@ func (s *Service) madeFromFBX(uuid, source, fbxPath, gen string) bool {
 		return false
 	}
 	for _, j := range calls {
-		if j.Detail["fbx"] == fbxPath && j.State == "succeeded" && j.Detail[rigAfter] == gen {
+		if samePath(j.Detail["fbx"], fbxPath) && j.State == "succeeded" && j.Detail[rigAfter] == gen {
 			return true
 		}
 	}
 	return false
+}
+
+// samePath reports whether two spellings name the same file path: cleaned,
+// and without regard to case on Windows.
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // sendReskin sends a reskin call claimed as c and follows its job until
@@ -635,7 +658,7 @@ func (s *Service) rigState(ctx context.Context, uuid string, st stage.Status) *r
 	}
 	res, err := s.client.RiggingResult(ctx, uuid, source)
 	gen, read := rigGen(res, err)
-	if !read {
+	if !read && err != nil {
 		return nil
 	}
 	out := &rigFront{Source: source, State: "done"}
@@ -643,6 +666,11 @@ func (s *Service) rigState(ctx context.Context, uuid string, st stage.Status) *r
 		out.State = "none"
 	} else {
 		out.Template, out.Skinning = res.Template, scalarOf(res.Raw["skinning_method"])
+	}
+	if !read {
+		// A result without generation_time names no rig, so no recorded
+		// call can be tied to it (58-L5a): the rig is shown as it is.
+		return out
 	}
 	// The recorded calls describe the task's rig only while it is the rig
 	// they left (noteRigEnd): a rig made since, in the web, is not theirs.

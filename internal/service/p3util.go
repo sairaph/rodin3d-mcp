@@ -90,6 +90,99 @@ func (s *Service) waitJobs(ctx context.Context, jobs []string, deadline time.Tim
 	}
 }
 
+// Kinds of the calls recordJobs keeps: their jobs run on the scheduler while
+// the task card shows nothing (notes 49: the card does not change while
+// rigging; a Bang plan or split leaves the draft a draft).
+const (
+	jobRig    = "rig"           // rodin_rigging; key: the rig source
+	jobReskin = "reskin"        // the second Import FBX rodin_rigging; key: the rig source
+	jobPlan   = "bang_plan"     // key: the geometry version
+	jobSplit  = "bang_generate" // key: the geometry version
+)
+
+// jobFresh is how long after its request a job that reads Canceled may
+// still be one the scheduler does not know yet (waitJobs: three polls).
+const jobFresh = 10 * time.Second
+
+// recordJobs keeps the scheduler jobs of a call the card does not show, so
+// get_task and later calls follow them; 0 when they cannot be kept.
+func (s *Service) recordJobs(uuid, kind, key string, detail map[string]string, jobs []string) int64 {
+	st, err := s.Store()
+	if err != nil || len(jobs) == 0 {
+		return 0
+	}
+	id, err := st.AddJob(store.Job{UUID: uuid, Kind: kind, Key: key, Detail: detail, Jobs: jobs})
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// endJobs records the end waitJobs read; jobs still running stay running.
+func (s *Service) endJobs(id int64, jr jobsResult) {
+	if id == 0 || !jr.Done {
+		return
+	}
+	if st, err := s.Store(); err == nil {
+		_ = st.EndJob(id, jobWord(jr))
+	}
+}
+
+// latestJob is the newest call of kind this tool recorded on task uuid for
+// key ("" any key).
+func (s *Service) latestJob(uuid, kind, key string) (store.Job, bool) {
+	st, err := s.Store()
+	if err != nil {
+		return store.Job{}, false
+	}
+	j, err := st.LatestJob(uuid, kind, key)
+	return j, err == nil
+}
+
+// jobState is the state of a recorded call: its recorded end, else one read
+// of the scheduler (running, succeeded, failed or canceled), which is then
+// recorded when it is an end. Any job not ended makes it running.
+func (s *Service) jobState(ctx context.Context, j store.Job) (string, error) {
+	if j.State != store.JobRunning {
+		return j.State, nil
+	}
+	failed, canceled := false, false
+	for _, id := range j.Jobs {
+		st, err := s.client.JobStatus(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		switch st {
+		case "Succeeded":
+		case "Failed":
+			failed = true
+		case "Canceled":
+			// An unknown job reads Canceled, and a job may be unknown for a
+			// moment after its request.
+			if time.Since(j.At) < jobFresh {
+				return "running", nil
+			}
+			canceled = true
+		default: // Queued, Running, BackPressure, WaitingForDependencies
+			return "running", nil
+		}
+	}
+	state := "succeeded"
+	switch {
+	case failed:
+		state = "failed"
+	case canceled:
+		state = "canceled"
+	}
+	if st, err := s.Store(); err == nil {
+		_ = st.EndJob(j.ID, state)
+	}
+	return state, nil
+}
+
+// sentAt is the local time a recorded call was sent, for the texts.
+func sentAt(j store.Job) string { return j.At.Format("15:04:05") }
+
 // saveResultFile downloads a result file of task uuid (a signed address) to
 // target, as download_model does, and records it, so get_task lists it with
 // the downloaded files.

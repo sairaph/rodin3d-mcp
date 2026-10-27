@@ -56,6 +56,28 @@ func Reskin(imported []fbx.Bone, joints []Joint) ([]Bone, error) {
 	return out, nil
 }
 
+// SameSkeleton reports whether the rig's joints are the imported bones, one
+// each by the editor's name key: the rig the first Import FBX call made from
+// that FBX. Reskin itself only needs every imported bone among the joints,
+// so a rig of a larger skeleton (the human template under a Mixamo FBX)
+// passes it; the web never reskins such a rig, as it reskins only the rig its
+// own first call just made.
+func SameSkeleton(imported []fbx.Bone, joints []Joint) error {
+	if len(imported) != len(joints) {
+		return fmt.Errorf("the rig has %d bones and the FBX %d", len(joints), len(imported))
+	}
+	have := map[string]bool{}
+	for _, j := range joints {
+		have[matchName(j.Label)] = true
+	}
+	for _, b := range imported {
+		if !have[matchName(b.Name)] {
+			return fmt.Errorf("the rig has no bone %s", b.Name)
+		}
+	}
+	return nil
+}
+
 // importFrames is k (cf/7859:3748-3895).
 func importFrames(e []fbx.Bone, t []Joint) ([]Joint, error) {
 	byName := map[string]int{}

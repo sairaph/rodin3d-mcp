@@ -145,9 +145,11 @@ func (c *Client) BangPlanResult(ctx context.Context, r BangRequest) (string, err
 	return out.URL, nil
 }
 
-// BangGenerate calls task/bang_generate: splits the draft by its latest
-// plan (the web's "Bang to Parts"). Both web call sites send only uuid and
-// model_version, also after a part's plan (main.fmt.js:14559, 29989).
+// BangGenerate calls task/bang_generate: splits the draft version by a plan
+// of it (the web's "Bang to Parts"). Both web call sites send only uuid and
+// model_version, also after a part's plan (main.fmt.js:14559, 29989), and
+// both follow the web's own plan at once; which plan the server takes when
+// a version has plans of several parts is not settled.
 func (c *Client) BangGenerate(ctx context.Context, uuid, modelVersion string) (*BangReply, error) {
 	var out BangReply
 	if err := c.postJSON(ctx, "task/bang_generate", map[string]any{"uuid": uuid, "model_version": modelVersion}, &out); err != nil {

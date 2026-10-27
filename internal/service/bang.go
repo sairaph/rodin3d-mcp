@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,7 +119,15 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("Geometry %s has no Bang result %q.", version, bangVer), "get_task lists the Bang results with their parts.")
 		}
 	}
+	if step != "plan" {
+		if err := s.splitBusy(ctx, uuid, version); err != nil {
+			return Result{}, err
+		}
+	}
 	if step == "generate" {
+		if err := s.planFits(ctx, uuid, version, bangVer, part); err != nil {
+			return Result{}, err
+		}
 		if _, err := s.client.BangPlanResult(ctx, req); err != nil {
 			if isCode(err, "NO_SUCH_A_PLAN") {
 				return Result{}, fail(render.CodeConflict, fmt.Sprintf("Geometry %s has no Bang plan yet.", version), "Call split_parts with step plan (or both) first.")
@@ -142,12 +151,14 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			sp.close(ctx, err)
 			return Result{}, sendFailure("split_parts (bang_plan)", uuid, err)
 		}
+		id := s.recordJobs(uuid, jobPlan, version, map[string]string{"bang_version": bangVer, "part": part, "strength": strconv.Itoa(strength)}, reply.UUIDs())
 		jr := jobsResult{}
 		if wait {
 			if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
 				sp.close(ctx, nil)
-				return Result{}, wrapf(err, "the Bang plan was started; split_parts with step generate splits by it once it is made")
+				return Result{}, wrapf(err, "the Bang plan was started; get_task with %s shows it (bang_plan) once it is made, then split_parts with step generate splits by it", uuid)
 			}
+			s.endJobs(id, jr)
 		}
 		detail.Plan = jobWord(jr)
 		if jr.Done && jr.Status == "Succeeded" {
@@ -168,12 +179,14 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
 	}
 	detail.Result = &bangPart{Version: reply.Version}
+	id := s.recordJobs(uuid, jobSplit, version, map[string]string{"result": reply.Version}, reply.UUIDs())
 	jr := jobsResult{}
 	if wait {
 		if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
 			sp.close(ctx, nil)
 			return Result{}, wrapf(err, "the split was started (Bang version %s); follow it with get_task", reply.Version)
 		}
+		s.endJobs(id, jr)
 	}
 	sp.close(ctx, nil)
 	detail.Split, detail.TimedOut = jobWord(jr), jr.TimedOut
@@ -198,6 +211,102 @@ func jobWord(jr jobsResult) string {
 		return "running"
 	}
 	return strings.ToLower(jr.Status) // succeeded | failed | canceled
+}
+
+// planOf names what a plan or split is of, for the texts.
+func planOf(bangVer, part string) string {
+	if part == "" {
+		return "the whole model"
+	}
+	return "part " + part + " of Bang result " + bangVer
+}
+
+// splitBusy refuses a split while a split split_parts sent on the same
+// draft version still runs (the web's panel takes one at a time; a second
+// call would repeat a paid request).
+func (s *Service) splitBusy(ctx context.Context, uuid, version string) error {
+	j, ok := s.latestJob(uuid, jobSplit, version)
+	if !ok {
+		return nil
+	}
+	state, err := s.jobState(ctx, j)
+	if err != nil {
+		return wrapf(err, "read the state of the split sent at %s", sentAt(j))
+	}
+	if state != "running" {
+		return nil
+	}
+	return failFields(render.CodeConflict, fmt.Sprintf("The split of geometry %s that split_parts sent at %s (Bang version %s) is still running.", version, sentAt(j), j.Detail["result"]),
+		"In a minute or two, get_task with "+uuid+": its bang block lists the result once it is done. Do not call split_parts again for it.",
+		map[string]any{"geometry_version": version, "bang_version": j.Detail["result"]})
+}
+
+// planFits checks, for step generate, the newest plan split_parts sent on
+// the version: it must be made, and of the same part. bang_generate names
+// no part, so when a version has plans of several parts the server picks
+// the plan it splits by (not settled; the web always splits right after its
+// own plan); a split is sent only after a plan of the part it is quoted
+// and reported for. A plan made elsewhere (the web) is not recorded here:
+// then only bang_plan_result's answer for the part is checked.
+func (s *Service) planFits(ctx context.Context, uuid, version, bangVer, part string) error {
+	j, ok := s.latestJob(uuid, jobPlan, version)
+	if !ok {
+		return nil
+	}
+	state, err := s.jobState(ctx, j)
+	if err != nil {
+		return wrapf(err, "read the state of the Bang plan sent at %s", sentAt(j))
+	}
+	fields := map[string]any{"geometry_version": version, "plan_of": planOf(j.Detail["bang_version"], j.Detail["part"]), "plan_state": state}
+	switch {
+	case state == "running":
+		return failFields(render.CodeConflict, fmt.Sprintf("The Bang plan of geometry %s that split_parts sent at %s is still running.", version, sentAt(j)),
+			"In a minute, get_task with "+uuid+": its bang_plan block says when the plan is made and attaches its picture; then split_parts with step generate splits by it.", fields)
+	case state != "succeeded":
+		return failFields(render.CodeConflict, fmt.Sprintf("The newest Bang plan of geometry %s that split_parts sent (at %s) ended %s.", version, sentAt(j), state),
+			"split_parts with step plan (or both) makes a new plan.", fields)
+	case j.Detail["part"] != part || j.Detail["bang_version"] != bangVer:
+		return failFields(render.CodeConflict, fmt.Sprintf("The newest Bang plan of geometry %s that split_parts sent is of %s, not of %s.", version, planOf(j.Detail["bang_version"], j.Detail["part"]), planOf(bangVer, part)),
+			"bang_generate names no part, so which plan a split follows is the server's choice: pass the plan's part and bang_version, or split_parts with step both (or step plan, then generate) for "+planOf(bangVer, part)+".", fields)
+	}
+	return nil
+}
+
+// planFront is get_task's bang_plan block: the newest Bang plan split_parts
+// sent on the task, while no split of its version was sent after it.
+type planFront struct {
+	Version     string `yaml:"geometry_version"`
+	BangVersion string `yaml:"bang_version,omitempty"`
+	Part        string `yaml:"part,omitempty"`
+	Strength    int    `yaml:"strength,omitempty"`
+	State       string `yaml:"state"` // running | succeeded | failed | canceled
+	Sent        string `yaml:"sent"`
+}
+
+// planState reads the plan get_task shows, with its picture once it is made.
+func (s *Service) planState(ctx context.Context, uuid string) (*planFront, *Image) {
+	j, ok := s.latestJob(uuid, jobPlan, "")
+	if !ok {
+		return nil, nil
+	}
+	if split, ok := s.latestJob(uuid, jobSplit, j.Key); ok && !split.At.Before(j.At) {
+		return nil, nil // split already: the bang block lists the result
+	}
+	state, err := s.jobState(ctx, j)
+	if err != nil {
+		return nil, nil
+	}
+	strength, _ := strconv.Atoi(j.Detail["strength"])
+	p := &planFront{Version: j.Key, BangVersion: j.Detail["bang_version"], Part: j.Detail["part"], Strength: strength,
+		State: state, Sent: j.At.UTC().Format(time.RFC3339)}
+	if state != "succeeded" {
+		return p, nil
+	}
+	img, ok := s.planImage(ctx, rodin.BangRequest{UUID: uuid, ModelVersion: j.Key, BangVersion: p.BangVersion, ComponentID: p.Part})
+	if !ok {
+		return p, nil
+	}
+	return p, &img
 }
 
 // planImage reads the plan's picture as a PNG.
@@ -323,6 +432,8 @@ func (s *Service) finishSplit(ctx context.Context, sp *spend, uuid string, d spl
 		fmt.Fprintf(&b, "Bang plan of geometry %s made (strength %d).", d.Version, d.Strength)
 		if d.PlanImage {
 			b.WriteString(" Its picture is attached: the planned parts drawn apart in boxes, from the front and the top.")
+		} else {
+			b.WriteString(" Its picture could not be read now; get_task with " + uuid + " attaches it (bang_plan).")
 		}
 	case d.Split == "running":
 		fmt.Fprintf(&b, "The split of geometry %s into parts is running (Bang version %s).", d.Version, d.Result.Version)
@@ -341,10 +452,9 @@ func (s *Service) finishSplit(ctx context.Context, sp *spend, uuid string, d spl
 	b.WriteString("\n\n" + sp.walletText())
 	switch {
 	case d.Plan == "running":
-		// No split was sent: the plan comes first, and get_task does not
-		// show a plan.
-		b.WriteString("\n\nNext: in a minute, split_parts with step generate (and " + same + ") splits the draft by this plan; " +
-			"it answers conflict when the draft has no plan yet. No split was sent.")
+		// No split was sent: the plan comes first.
+		b.WriteString("\n\nNext: in a minute, get_task with " + uuid + ": its bang_plan block says when the plan is made and attaches its picture for the user " +
+			"to approve; then split_parts with step generate (and " + same + ") splits the draft by it. No split was sent.")
 	case d.Split == "running":
 		b.WriteString("\n\nNext: in a minute or two, get_task with " + uuid + ": its bang block lists the results of each draft version once they are done, " +
 			"with the name download_model saves the parts file by. Do not call split_parts again for this split.")

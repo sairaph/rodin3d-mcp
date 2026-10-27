@@ -126,6 +126,20 @@ CREATE TABLE IF NOT EXISTS input_sets (
   json       TEXT NOT NULL
 );
 
+-- Scheduler jobs a tool started whose task card shows no job (rigging,
+-- Bang plans and splits), so later calls can follow them.
+CREATE TABLE IF NOT EXISTS jobs (
+  id     INTEGER PRIMARY KEY,
+  uuid   TEXT NOT NULL,
+  kind   TEXT NOT NULL,                  -- rig | reskin | bang_plan | bang_generate
+  key    TEXT NOT NULL DEFAULT '',       -- what the job works on: the rig source, or the geometry version
+  detail TEXT NOT NULL DEFAULT '{}',     -- JSON object of strings
+  jobs   TEXT NOT NULL DEFAULT '[]',     -- JSON list of scheduler job ids
+  state  TEXT NOT NULL DEFAULT 'running', -- running | succeeded | failed | canceled
+  at_ms  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS jobs_by_task ON jobs(uuid, kind, key, at_ms);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
   phase        TEXT NOT NULL DEFAULT 'idle',
@@ -145,11 +159,14 @@ func (s *Store) migrate() error {
 	if current > schemaVersion {
 		return fmt.Errorf("the database schema is version %d but this build understands %d; update rodin3d-mcp", current, schemaVersion)
 	}
-	if current == schemaVersion {
-		return nil
-	}
+	// Every statement is CREATE ... IF NOT EXISTS (or INSERT OR IGNORE), so
+	// the schema is applied on every open: a table a newer build added (jobs)
+	// appears in an older file, and builds without it still open the file.
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
+	}
+	if current == schemaVersion {
+		return nil
 	}
 	if _, err := s.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("record schema version: %w", err)

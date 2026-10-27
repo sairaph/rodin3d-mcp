@@ -27,8 +27,8 @@ type splitArgs struct {
 	Step            *string `json:"step,omitempty" jsonschema:"both (default): lay out the parts, then split; plan: only lay out the parts and return the plan picture; generate: split by the plan made before"`
 	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"split one part of this earlier Bang result again (with part)"`
 	Part            *string `json:"part,omitempty" jsonschema:"the part name of bang_version to split again (get_task and the earlier reply list part names)"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for split_parts on this task with the same step and strength; -1 accepts a price quote_cost reports as not known"`
-	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds in all (default true); false returns right after the request of step plan or generate; step both needs its finished plan, so it waits as with true"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for split_parts on this task with the same step, strength and part; -1 accepts a price quote_cost reports as not known"`
+	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds in all (default true); false returns right after the request of step plan or generate (get_task follows the plan as bang_plan, the split as bang); step both needs its finished plan, so it waits as with true"`
 }
 
 type rigArgs struct {
@@ -37,9 +37,9 @@ type rigArgs struct {
 	Skeleton        *string `json:"skeleton,omitempty" jsonschema:"instead of template: your own bone hierarchy, one bone name per line, depth by leading - characters (Hips, -Spine, --Chest)"`
 	Description     *string `json:"description,omitempty" jsonschema:"instead of template: the skeleton described in words; Hyper3D plans the bones"`
 	FBXSkeleton     *string `json:"fbx_skeleton_path,omitempty" jsonschema:"instead of template: absolute path of an FBX file whose skeleton the rig takes, as the web's Import FBX: its bones (pose bones left out), skinned with shell, then turned to the FBX bones' frames by a second (reskin) call"`
-	Reskin          *bool   `json:"reskin,omitempty" jsonschema:"with fbx_skeleton_path: send only the reskin call for the task's current rig (when the rig outlasted the wait of an earlier call)"`
+	Reskin          *bool   `json:"reskin,omitempty" jsonschema:"with fbx_skeleton_path: send only the reskin call, for the task's rig made from the same FBX bones (when an earlier call's rig outlasted its wait or its reskin was not sent); refused before any request for another rig"`
 	Skinning        *string `json:"skinning,omitempty" jsonschema:"core (human template only; its default) or shell (the default otherwise)"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for rig_model on this task; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for rig_model on this task with the same template (custom for skeleton, description and fbx_skeleton_path) and skinning; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the rig (default true); with fbx_skeleton_path it waits as with true, since the reskin call needs the finished rig"`
 }
 
@@ -68,7 +68,7 @@ type textureModelArgs struct {
 	Model           *string  `json:"model,omitempty" jsonschema:"gen-2.5 (default) or gen-1.5"`
 	Mode            *string  `json:"mode,omitempty" jsonschema:"gen-1.5 mode (default default)"`
 	Public          *bool    `json:"public,omitempty" jsonschema:"true keeps the new task public on Hyper3D; default false: the task is made private right after the submit"`
-	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for texture_model with the same model; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64  `json:"expected_credits" jsonschema:"the credits quote_cost returned for texture_model with the same model and number of images; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool    `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the draft (default true)"`
 }
 
@@ -80,8 +80,8 @@ func (s *Server) registerP3Tools() {
 	addTool(s, "generate_agentic", "Agentic 3D build",
 		"Start a Rodin Agentic task from 1-5 images of one object: Hyper3D plans and builds the model within a time budget (basic about 3 "+
 			"minutes, standard 5, pro 10). The server picks the producer: high-poly makes an ordinary Rodin task that ends as a geometry "+
-			"draft (confirm_geometry and the other stage tools continue it); n-gons makes a RodinAgentic task, which no tool here acts on "+
-			"(get_task, wait_task and get_preview read it). Needs [permission] agentic = \"allow\" and expected_credits from "+
+			"draft (confirm_geometry and the other stage tools continue it); n-gons makes a RodinAgentic task, which no paid or stage tool here acts on "+
+			"(get_task, wait_task and get_preview read it; set_private changes its privacy). Needs [permission] agentic = \"allow\" and expected_credits from "+
 			"quote_cost (operation generate_agentic, settings.budget). The new task is made private unless public is true. Returns the task "+
 			"and the producer; follow it with wait_task. Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, ag, s.generateAgentic)
@@ -92,7 +92,10 @@ func (s *Server) registerP3Tools() {
 	addTool(s, "split_parts", "Split a draft into parts",
 		"Split a geometry draft (stage geometry_draft) into separate parts, the web's Bang: a plan lays out the parts (strength = how many), "+
 			"then the split makes a Bang result of the draft version with one mesh per part. step plan stops after the plan and, when the "+
-			"plan is made within the wait, attaches its picture so the user can approve it; step generate splits by that plan. When the split "+
+			"plan is made within the wait, attaches its picture so the user can approve it; get_task shows the newest plan split_parts sent "+
+			"(bang_plan) with its picture, free, until a split of its version follows. step generate splits by the plan made before: it is "+
+			"refused before any paid request while the newest plan split_parts sent on the version runs, when it failed or was canceled, or when it is of another part (bang_generate "+
+			"names no part); a split of the same version still running is not sent again. When the split "+
 			"finishes within the wait, its parts file is saved in the task's files folder and a render attached; otherwise get_task lists the "+
 			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
 			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
@@ -107,8 +110,10 @@ func (s *Server) registerP3Tools() {
 	withEnum(rg, "skinning", "shell", "core")
 	addTool(s, "rig_model", "Rig the model",
 		"Give a task with confirmed geometry (stages geometry, material_draft, material) a skeleton and skin: a built-in template, your own "+
-			"bone hierarchy, a skeleton described in words, or the skeleton of an FBX file. The rig is kept by Hyper3D with the task (get_task shows it as rig); "+
-			"animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
+			"bone hierarchy, a skeleton described in words, or the skeleton of an FBX file (two calls, as the web's Import FBX: the rig from "+
+			"its bones, then the reskin to their frames; reskin true sends only the second). The rig is kept by Hyper3D with the task: get_task "+
+			"shows it as rig, with the rig and reskin calls this tool sent while they run; a call while one of them still runs is refused before "+
+			"any request. animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
 			"rig_model, task_id, settings.template and skinning).",
 		paidTool, rg, s.rigModel)
 

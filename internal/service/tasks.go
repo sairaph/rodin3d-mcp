@@ -89,7 +89,7 @@ func (s *Service) taskFront(card *rodin.Card) TaskFront {
 // taskActions are the tools that act on the task of card at status st. A
 // RodinAgentic task (the n-gons producer of generate_agentic) has its own
 // versions and pack (agentic_pack) that no tool maps, so only reading it
-// is offered (plan P3-D4).
+// is offered (plan P3-D4); set_private works on any task.
 func taskActions(card *rodin.Card, st stage.Status) []string {
 	if card.Type == rodin.TypeAgentic {
 		if st.State == stage.Running {
@@ -347,6 +347,7 @@ type taskDetailFront struct {
 	Inputs    []inputFront    `yaml:"inputs,omitempty"`
 	Versions  versionsFront   `yaml:"versions,omitempty"`
 	Bang      []bangListFront `yaml:"bang,omitempty"`
+	BangPlan  *planFront      `yaml:"bang_plan,omitempty"`
 	Rig       *rigFront       `yaml:"rig,omitempty"`
 	Confirmed *confirmedFront `yaml:"confirmed,omitempty"`
 	Previews  []previewFront  `yaml:"previews"`
@@ -568,12 +569,14 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 
 	front.Previews = previewModes(d)
 
-	// Bang results of the draft versions, and the rig of a confirmed task
-	// (animate_model needs one).
-	// A RodinAgentic task has neither (no tool acts on it).
+	// Bang results of the draft versions with the plan awaiting its split,
+	// and the rig of a confirmed task (animate_model needs one). A
+	// RodinAgentic task has neither (no paid or stage tool acts on it).
+	var planImg *Image
 	if card.Type != rodin.TypeAgentic {
 		if d.status.Stage == stage.GeometryDraft {
 			front.Bang = s.bangVersions(ctx, uuid, d.hist.Geometry)
+			front.BangPlan, planImg = s.planState(ctx, uuid)
 		}
 		if front.Rig = s.rigState(ctx, uuid, d.status); front.Rig != nil && front.Rig.State == "done" && registered("animate_model") {
 			front.Task.Actions = append(front.Task.Actions, "animate_model")
@@ -625,13 +628,53 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 	if len(front.Bang) > 0 {
 		b.WriteString("\n\nThe draft has Bang (parts) results (bang): confirm_geometry with bang_version confirms one; download_model with files [its download name] saves its parts file.")
 	}
-	if r := front.Rig; r != nil && r.State == "done" {
-		b.WriteString("\n\nThe task is rigged (rig): animate_model exports the rigged model, with animations or without.")
+	if p := front.BangPlan; p != nil {
+		at := "geometry " + p.Version + " (" + planOf(p.BangVersion, p.Part) + ")"
+		args := "version " + p.Version
+		if p.Part != "" {
+			args += ", bang_version " + p.BangVersion + " and part " + p.Part
+		}
+		switch p.State {
+		case "succeeded":
+			fmt.Fprintf(&b, "\n\nThe newest Bang plan split_parts sent, of %s, is made (bang_plan)", at)
+			if planImg != nil {
+				b.WriteString("; its picture is attached for the user to approve")
+			}
+			b.WriteString(". split_parts with step generate and " + args + " splits the draft by it.")
+		case "running":
+			fmt.Fprintf(&b, "\n\nThe newest Bang plan split_parts sent, of %s, is still running (bang_plan): get_task again in a minute shows its picture.", at)
+		default:
+			fmt.Fprintf(&b, "\n\nThe newest Bang plan split_parts sent, of %s, ended %s (bang_plan): split_parts with step plan makes a new one.", at, p.State)
+		}
+	}
+	if r := front.Rig; r != nil {
+		switch {
+		case r.State == "running":
+			b.WriteString("\n\nA rig call rig_model sent is still running (rig): get_task again in a minute or two says when it is done.")
+		case r.State == "done" && r.Reskin == "running":
+			b.WriteString("\n\nThe task is rigged, and the reskin call rig_model sent is still running (rig.reskin): get_task again in a minute says when it is done.")
+		case r.State == "done":
+			b.WriteString("\n\nThe task is rigged (rig): animate_model exports the rigged model, with animations or without.")
+		}
+		if r.LastCall != "" {
+			fmt.Fprintf(&b, " The newest rig call rig_model sent ended %s", r.LastCall)
+			if r.State == "done" {
+				b.WriteString("; the rig shown is an earlier one")
+			}
+			b.WriteString(".")
+		}
+		if r.State == "done" && r.LastCall == "" && r.FBX != "" && r.Reskin == "not sent" {
+			b.WriteString(" The rig was made from the bones of " + filepath.Base(r.FBX) + " and no reskin call followed: rig_model with that fbx_skeleton_path " +
+				"and reskin true sends it, or says why it cannot.")
+		}
 	}
 	b.WriteString("\n\nNext: " + nextFor(front.Task))
 	res := Result{Front: front, Body: b.String()}
 	if img, ok := s.posterImage(ctx, card.TaskUUID, d.list, d.status); ok {
 		res.Images = append(res.Images, img)
+	}
+	if planImg != nil {
+		res.Images = append(res.Images, *planImg)
 	}
 	return res, nil
 }

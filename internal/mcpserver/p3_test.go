@@ -13,6 +13,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/fbx/fbxtest"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
+	"github.com/sairaph/rodin3d-mcp/internal/store"
 )
 
 // paidProcedures are the procedures that spend credits or change a task.
@@ -387,7 +388,7 @@ func TestRigModelFBXSkeleton(t *testing.T) {
 				}
 			}
 		}
-		if !strings.Contains(r.text, "turned to the FBX bones' frames") {
+		if !strings.Contains(r.text, "turned the 22 bones to the frames of the bones of skeleton.fbx") {
 			t.Fatalf("text:\n%s", r.text)
 		}
 	})
@@ -410,8 +411,12 @@ func TestRigModelFBXSkeleton(t *testing.T) {
 		path := fbxRig(t, f, fakehyper.PackedID, func(s string) string { return strings.Replace(s, "Head", "Skull", 1) })
 		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "expected_credits": -1})
 		if r.code() != "" || len(f.fake.Bodies("task/rodin_rigging")) != 1 || get(r.front, "detail", "rig", "reskin") != "not sent" ||
-			!strings.Contains(r.text, "do not match: cannot match imported bone: mixamorig:Head") {
+			!strings.Contains(r.text, "not the rig of these FBX bones: the rig has no bone mixamorig:Head") {
 			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+		// L3: a reskin that cannot work is not advised.
+		if strings.Contains(r.text, "reskin true") || !strings.Contains(r.text, "The web stops here too") {
+			t.Fatalf("next step:\n%s", r.text)
 		}
 	})
 	t.Run("refusals", func(t *testing.T) {
@@ -452,5 +457,222 @@ func TestRigModelTextSkeletonReachesTheService(t *testing.T) {
 	calls := f.fake.Bodies("task/rodin_rigging")
 	if len(calls) != 2 || calls[0]["settings"].(map[string]any)["rodinrig_template"] != "custom" || calls[1]["settings"].(map[string]any)["rigging_mode"] != "generate" {
 		t.Fatalf("calls %v", calls)
+	}
+}
+
+// M-1, L4, L5: a rig or reskin that outlasts the wait is followed through
+// get_task (the card shows no rig job) and never sent again while it runs;
+// reskin true reskins only the rig made from the same FBX bones, refusing
+// any other before a request or a ledger row.
+func TestRigModelFollowsItsJobs(t *testing.T) {
+	same := func(s string) string { return s }
+	rigging := func(f *fixture) int { return len(f.fake.Bodies("task/rodin_rigging")) }
+	args := func(path string, reskin bool) map[string]any {
+		a := map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "expected_credits": -1}
+		if reskin {
+			a["reskin"] = true
+		}
+		return a
+	}
+	t.Run("reskin outlasts the wait", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		f.fake.Tasks(fakehyper.PackedID).Rig, f.fake.Tasks(fakehyper.PackedID).RigSkinning = "custom", "shell"
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		f.fake.JobState = "Running"
+		setFlowWait(t)
+		r := f.call("rig_model", args(path, true))
+		if r.code() != "" || rigging(f) != 1 || get(r.front, "detail", "rig", "state") != "done" || get(r.front, "detail", "rig", "reskin") != "running" {
+			t.Fatalf("%s %d:\n%s", r.code(), rigging(f), r.text)
+		}
+		if strings.Contains(r.text, "reskin true sends") || !strings.Contains(r.text, "its rig block's reskin says when the reskin call is done") {
+			t.Fatalf("next step:\n%s", r.text)
+		}
+		g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID})
+		if get(g.front, "rig", "state") != "done" || get(g.front, "rig", "reskin") != "running" || get(g.front, "rig", "fbx") != path {
+			t.Fatalf("get_task rig %v:\n%s", get(g.front, "rig"), g.text)
+		}
+		if again := f.call("rig_model", args(path, true)); again.code() != "conflict" || rigging(f) != 1 {
+			t.Fatalf("a second reskin while one runs: %s %d:\n%s", again.code(), rigging(f), again.text)
+		}
+		if other := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "template": "human", "expected_credits": 0}); other.code() != "conflict" || rigging(f) != 1 {
+			t.Fatalf("a new rig while the reskin runs: %s %d:\n%s", other.code(), rigging(f), other.text)
+		}
+		f.fake.JobState = "Succeeded"
+		if g = f.call("get_task", map[string]any{"task_id": fakehyper.PackedID}); get(g.front, "rig", "reskin") != "succeeded" {
+			t.Fatalf("get_task rig after the job %v", get(g.front, "rig"))
+		}
+	})
+	t.Run("the first call outlasts the wait", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		f.fake.JobState = "Running"
+		setFlowWait(t)
+		r := f.call("rig_model", args(path, false))
+		if r.code() != "" || rigging(f) != 1 || get(r.front, "detail", "rig", "state") != "running" || get(r.front, "detail", "rig", "reskin") != "not sent" ||
+			!strings.Contains(r.text, "once its rig block says state done, rig_model with the same fbx_skeleton_path and reskin true") {
+			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+		g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID})
+		if get(g.front, "rig", "state") != "running" || contains(get(g.front, "task", "actions"), "animate_model") {
+			t.Fatalf("get_task while the rig runs %v %v", get(g.front, "rig"), get(g.front, "task", "actions"))
+		}
+		if again := f.call("rig_model", args(path, true)); again.code() != "conflict" || rigging(f) != 1 {
+			t.Fatalf("reskin while the rig runs: %s:\n%s", again.code(), again.text)
+		}
+		f.fake.JobState = "Succeeded"
+		g = f.call("get_task", map[string]any{"task_id": fakehyper.PackedID})
+		if get(g.front, "rig", "state") != "done" || get(g.front, "rig", "reskin") != "not sent" || !strings.Contains(g.text, "reskin true sends it") {
+			t.Fatalf("get_task after the rig %v:\n%s", get(g.front, "rig"), g.text)
+		}
+		if r = f.call("rig_model", args(path, true)); r.code() != "" || rigging(f) != 2 || get(r.front, "detail", "rig", "reskin") != "succeeded" {
+			t.Fatalf("reskin: %s %d:\n%s", r.code(), rigging(f), r.text)
+		}
+	})
+	t.Run("a rig of another skeleton", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		// The human template's Mixamo names cover the FBX's bones, so the
+		// reskin could be computed from it: the template refuses it.
+		f.fake.Tasks(fakehyper.PackedID).Rig = "human"
+		r := f.call("rig_model", args(path, true))
+		if r.code() != "conflict" || !strings.Contains(r.text, "human template rig") || rigging(f) != 0 {
+			t.Fatalf("human rig: %s:\n%s", r.code(), r.text)
+		}
+		// A custom rig with a bone more than the FBX.
+		f.fake.Tasks(fakehyper.PackedID).Rig, f.fake.Tasks(fakehyper.PackedID).RigSkinning = "custom", "shell"
+		bones, _ := fbx.Skeleton(fbxtest.Human())
+		var names []string
+		var parents []int
+		var inv [][16]float64
+		for _, b := range bones {
+			names, parents, inv = append(names, b.Name), append(parents, b.Parent), append(inv, b.Transform.Invert())
+		}
+		names, parents, inv = append(names, "Tail"), append(parents, 0), append(inv, bones[0].Transform.Invert())
+		f.fake.SetFile(fakehyper.PackedID+"/model.glb.rigging.rodinrig", fbxtest.RigFile(names, parents, inv))
+		r = f.call("rig_model", args(path, true))
+		if r.code() != "conflict" || !strings.Contains(r.text, "the rig has 23 bones and the FBX 22") || rigging(f) != 0 {
+			t.Fatalf("larger rig: %s:\n%s", r.code(), r.text)
+		}
+		if g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID}); get(g.front, "spend") != nil {
+			t.Fatalf("a refused reskin left ledger rows: %v", get(g.front, "spend"))
+		}
+	})
+}
+
+func contains(list any, v string) bool {
+	l, _ := list.([]any)
+	for _, x := range l {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// L6, L7: the plan split_parts sent is followed through get_task with its
+// picture, and step generate is sent only after a finished plan of the same
+// part, never while a split of the version still runs.
+func TestSplitPartsFollowsItsPlan(t *testing.T) {
+	gen := func(extra map[string]any) map[string]any {
+		a := map[string]any{"task_id": fakehyper.DraftID, "step": "generate", "expected_credits": 0.5}
+		for k, v := range extra {
+			a[k] = v
+		}
+		return a
+	}
+	t.Run("plan, wait false", func(t *testing.T) {
+		f := splitFixture(t)
+		f.fake.JobState = "Running"
+		if r := f.call("split_parts", map[string]any{"task_id": fakehyper.DraftID, "step": "plan", "expected_credits": 0, "wait": false}); r.code() != "" ||
+			!strings.Contains(r.text, "its bang_plan block says when the plan is made") {
+			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+		if r := f.call("split_parts", gen(nil)); r.code() != "conflict" || !strings.Contains(r.text, "still running") || f.fake.Calls("task/bang_generate") != 0 {
+			t.Fatalf("generate while the plan runs: %s:\n%s", r.code(), r.text)
+		}
+		g := f.call("get_task", map[string]any{"task_id": fakehyper.DraftID})
+		if get(g.front, "bang_plan", "state") != "running" || get(g.front, "bang_plan", "geometry_version") != "v2" || len(g.images()) != 1 {
+			t.Fatalf("get_task while the plan runs: %v, %d images", get(g.front, "bang_plan"), len(g.images()))
+		}
+		f.fake.JobState = "Succeeded"
+		g = f.call("get_task", map[string]any{"task_id": fakehyper.DraftID})
+		if get(g.front, "bang_plan", "state") != "succeeded" || len(g.images()) != 2 || !strings.Contains(g.text, "split_parts with step generate and version v2") {
+			t.Fatalf("get_task after the plan: %v, %d images:\n%s", get(g.front, "bang_plan"), len(g.images()), g.text)
+		}
+		if r := f.call("split_parts", gen(nil)); r.code() != "" || get(r.front, "detail", "split") != "succeeded" {
+			t.Fatalf("generate: %s:\n%s", r.code(), r.text)
+		}
+		if g = f.call("get_task", map[string]any{"task_id": fakehyper.DraftID}); get(g.front, "bang_plan") != nil || len(g.images()) != 1 {
+			t.Fatalf("get_task after the split still shows the plan: %v", get(g.front, "bang_plan"))
+		}
+	})
+	t.Run("a plan of another part", func(t *testing.T) {
+		f := splitFixture(t)
+		f.fake.Tasks(fakehyper.DraftID).Bangs = map[string][]string{"v2": {"b1"}}
+		part := map[string]any{"bang_version": "b1", "part": "root.2"} // the split's label 0.5
+		if r := f.call("split_parts", map[string]any{"task_id": fakehyper.DraftID, "step": "plan", "expected_credits": 0}); r.code() != "" {
+			t.Fatalf("whole plan: %s:\n%s", r.code(), r.text)
+		}
+		if r := f.call("split_parts", gen(part)); r.code() != "conflict" || !strings.Contains(r.text, "is of the whole model, not of part root.2 of Bang result b1") {
+			t.Fatalf("part split after a whole plan: %s:\n%s", r.code(), r.text)
+		}
+		planPart := map[string]any{"task_id": fakehyper.DraftID, "step": "plan", "bang_version": "b1", "part": "root.2", "expected_credits": -1}
+		if r := f.call("split_parts", planPart); r.code() != "" {
+			t.Fatalf("part plan: %s:\n%s", r.code(), r.text)
+		}
+		if r := f.call("split_parts", gen(nil)); r.code() != "conflict" || !strings.Contains(r.text, "is of part root.2 of Bang result b1, not of the whole model") {
+			t.Fatalf("whole split after a part plan: %s:\n%s", r.code(), r.text)
+		}
+		if f.fake.Calls("task/bang_generate") != 0 {
+			t.Fatal("a split was sent")
+		}
+		if r := f.call("split_parts", gen(part)); r.code() != "" || f.fake.Calls("task/bang_generate") != 1 {
+			t.Fatalf("part split after its plan: %s:\n%s", r.code(), r.text)
+		}
+	})
+	t.Run("a split still running", func(t *testing.T) {
+		f := splitFixture(t)
+		f.fake.Tasks(fakehyper.DraftID).Planned = true // a plan made elsewhere
+		f.fake.JobState = "Running"
+		if r := f.call("split_parts", gen(map[string]any{"wait": false})); r.code() != "" || f.fake.Calls("task/bang_generate") != 1 {
+			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+		for _, step := range []string{"generate", "both"} {
+			r := f.call("split_parts", map[string]any{"task_id": fakehyper.DraftID, "step": step, "expected_credits": 0.5})
+			if r.code() != "conflict" || !strings.Contains(r.text, "is still running") || f.fake.Calls("task/bang_generate") != 1 || f.fake.Calls("task/bang_plan") != 0 {
+				t.Fatalf("step %s while the split runs: %s:\n%s", step, r.code(), r.text)
+			}
+		}
+	})
+}
+
+// L2: the measured Bang confirm price holds for a draft fork_task made (its
+// ledger row names the task); any other extreme-low draft may hold a submit
+// freeze, so its price is not known.
+func TestBangConfirmQuoteNeedsAForkMadeHere(t *testing.T) {
+	f := splitFixture(t)
+	quote := func() toolReply {
+		return f.call("quote_cost", map[string]any{"operation": "confirm_geometry", "task_id": fakehyper.DraftID,
+			"settings": map[string]any{"mesh": "raw", "bang_version": "b1"}})
+	}
+	if q := quote(); get(q.front, "quote", "known") != false {
+		t.Fatalf("not forked here: %v", get(q.front, "quote"))
+	}
+	st, err := f.svc.Store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.AddLedger(store.LedgerEntry{Op: "fork_task", UUID: fakehyper.GeometryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishLedger(id, fakehyper.DraftID, nil, nil, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if q := quote(); get(q.front, "quote", "credits") != 0.5 || get(q.front, "quote", "measured") != true {
+		t.Fatalf("forked here: %v", get(q.front, "quote"))
 	}
 }

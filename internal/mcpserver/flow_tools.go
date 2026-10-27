@@ -76,7 +76,7 @@ type confirmGeometryArgs struct {
 	Smooth          *bool   `json:"smooth,omitempty" jsonschema:"smooth a quad mesh"`
 	Version         *string `json:"version,omitempty" jsonschema:"the draft version to confirm (default the newest; get_task lists versions)"`
 	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"confirm this Bang result (split_parts) of the draft version: the model keeps its parts, all in one UV group as the web confirms them"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for confirm_geometry on this task with the same mesh and smart_low_poly; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for confirm_geometry on this task with the same mesh, smart_low_poly and bang_version; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the confirmed geometry (default true)"`
 }
 

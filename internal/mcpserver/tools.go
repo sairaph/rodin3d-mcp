@@ -189,7 +189,7 @@ func (s *Server) registerTools() {
 			"and whether it was measured (the web app shows fixed price labels and the server decides the real amount; a price is known only "+
 			"where a web label or a recorded wallet change names it for that exact case, otherwise the quote says it is not known). Also "+
 			"returns the wallet, whether the account can afford it, and the operation's permission key and value in config.toml. Pass "+
-			"task_id to price an operation on that task (its model, tier, texture tier, stage and age are read from it) and the same "+
+			"task_id to price an operation on that task (its model, tier, texture tier, stage and age are read from it, and whether fork_task made it) and the same "+
 			"settings the call will get. Answers forbidden when the account's plan does not allow the operation or option.",
 		readTool, nonNull(quote), s.quoteCost)
 
@@ -209,7 +209,10 @@ func (s *Server) registerTools() {
 		"Read one task live from Hyper3D: its stage and state with the actions it allows, every stored setting grouped by stage (geometry, "+
 			"confirm, material, pack), the input images with their view tags and weights, geometry and material versions with the confirmed "+
 			"ones, the free redos left at a draft, the preview images available per stage (for get_preview), the packed files (for "+
-			"download_model) and the files already downloaded. The current stage's poster is attached as an image.",
+			"download_model), the files already downloaded and the paid and changing calls this tool made on it (spend). A geometry draft adds its Bang "+
+			"results (bang) and the newest Bang plan split_parts sent while no split of its version followed (bang_plan, with the plan's "+
+			"picture once it is made); a confirmed task adds its rig (rig: done or none, running while a rig call rig_model sent still runs, "+
+			"and the state of its reskin call). The current stage's poster is attached as an image.",
 		readTool, inputSchema[taskInput](nil), s.getTask)
 
 	wait := nonNull(inputSchema[waitInput](map[string]string{"timeout_seconds": "45"}))

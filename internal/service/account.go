@@ -121,19 +121,13 @@ func (s *Service) Account(ctx context.Context) (Result, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Signed in to Hyper3D as %s (%s plan). Wallet: %s credits available, %s frozen.\n",
 		info.Meta.Username, orUnknown(front.Plan), num(front.Wallet.Available), num(front.Wallet.Frozen))
-	allowed := []string{}
-	for _, k := range config.Keys {
-		if cfg.Permission.Allowed(k.Name) {
-			allowed = append(allowed, k.Name)
-		}
-	}
-	if len(allowed) == 0 {
-		fmt.Fprintf(&b, "\nEvery paid or changing operation is denied in %s; reads need no permission.\n", s.paths.Config)
+	if denied := cfg.Permission.Denied(); len(denied) == 0 {
+		fmt.Fprintf(&b, "\nEvery paid or changing operation is allowed by %s; reads need no permission.\n", s.paths.Config)
 	} else {
-		fmt.Fprintf(&b, "\nAllowed in %s: %s.\n", s.paths.Config, strings.Join(allowed, ", "))
+		fmt.Fprintf(&b, "\nDenied in %s: %s; every other operation is allowed.\n", s.paths.Config, strings.Join(denied, ", "))
 	}
 	if cfgErr != nil {
-		fmt.Fprintf(&b, "\nThe config file has a problem, so every write is denied until it is fixed: %s\n", cfgErr)
+		fmt.Fprintf(&b, "\nThe config file has a problem: %s\n", cfgErr)
 	}
 	b.WriteString("\nNext: list_tasks to see the generations, get_generation_options for the settings and the owner's recipes, quote_cost before any paid operation.")
 	return Result{Front: front, Body: b.String()}, nil

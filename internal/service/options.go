@@ -338,7 +338,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	fmt.Fprintf(&b, "\n\nWallet: %s credits available, %s frozen.", num(front.Wallet.Available), num(front.Wallet.Frozen))
 	fmt.Fprintf(&b, " Permission %s is %q in %s.", key, value, s.paths.Config)
 	if cfgErr != nil {
-		fmt.Fprintf(&b, " (The file has a problem, so every write is denied: %s.)", cfgErr)
+		fmt.Fprintf(&b, " (The file has a problem: %s.)", cfgErr)
 	}
 	b.WriteString("\n\nNext: get_account for the wallet and every permission.")
 	return Result{Front: front, Body: b.String()}, nil

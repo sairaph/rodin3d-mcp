@@ -3,7 +3,9 @@
 // credits. Reads are always allowed and have no key.
 //
 // The file is read again on every call that needs it, so an edit applies
-// without a restart. A missing file means every key is "deny".
+// without a restart. Every operation is allowed unless its key is set to
+// "deny" (D5): a missing file, a missing key, a file that cannot be used and
+// a value other than "deny" all mean allow.
 package config
 
 import (
@@ -46,7 +48,8 @@ var Keys = []Key{
 	{"texture_model", "texture_model"},
 }
 
-// Permissions is the [permission] table. Every field holds Allow or Deny.
+// Permissions is the [permission] table. Every field holds Allow or Deny; a
+// field holding anything else (the zero value included) counts as Allow.
 type Permissions struct {
 	Generate        string `toml:"generate" yaml:"generate"`
 	Redo            string `toml:"redo" yaml:"redo"`
@@ -67,11 +70,11 @@ type Config struct {
 	Permission Permissions `toml:"permission"`
 }
 
-// Default is the configuration without a file: every key denied.
+// Default is the configuration without a file: every key allowed.
 func Default() Config {
 	p := Permissions{}
 	for _, k := range Keys {
-		*p.field(k.Name) = Deny
+		*p.field(k.Name) = Allow
 	}
 	return Config{Permission: p}
 }
@@ -116,10 +119,22 @@ func (p Permissions) Get(key string) (value string, ok bool) {
 	return *f, true
 }
 
-// Allowed reports whether key is set to allow. Unknown keys are denied.
+// Allowed reports whether key is allowed: every value but Deny allows. A
+// name that is not a permission key is not allowed.
 func (p Permissions) Allowed(key string) bool {
 	v, ok := p.Get(key)
-	return ok && v == Allow
+	return ok && v != Deny
+}
+
+// Denied lists the keys set to deny, in Keys order.
+func (p Permissions) Denied() []string {
+	var out []string
+	for _, k := range Keys {
+		if !p.Allowed(k.Name) {
+			out = append(out, k.Name)
+		}
+	}
+	return out
 }
 
 // Set changes key to value (Allow or Deny).
@@ -141,6 +156,7 @@ func Encode(p Permissions) []byte {
 	var b bytes.Buffer
 	b.WriteString("# rodin3d-mcp write permissions: \"allow\" or \"deny\" for each operation that\n")
 	b.WriteString("# spends credits or changes a task on Hyper3D. Reads need no permission.\n")
+	b.WriteString("# Only \"deny\" blocks an operation: a missing key or any other value allows it.\n")
 	b.WriteString("# Every call reads this file again, so an edit applies at once.\n\n")
 	b.WriteString("[permission]\n")
 	width := 0
@@ -148,8 +164,8 @@ func Encode(p Permissions) []byte {
 		width = max(width, len(k.Name))
 	}
 	for _, k := range Keys {
-		v, _ := p.Get(k.Name)
-		if v != Allow {
+		v := Allow
+		if !p.Allowed(k.Name) {
 			v = Deny
 		}
 		fmt.Fprintf(&b, "%-*s = %-7s # %s\n", width, k.Name, `"`+v+`"`, k.Tools)
@@ -163,15 +179,20 @@ func Save(path string, p Permissions) error {
 	return domain.WriteFileAtomic(path, Encode(p), 0o600)
 }
 
-// ErrMalformed marks a config file that exists but cannot be used. Load
-// returns the defaults together with it, so callers keep working with every
-// write denied and can still report the problem.
+// ErrMalformed marks a config file that has a problem: it cannot be parsed,
+// has an unknown key, or a value other than allow or deny. Load returns the
+// configuration in force together with it, so callers keep working and can
+// still report the problem.
 var ErrMalformed = errors.New("config.toml is malformed")
 
-// Load reads path. A missing file is the defaults and no error. A file that
-// cannot be parsed, has an unknown key, or a value other than allow or deny
-// returns the defaults and an error wrapping ErrMalformed that names the
-// problem.
+// Load reads path and returns the configuration in force; an error only
+// reports a problem and never denies anything. A missing file is the
+// defaults (every key allowed) and no error, and a missing key is allowed.
+// A file that cannot be read or parsed, or has an unknown key, is the
+// defaults and an error naming the problem (wrapping ErrMalformed unless the
+// read failed). A value other than allow or deny counts as allow, the other
+// keys keep their values, and the error wrapping ErrMalformed names each
+// such key.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
@@ -179,7 +200,7 @@ func Load(path string) (Config, error) {
 		return cfg, nil
 	}
 	if err != nil {
-		return cfg, fmt.Errorf("read %s: %w", path, err)
+		return cfg, fmt.Errorf("read %s: %w; every operation is allowed until it can be read", path, err)
 	}
 	var parsed Config
 	dec := toml.NewDecoder(bytes.NewReader(data))
@@ -187,10 +208,11 @@ func Load(path string) (Config, error) {
 	if err := dec.Decode(&parsed); err != nil {
 		var strict *toml.StrictMissingError
 		if errors.As(err, &strict) {
-			return Default(), fmt.Errorf("%w: %s: unknown key: %s", ErrMalformed, path, strings.TrimSpace(strict.String()))
+			return cfg, fmt.Errorf("%w: %s: unknown key: %s; every operation is allowed until it is fixed", ErrMalformed, path, strings.TrimSpace(strict.String()))
 		}
-		return Default(), fmt.Errorf("%w: %s: %v", ErrMalformed, path, err)
+		return cfg, fmt.Errorf("%w: %s: %v; every operation is allowed until it is fixed", ErrMalformed, path, err)
 	}
+	var bad []string
 	for _, k := range Keys {
 		v := strings.TrimSpace(*parsed.Permission.field(k.Name))
 		switch v {
@@ -199,8 +221,12 @@ func Load(path string) (Config, error) {
 		case Allow, Deny:
 			*cfg.Permission.field(k.Name) = v
 		default:
-			return Default(), fmt.Errorf("%w: %s: [permission] %s = %q; use \"allow\" or \"deny\"", ErrMalformed, path, k.Name, v)
+			// Only "deny" denies: the key keeps the default, allow.
+			bad = append(bad, fmt.Sprintf("%s = %q", k.Name, v))
 		}
+	}
+	if len(bad) > 0 {
+		return cfg, fmt.Errorf("%w: %s: [permission] %s: only \"deny\" denies, so each counts as \"allow\"; use \"allow\" or \"deny\"", ErrMalformed, path, strings.Join(bad, ", "))
 	}
 	return cfg, nil
 }

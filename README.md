@@ -18,9 +18,8 @@ the plan and credits you already have.
 - **A viewer window** the agent opens when you ask to see something: the
   model, its stages, the input images with their view tags, the texture maps.
   You and the agent both move and change the view.
-- **Money stays in your hands:** every paid or changing operation is denied
-  until you allow it, and a paid call runs only at the price the agent was
-  quoted.
+- **Money stays in your hands:** a paid call runs only at the price the agent
+  was quoted, and any paid or changing operation you deny is refused.
 
 rodin3d-mcp is one binary for Windows, macOS and Linux (amd64 and arm64). It
 needs no browser at run time and no other software.
@@ -49,7 +48,8 @@ release's `SHA256SUMS.txt`, puts it on your PATH (`~/.rodin3d-mcp/bin`, or
 1. **AI clients:** pick the clients on this computer that should use the
    server; each one is registered as `rodin3d` running `rodin3d-mcp mcp`.
 2. **Sign in** to Hyper3D (below).
-3. **Permissions:** choose what the agent may do without asking (below).
+3. **Permissions:** every operation starts allowed; deny the ones the agent
+   should not run (below).
 
 Run the setup again at any time with `rodin3d-mcp install`.
 `rodin3d-mcp install --yes --all` registers every detected client without
@@ -93,8 +93,10 @@ remove them first with `rodin3d-mcp uninstall --scope project --dir <project>`.
 rodin3d-mcp signs in with Hyper3D's own authorization page; it never sees
 your password.
 
-- In the setup, in the app, or with `rodin3d-mcp login`, it shows a link and a
-  QR code of it, and opens the link in the browser of this computer.
+- The setup and the app open the sign-in link in the browser of this
+  computer. Press `c` to copy the link for another device instead; a QR code
+  of it shows when the terminal is large enough. `rodin3d-mcp login` prints
+  the link (and the QR code in a terminal) and opens the browser.
 - Sign in to Hyper3D there if asked (with any method the site offers) and
   click **Authorize** on the page "Connect rodin3d-mcp to Hyper3D task API".
   The page says Hyper3D cannot verify the app: rodin3d-mcp registered itself
@@ -102,7 +104,7 @@ your password.
 - If that browser runs on this computer, the sign-in finishes by itself.
 - On another device (a phone, or when this computer has no browser, such as
   over SSH) the browser ends on a page that cannot connect to `127.0.0.1`.
-  Copy that page's whole address and paste it into the setup, or run
+  Copy that page's whole address, press `p` in the setup and paste it, or run
   `rodin3d-mcp login "<address>"` (quote it).
 
 The session is kept in `~/.rodin3d-mcp/credentials.json`, readable only by
@@ -114,27 +116,30 @@ Hyper3D and deletes it here. An agent can also start a sign-in with the
 
 Reads (tasks, previews, downloads, quotes) are always allowed. Each operation
 that spends credits or changes a task has one key in
-`~/.rodin3d-mcp/config.toml`, and every key is `deny` until you set it to
-`allow`:
+`~/.rodin3d-mcp/config.toml`, and every key is `allow` until you set it to
+`deny`:
 
 ```toml
 [permission]
-generate         = "deny"  # generate_model
-redo             = "deny"  # redo_geometry, redo_material, select_candidate
-confirm_geometry = "deny"  # confirm_geometry
-generate_texture = "deny"  # generate_texture
-confirm_material = "deny"  # confirm_material
-export           = "deny"  # export_model
-fork             = "deny"  # fork_task
-agentic          = "deny"  # generate_agentic
-split_parts      = "deny"  # split_parts
-rig              = "deny"  # rig_model
-animate          = "deny"  # animate_model
-texture_model    = "deny"  # texture_model
+generate         = "allow" # generate_model
+redo             = "allow" # redo_geometry, redo_material, select_candidate
+confirm_geometry = "allow" # confirm_geometry
+generate_texture = "allow" # generate_texture
+confirm_material = "allow" # confirm_material
+export           = "allow" # export_model
+fork             = "allow" # fork_task
+agentic          = "allow" # generate_agentic
+split_parts      = "allow" # split_parts
+rig              = "allow" # rig_model
+animate          = "allow" # animate_model
+texture_model    = "allow" # texture_model
 ```
 
-Set them in the setup, under **Permissions** in the app (`rodin3d-mcp` with
-no arguments), or by editing the file; every call reads it again, so a change
+Only `"deny"` blocks an operation: without the file, without a key, with a
+file that cannot be read, and with any other value the operation is allowed
+(`get_account` and `rodin3d-mcp doctor` report a file with a problem). Set
+them in the setup, under **Permissions** in the app (`rodin3d-mcp` with no
+arguments), or by editing the file; every call reads it again, so a change
 applies at once. A denied call fails and names the key to change.
 
 On top of that, every paid tool takes `expected_credits`: it runs only when

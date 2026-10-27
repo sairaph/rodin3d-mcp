@@ -221,16 +221,31 @@ func TestLoginToolStartsAndFinishes(t *testing.T) {
 
 func TestAccount(t *testing.T) {
 	f := newFixture(t, true, false)
-	if err := os.WriteFile(f.paths.Config, []byte("[permission]\nexport = \"allow\"\n"), 0o600); err != nil {
+	// No file: every operation is allowed.
+	r := f.call("get_account", nil)
+	if r.res.IsError || get(r.front, "permissions", "generate") != "allow" || !strings.Contains(r.text, "Every paid or changing operation is allowed") {
+		t.Fatalf("account without config.toml: %s", r.text)
+	}
+	if err := os.WriteFile(f.paths.Config, []byte("[permission]\nexport = \"deny\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := f.call("get_account", nil)
+	r = f.call("get_account", nil)
 	if r.res.IsError {
 		t.Fatal(r.text)
 	}
 	if num(get(r.front, "wallet", "available")) != 53.5 || num(get(r.front, "wallet", "regular")) != 25 || get(r.front, "plan") != "Creator" ||
-		get(r.front, "permissions", "export") != "allow" || get(r.front, "permissions", "generate") != "deny" || get(r.front, "login", "state") != "signed_in" {
+		get(r.front, "permissions", "export") != "deny" || get(r.front, "permissions", "generate") != "allow" || get(r.front, "login", "state") != "signed_in" ||
+		!strings.Contains(r.text, "Denied in "+f.paths.Config+": export; every other operation is allowed.") {
 		t.Fatalf("account: %s", r.text)
+	}
+	// A value other than deny allows, and the reply says so.
+	if err := os.WriteFile(f.paths.Config, []byte("[permission]\nexport = \"no\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = f.call("get_account", nil)
+	if r.res.IsError || get(r.front, "permissions", "export") != "allow" || r.front["config_error"] == nil ||
+		!strings.Contains(r.text, `export = "no": only "deny" denies, so each counts as "allow"`) {
+		t.Fatalf("account with a bad value: %s", r.text)
 	}
 }
 
@@ -412,8 +427,18 @@ func TestQuote(t *testing.T) {
 	// The draft is gen-2.5 high and the plan allows raw: the measured raw
 	// confirm after a high submit took nothing.
 	if r.res.IsError || get(r.front, "quote", "credits") != 0 || get(r.front, "quote", "measured") != true || r.front["affordable"] != nil ||
-		get(r.front, "permission", "value") != "deny" {
+		get(r.front, "permission", "value") != "allow" {
 		t.Fatalf("confirm: %s", r.text)
+	}
+	if err := os.WriteFile(f.paths.Config, []byte("[permission]\nconfirm_geometry = \"deny\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = f.call("quote_cost", map[string]any{"operation": "confirm_geometry", "task_id": fakehyper.DraftID})
+	if r.res.IsError || get(r.front, "permission", "value") != "deny" || !strings.Contains(r.text, `Permission confirm_geometry is "deny"`) {
+		t.Fatalf("confirm denied: %s", r.text)
+	}
+	if err := os.Remove(f.paths.Config); err != nil {
+		t.Fatal(err)
 	}
 	r = f.call("quote_cost", map[string]any{"operation": "generate_model", "settings": map[string]any{"tier": "medium"}})
 	if get(r.front, "quote", "credits") != 0 || get(r.front, "quote", "free_reason") == nil {

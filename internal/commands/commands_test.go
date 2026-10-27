@@ -183,7 +183,7 @@ func TestCommandsAgainstTheFake(t *testing.T) {
 		t.Fatalf("bad argument: %d %s", code, errOut)
 	}
 	out.Reset()
-	if _, code := reg.Dispatch(ctx, "permissions", nil); code != 0 || !strings.Contains(out.String(), "generate = deny") {
+	if _, code := reg.Dispatch(ctx, "permissions", nil); code != 0 || !strings.Contains(out.String(), "generate = allow") {
 		t.Fatalf("permissions: %s", out)
 	}
 	if strings.Contains(out.String()+errOut.String(), fakehyper.SignatureMark) {

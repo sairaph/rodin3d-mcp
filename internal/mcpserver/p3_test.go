@@ -23,13 +23,19 @@ var paidProcedures = []string{
 	"task/rodin_rigging_pack",
 }
 
-// allow writes config.toml with keys allowed (every other key denied).
-func (f *fixture) allow(keys ...string) {
+// allow writes config.toml with keys allowed (a key not in the file is
+// allowed too).
+func (f *fixture) allow(keys ...string) { f.permissions("allow", keys...) }
+
+// deny writes config.toml with keys denied (every other key allowed).
+func (f *fixture) deny(keys ...string) { f.permissions("deny", keys...) }
+
+func (f *fixture) permissions(value string, keys ...string) {
 	f.t.Helper()
 	var b strings.Builder
 	b.WriteString("[permission]\n")
 	for _, k := range keys {
-		b.WriteString(k + " = \"allow\"\n")
+		b.WriteString(k + " = \"" + value + "\"\n")
 	}
 	if err := os.MkdirAll(filepath.Dir(f.paths.Config), 0o755); err != nil {
 		f.t.Fatal(err)
@@ -70,7 +76,7 @@ func TestP3PaidToolsRefuseBeforeAnyRequest(t *testing.T) {
 		name, key, tool string
 		args            map[string]any
 		code            string
-	}
+	} // key: the [permission] key allowed, or denied when it starts with -
 	agentic := func(exp float64) map[string]any {
 		return map[string]any{"images": []string{img}, "budget": "basic", "expected_credits": exp}
 	}
@@ -89,26 +95,26 @@ func TestP3PaidToolsRefuseBeforeAnyRequest(t *testing.T) {
 	walk := []string{"human/Walking"}
 	cases := []tc{
 		// generate_agentic: basic is 0.5 (measured); every budget has a price.
-		{"agentic denied", "", "generate_agentic", agentic(0.5), "forbidden"},
+		{"agentic denied", "-agentic", "generate_agentic", agentic(0.5), "forbidden"},
 		{"agentic mismatch", "agentic", "generate_agentic", agentic(1), "conflict"},
 		{"agentic -1 for known", "agentic", "generate_agentic", agentic(-1), "conflict"},
 		// split_parts on a gen-2.5 high draft: generate 0.5 (label), both not known.
-		{"split denied", "", "split_parts", split("generate", 0.5), "forbidden"},
+		{"split denied", "-split_parts", "split_parts", split("generate", 0.5), "forbidden"},
 		{"split mismatch", "split_parts", "split_parts", split("generate", 0), "conflict"},
 		{"split -1 for known", "split_parts", "split_parts", split("generate", -1), "conflict"},
 		{"split unknown without -1", "split_parts", "split_parts", split("both", 0.5), "conflict"},
 		// rig_model on a textured gen-2.5 high task: human 0 (measured), dragon not known.
-		{"rig denied", "", "rig_model", rig("human", 0), "forbidden"},
+		{"rig denied", "-rig", "rig_model", rig("human", 0), "forbidden"},
 		{"rig mismatch", "rig", "rig_model", rig("human", 0.5), "conflict"},
 		{"rig -1 for known", "rig", "rig_model", rig("human", -1), "conflict"},
 		{"rig unknown without -1", "rig", "rig_model", rig("dragon", 0), "conflict"},
 		// animate_model: one preset 0 (measured), two not known.
-		{"animate denied", "", "animate_model", animate(walk, 0), "forbidden"},
+		{"animate denied", "-animate", "animate_model", animate(walk, 0), "forbidden"},
 		{"animate mismatch", "animate", "animate_model", animate(walk, 0.5), "conflict"},
 		{"animate -1 for known", "animate", "animate_model", animate(walk, -1), "conflict"},
 		{"animate unknown without -1", "animate", "animate_model", animate([]string{"human/Walking", "human/Run"}, 0), "conflict"},
 		// texture_model: one image 0 (measured), two not known.
-		{"texture denied", "", "texture_model", texture([]string{img}, 0), "forbidden"},
+		{"texture denied", "-texture_model", "texture_model", texture([]string{img}, 0), "forbidden"},
 		{"texture mismatch", "texture_model", "texture_model", texture([]string{img}, 0.5), "conflict"},
 		{"texture -1 for known", "texture_model", "texture_model", texture([]string{img}, -1), "conflict"},
 		{"texture unknown without -1", "texture_model", "texture_model", texture([]string{img, img2}, 0), "conflict"},
@@ -117,7 +123,9 @@ func TestP3PaidToolsRefuseBeforeAnyRequest(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t, true, true)
 			f.fake.Tasks(fakehyper.PackedID).Rig = "human"
-			if c.key != "" {
+			if k, denied := strings.CutPrefix(c.key, "-"); denied {
+				f.deny(k)
+			} else {
 				f.allow(c.key)
 			}
 			r := f.call(c.tool, c.args)

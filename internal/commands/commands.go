@@ -328,7 +328,10 @@ func permissions(s *service.Service) (service.Result, error) {
 		front.Error = err.Error()
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Each key allows or denies one paid or changing operation; reads need none. Edit %s (values \"allow\" or \"deny\"); every call reads it again.\n\n", path)
+	fmt.Fprintf(&b, "Each key allows or denies one paid or changing operation; reads need none. Edit %s (values \"allow\" or \"deny\"; only \"deny\" blocks, a missing key allows); every call reads it again.\n\n", path)
+	if err != nil {
+		fmt.Fprintf(&b, "The file has a problem: %s\n\n", err)
+	}
 	for _, k := range config.Keys {
 		v, _ := cfg.Permission.Get(k.Name)
 		fmt.Fprintf(&b, "- %s = %s (%s)\n", k.Name, v, k.Tools)

@@ -158,8 +158,8 @@ func (s *Service) signedIn(ctx context.Context) (*auth.Credentials, error) {
 	return c, nil
 }
 
-// Config reads config.toml; a malformed file yields the defaults (every
-// write denied) and the error.
+// Config reads config.toml: the configuration in force (config.Load), and
+// the problem of a file that has one.
 func (s *Service) Config() (config.Config, error) { return config.Load(s.paths.Config) }
 
 // EnsureDaemon starts the background syncer when signed in. It never fails a

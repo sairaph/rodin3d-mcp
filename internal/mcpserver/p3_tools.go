@@ -81,7 +81,7 @@ func (s *Server) registerP3Tools() {
 		"Start a Rodin Agentic task from 1-5 images of one object: Hyper3D plans and builds the model within a time budget (basic about 3 "+
 			"minutes, standard 5, pro 10). The server picks the producer: high-poly makes an ordinary Rodin task that ends as a geometry "+
 			"draft (confirm_geometry and the other stage tools continue it); n-gons makes a RodinAgentic task, which no paid or stage tool here acts on "+
-			"(get_task, wait_task and get_preview read it; set_private changes its privacy). Needs [permission] agentic = \"allow\" and expected_credits from "+
+			"(get_task, wait_task and get_preview read it; set_private changes its privacy). Refused when [permission] agentic = \"deny\"; needs expected_credits from "+
 			"quote_cost (operation generate_agentic, settings.budget). The new task is made private unless public is true. Returns the task "+
 			"and the producer; follow it with wait_task. Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, ag, s.generateAgentic)
@@ -98,8 +98,8 @@ func (s *Server) registerP3Tools() {
 			"refused before any paid request while the newest plan split_parts sent on the version runs, when it failed or was canceled, or when it is of another part (bang_generate "+
 			"names no part); it takes the plan's strength. A split of the same version still running is not sent again. When the split "+
 			"finishes within the wait, its parts file is saved in the task's files folder and a render attached; otherwise get_task lists the "+
-			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
-			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength, version and part).",
+			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Refused when [permission] split_parts = \"deny\"; "+
+			"needs expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength, version and part).",
 		paidTool, sp, s.splitParts)
 
 	rg := nonNull(inputSchema[rigArgs](map[string]string{"wait": "true"}))
@@ -114,7 +114,7 @@ func (s *Server) registerP3Tools() {
 			"bone hierarchy, a skeleton described in words, or the skeleton of an FBX file (two calls, as the web's Import FBX: the rig from "+
 			"its bones, then the reskin to their frames; reskin true sends only the second). The rig is kept by Hyper3D with the task: get_task "+
 			"shows it as rig, with the rig and reskin calls this tool sent while they run; a call while one of them still runs is refused before "+
-			"any paid request. animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
+			"any paid request. animate_model exports the rigged model. Refused when [permission] rig = \"deny\"; needs expected_credits from quote_cost (operation "+
 			"rig_model, task_id, settings.template and skinning).",
 		paidTool, rg, s.rigModel)
 
@@ -126,7 +126,7 @@ func (s *Server) registerP3Tools() {
 	withEnum(an, "material", "all", "pbr", "shaded")
 	addTool(s, "animate_model", "Export the rigged model with animations",
 		"Export a rigged task (rig_model) with up to 10 animations: presets from list_animation_presets and your own FBX animations. "+
-			"Needs [permission] animate = \"allow\" and expected_credits from quote_cost (operation animate_model, task_id, settings.format, "+
+			"Refused when [permission] animate = \"deny\"; needs expected_credits from quote_cost (operation animate_model, task_id, settings.format, "+
 			"resolution, material, animations and animation_files). When the export finishes within the wait, returns the exported file "+
 			"names; otherwise get_task lists the files once it is done. download_model saves them.",
 		paidTool, an, s.animateModel)
@@ -150,8 +150,8 @@ func (s *Server) registerP3Tools() {
 	withEnum(tm, "mode", "default", "focal", "zero", "speedy")
 	addTool(s, "texture_model", "Texture your own model",
 		"Start a Rodin 3D Editing task from your own model file and pictures of the object (the web's 3D Editing): the task runs the "+
-			"ordinary stages, so confirm_geometry, generate_texture and export_model follow. Needs [permission] texture_model = \"allow\" and "+
-			"expected_credits from quote_cost (operation texture_model, settings.model and images). The new task is made private unless public is true. "+
+			"ordinary stages, so confirm_geometry, generate_texture and export_model follow. Refused when [permission] texture_model = \"deny\"; "+
+			"needs expected_credits from quote_cost (operation texture_model, settings.model and images). The new task is made private unless public is true. "+
 			"Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, tm, s.textureModel)
 }

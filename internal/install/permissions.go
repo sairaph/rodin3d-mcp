@@ -13,8 +13,8 @@ import (
 )
 
 // Permissions is the screen that sets the [permission] table of config.toml,
-// shared by the installer and the app: one row per key, every key denied
-// until the user allows it (D5).
+// shared by the installer and the app: one row per key, every key allowed
+// until the user denies it (D5).
 type Permissions struct {
 	path    string
 	perms   config.Permissions
@@ -35,9 +35,9 @@ const (
 	PermissionsQuit                   // ctrl+c
 )
 
-// NewPermissions reads path. A missing file shows every key denied; a
-// malformed one shows every key denied and the problem, and saving replaces
-// it.
+// NewPermissions reads path. A missing file shows every key allowed; a
+// malformed one shows the values in force (config.Load) and the problem, and
+// saving replaces it.
 func NewPermissions(path string) *Permissions {
 	p := &Permissions{path: path}
 	p.Reload()
@@ -87,7 +87,7 @@ func (p *Permissions) Update(msg tea.Msg) PermissionsEvent {
 		_ = p.perms.Set(key, next)
 		p.dirty, p.message = true, ""
 	case "a":
-		// Allow every key, or deny every key when all are allowed.
+		// Allow every key, or deny every key when all are allowed already.
 		all := true
 		for _, key := range config.Keys {
 			all = all && p.perms.Allowed(key.Name)
@@ -127,7 +127,7 @@ func (p *Permissions) View(back string) string {
 	st := theme.Styles()
 	var b strings.Builder
 	b.WriteString("  Which operations may an AI agent run without asking you? Each one spends\n")
-	b.WriteString("  credits or changes a task on Hyper3D. Every one is denied until you allow\n")
+	b.WriteString("  credits or changes a task on Hyper3D. Every one is allowed until you deny\n")
 	b.WriteString("  it; reading tasks, previews and downloads needs no permission.\n\n")
 	width := 0
 	for _, k := range config.Keys {
@@ -148,7 +148,7 @@ func (p *Permissions) View(back string) string {
 	switch {
 	case p.loadErr != nil && errors.Is(p.loadErr, config.ErrMalformed):
 		b.WriteString(st.Err.Render("  "+p.loadErr.Error()) + "\n")
-		b.WriteString(st.Dim.Render("  Every operation is denied until it is fixed; saving here replaces the file.") + "\n")
+		b.WriteString(st.Dim.Render("  The values above are the ones in force; saving here replaces the file.") + "\n")
 	case p.loadErr != nil:
 		b.WriteString(st.Err.Render("  "+p.loadErr.Error()) + "\n")
 	case !p.exists:

@@ -8,19 +8,22 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sairaph/mcp-wizard/tui"
 
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
-	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 )
 
 // SignIn is the Hyper3D sign-in screen of the installer and the app (D20):
-// it starts a sign-in, opens the browser of this computer, and shows the
-// link and a QR code of it for any other device. The loopback listener
-// finishes the sign-in when the browser runs here; otherwise the user pastes
-// the final address (the page that cannot connect to 127.0.0.1).
+// it starts a sign-in and opens the browser of this computer; c copies the
+// link for any other device, and a QR code of it shows when the terminal
+// fits it. The loopback listener finishes the sign-in when the browser runs
+// here; otherwise p opens a field for the final address (the page that
+// cannot connect to 127.0.0.1). The link itself is never printed: cut at
+// the terminal's width it does not survive a copy from the screen.
 type SignIn struct {
 	ctx context.Context
 	svc *service.Service
@@ -32,12 +35,18 @@ type SignIn struct {
 	user    string // the account signed in (choice and done phases)
 	started *auth.Started
 	opened  bool
+	pasting bool   // the paste field is shown (p)
+	copied  string // the confirmation of c
+	osc52   string // the OSC 52 sequence of a copy through the terminal
 	input   string
 	message string
 	frame   int
 	width   int
 	height  int
 }
+
+// copyText puts text on the system clipboard (tests replace it).
+var copyText = clipboard.WriteAll
 
 type signPhase int
 
@@ -142,6 +151,7 @@ func (s *SignIn) Update(msg tea.Msg) (SignInEvent, tea.Cmd) {
 			return SignInNone, nil
 		}
 		s.started, s.opened, s.phase, s.input, s.message = msg.started, msg.opened, signWaiting, "", ""
+		s.pasting, s.copied, s.osc52 = false, "", ""
 		return SignInNone, s.listen(msg.started)
 	case signOutcomeMsg:
 		if msg.started != s.started || (s.phase != signWaiting && s.phase != signCompleting) {
@@ -225,10 +235,12 @@ func (s *SignIn) key(k tea.KeyMsg) (SignInEvent, tea.Cmd) {
 			return SignInNone, s.start()
 		}
 	case signWaiting:
+		if !s.pasting {
+			return s.waitingKey(k)
+		}
 		switch k.Type {
 		case tea.KeyEsc:
-			s.cancel()
-			s.phase, s.message = signChoice, "Sign-in cancelled."
+			s.pasting, s.input = false, ""
 			return SignInNone, nil
 		case tea.KeyEnter:
 			address := strings.TrimSpace(s.input)
@@ -248,17 +260,45 @@ func (s *SignIn) key(k tea.KeyMsg) (SignInEvent, tea.Cmd) {
 		case tea.KeyCtrlU:
 			s.input = ""
 		case tea.KeyRunes, tea.KeySpace:
-			if k.String() == "o" && s.input == "" && !k.Paste {
-				// o on an empty field opens the link again.
-				s.opened = s.svc.OpenBrowser(s.started.AuthorizeURL) == nil
-				return SignInNone, nil
-			}
 			s.input += string(k.Runes)
 		}
 	case signDone:
 		if k.Type == tea.KeyEnter {
 			return SignInDone, nil
 		}
+	}
+	return SignInNone, nil
+}
+
+// waitingKey handles a key while the sign-in waits and the paste field is
+// hidden: c copies the link, o opens it again, p shows the field. A paste
+// opens the field with what was pasted.
+func (s *SignIn) waitingKey(k tea.KeyMsg) (SignInEvent, tea.Cmd) {
+	if k.Paste {
+		s.pasting, s.input, s.copied = true, string(k.Runes), ""
+		return SignInNone, nil
+	}
+	switch k.String() {
+	case "esc":
+		s.cancel()
+		s.phase, s.message = signChoice, "Sign-in cancelled."
+	case "c":
+		s.message, s.osc52 = "", ""
+		if err := copyText(s.started.AuthorizeURL); err != nil {
+			// No clipboard tool here (a Linux without xclip, xsel or
+			// wl-copy, often over SSH): ask the terminal to copy it.
+			s.osc52, s.copied = ansi.SetSystemClipboard(s.started.AuthorizeURL), "Link copied through the terminal (OSC 52)."
+		} else {
+			s.copied = "Link copied."
+		}
+	case "o":
+		s.message, s.copied = "", ""
+		s.opened = s.svc.OpenBrowser(s.started.AuthorizeURL) == nil
+		if !s.opened {
+			s.message = "No browser could be opened on this computer: press c to copy the link."
+		}
+	case "p":
+		s.pasting, s.input, s.copied = true, "", ""
 	}
 	return SignInNone, nil
 }
@@ -291,7 +331,10 @@ func (s *SignIn) Hints() []tui.Hint {
 	case signChoice:
 		return []tui.Hint{{Key: "↑↓", Label: "move"}, {Key: "enter", Label: "select"}, {Key: "esc", Label: "back"}}
 	case signWaiting:
-		return []tui.Hint{{Key: "enter", Label: "use the pasted address"}, {Key: "o", Label: "open the link again"}, {Key: "esc", Label: "cancel"}}
+		if s.pasting {
+			return []tui.Hint{{Key: "enter", Label: "check address"}, {Key: "esc", Label: "hide field"}}
+		}
+		return []tui.Hint{{Key: "c", Label: "copy link"}, {Key: "o", Label: "open again"}, {Key: "p", Label: "paste address"}, {Key: "esc", Label: "cancel"}}
 	case signDone:
 		return []tui.Hint{{Key: "enter", Label: "continue"}}
 	}
@@ -310,8 +353,7 @@ func (s *SignIn) View() string {
 		if s.user != "" {
 			fmt.Fprintf(&b, "  Signed in to Hyper3D as %s.\n\n", s.user)
 		} else {
-			b.WriteString("  rodin3d-mcp works on your Hyper3D account: sign in with the browser on\n")
-			b.WriteString("  this computer, or on any other device (phone, another computer).\n\n")
+			b.WriteString("  rodin3d-mcp works on your Hyper3D account.\n\n")
 		}
 		b.WriteString(tui.ActionMenu(theme, s.cursor, s.options()...))
 	case signStarting:
@@ -319,7 +361,7 @@ func (s *SignIn) View() string {
 	case signWaiting, signCompleting:
 		s.viewWaiting(&b)
 	case signDone:
-		fmt.Fprintf(&b, "  %s\n", st.On.Render("Signed in to Hyper3D as "+s.user+"."))
+		fmt.Fprintf(&b, "  %s\n", st.On.Render("Signed in as "+s.user+"."))
 	}
 	if s.message != "" {
 		// Wrapped: the terminal cuts a line longer than its width.
@@ -328,79 +370,78 @@ func (s *SignIn) View() string {
 			b.WriteString(st.Err.Render("  "+line) + "\n")
 		}
 	}
+	if s.phase == signWaiting || s.phase == signCompleting {
+		s.viewQR(&b)
+	}
 	if hints := s.Hints(); len(hints) > 0 {
 		b.WriteString("\n" + tui.Footer(theme, tui.Hints(theme, hints...)) + "\n")
 	}
 	return b.String()
 }
 
+// viewWaiting is the waiting screen: what to do, the confirmation of c, and
+// the paste field once p showed it. The link itself is never printed.
 func (s *SignIn) viewWaiting(b *strings.Builder) {
-	theme := tui.DefaultTheme
-	st := theme.Styles()
-	url := s.started.AuthorizeURL
-	b.WriteString("  Open this link on any device, sign in to Hyper3D if asked, and click\n")
-	b.WriteString("  Authorize on the page \"Connect rodin3d-mcp to Hyper3D task API\".\n")
-	if s.opened {
-		b.WriteString(st.Dim.Render("  (The browser of this computer was opened with it.)") + "\n")
-	}
-	b.WriteString("\n")
-	// The link is cut into lines of the terminal's width with no indent: the
-	// terminal would cut a longer line, and a browser's address bar drops
-	// the line breaks of a pasted address.
-	b.WriteString(breakLines(url, s.width) + "\n\n")
-
-	text := 14 // lines of text besides the link and the QR code
-	qr := service.QRText(url)
+	st := tui.DefaultTheme.Styles()
+	var lead string
 	switch {
-	case qr == "":
-	case fits(qr, s.width, s.height-text-lineCount(url, s.width)):
-		b.WriteString(qr + "\n")
+	case !s.opened:
+		lead = "Press c to copy the sign-in link, open it on any device and click Authorize, then p to paste the address it ends on."
+	case s.started.Listening:
+		lead = "A browser tab opened on this computer: click Authorize there."
 	default:
-		w, h := textWidth(qr), lineCount(qr, 0)+text+lineCount(url, s.width)
-		b.WriteString(st.Dim.Render(fmt.Sprintf("  (A terminal of at least %d columns and %d rows also shows a QR code of the link.)", w, h)) + "\n\n")
+		lead = "A browser tab opened on this computer: click Authorize there, then press p to paste the address it ends on."
 	}
-	if s.started.Listening {
-		b.WriteString("  If that browser runs on this computer, the sign-in finishes by itself.\n")
-		b.WriteString("  Otherwise the browser ends on a page that cannot connect to 127.0.0.1:\n")
-	} else {
-		b.WriteString("  After Authorize the browser ends on a page that cannot connect to 127.0.0.1:\n")
+	s.para(b, lead)
+	if s.opened {
+		s.para(b, "Signing in on another device? Press c to copy the link, then p to paste the address it ends on.")
 	}
-	b.WriteString("  paste that page's whole address here and press enter.\n\n")
-	if s.phase == signCompleting {
-		fmt.Fprintf(b, "  %s Checking the address...\n", tui.SpinFrame(s.frame))
-	} else {
-		field := st.Dim.Render("paste the final address")
+	if s.copied != "" {
+		// The OSC 52 sequence of a copy through the terminal rides on this
+		// line: it has no width, and the terminal acts on it once shown.
+		b.WriteString("\n" + s.osc52 + st.On.Render("  "+s.copied) + "\n")
+	}
+	switch {
+	case s.phase == signCompleting:
+		fmt.Fprintf(b, "\n  %s Checking the address...\n", tui.SpinFrame(s.frame))
+	case s.pasting:
+		b.WriteString("\n")
+		s.para(b, "Paste the address the browser ends on (the page that cannot connect to 127.0.0.1) and press enter:")
+		field := st.Dim.Render("paste the address")
 		if s.input != "" {
 			field = tail(s.input, s.width-8)
 		}
 		b.WriteString("  " + st.Cursor.Render(">") + " " + field + "_\n")
 	}
-	fmt.Fprintf(b, "\n%s\n", st.Dim.Render(fmt.Sprintf("  The link works until %s. Without a browser here, `%s login` does the same.",
-		s.started.ExpiresAt.Local().Format("15:04"), domain.BinaryName)))
 }
 
-// breakLines cuts s into lines of width runes (all of s on one line when the
-// width is unknown).
-func breakLines(s string, width int) string {
+// para writes text wrapped to the terminal's width, indented two columns.
+func (s *SignIn) para(b *strings.Builder, text string) {
+	width := s.width - 4
 	if width <= 0 {
-		return s
+		width = 76
 	}
-	r := []rune(s)
-	var lines []string
-	for len(r) > width {
-		lines = append(lines, string(r[:width]))
-		r = r[width:]
+	for _, line := range tui.Wrap(text, width) {
+		b.WriteString("  " + line + "\n")
 	}
-	lines = append(lines, string(r))
-	return strings.Join(lines, "\n")
 }
 
-func lineCount(s string, width int) int {
-	if width > 0 {
-		s = breakLines(s, width)
+// signChrome is the rows around the screen's own lines: the host's header
+// and section title, the footer and the blank lines between them.
+const signChrome = 8
+
+// viewQR adds the QR code of the link under "or scan:" when the terminal
+// fits it below the lines already written.
+func (s *SignIn) viewQR(b *strings.Builder) {
+	qr := service.QRText(s.started.AuthorizeURL)
+	used := lineCount(b.String()) + signChrome + 2 // "or scan:" and its blank line
+	if qr == "" || !fits(qr, s.width, s.height-used) {
+		return
 	}
-	return strings.Count(s, "\n") + 1
+	b.WriteString("\n  or scan:\n" + qr + "\n")
 }
+
+func lineCount(s string) int { return strings.Count(s, "\n") + 1 }
 
 func textWidth(s string) int {
 	w := 0
@@ -413,7 +454,7 @@ func textWidth(s string) int {
 // fits reports whether s fits in width columns and height rows; an unknown
 // size never fits.
 func fits(s string, width, height int) bool {
-	return width > 0 && height > 0 && textWidth(s) <= width && lineCount(s, 0) <= height
+	return width > 0 && height > 0 && textWidth(s) <= width && lineCount(s) <= height
 }
 
 // tail keeps the end of s that fits in n runes, marking a cut.

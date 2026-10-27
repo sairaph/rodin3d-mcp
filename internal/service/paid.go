@@ -41,21 +41,19 @@ const UnknownPrice = -1.0
 var FlowWait = 45 * time.Second
 
 // permit returns the permission key of op, or forbidden when config.toml
-// does not allow it.
+// sets it to deny. A file with a problem still applies as Load reads it
+// (get_account reports the problem).
 func (s *Service) permit(op string) (string, error) {
 	key, ok := price.PermissionKey(op)
 	if !ok {
 		return "", fmt.Errorf("no permission key for %s", op)
 	}
-	cfg, err := s.Config()
-	if err != nil {
-		return "", err // malformed: every write is denied, the error says why
-	}
+	cfg, _ := s.Config()
 	if !cfg.Permission.Allowed(key) {
 		value, _ := cfg.Permission.Get(key)
 		return "", failFields(render.CodeForbidden,
 			fmt.Sprintf("%s is not allowed: [permission] %s is %q in %s.", op, key, value, s.paths.Config),
-			fmt.Sprintf("Ask the user whether to allow it; they set %s = \"allow\" under [permission] in %s, and the next call reads it.", key, s.paths.Config),
+			fmt.Sprintf("Ask the user whether to allow it; they set %s = \"allow\" under [permission] in %s (or remove the line), and the next call reads it.", key, s.paths.Config),
 			map[string]any{"permission": key, "value": value, "file": s.paths.Config})
 	}
 	return key, nil

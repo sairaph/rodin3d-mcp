@@ -206,7 +206,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "generate_model", "Generate a 3D draft",
 		"Start a Rodin image-to-3D task from 1-5 local images: each image is preprocessed by Hyper3D (free; it writes the caption), "+
 			"then the geometry draft is submitted. Tag each image's view (F front, B back, L, R, FL, FR, BL, BR, U up, D down, ? unknown) "+
-			"for multi-view input; input_set instead takes the images as the user and agent arranged and tagged them in the viewer. Needs [permission] generate = \"allow\" in config.toml and expected_credits from quote_cost "+
+			"for multi-view input; input_set instead takes the images as the user and agent arranged and tagged them in the viewer. Refused when [permission] generate = \"deny\" in config.toml; needs expected_credits from quote_cost "+
 			"(operation generate_model, same model, tier and batch). copy_settings_from reuses a task's recipe (get_generation_options lists "+
 			"the account's recipes). The new task is made private unless public is true. Returns the new task (geometry_draft once ready, "+
 			"its poster attached), the quote and the wallet before and after. Next: get_preview, redo_geometry or confirm_geometry. Never "+
@@ -222,7 +222,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "redo_geometry", "Redo the geometry draft",
 		"Generate a new version of a geometry draft (stage geometry_draft) with the draft's settings, optionally a new prompt and the "+
 			"advanced options. Free except for extreme-high drafts (quote_cost operation redo_geometry); the plan limits the number of redos "+
-			"(get_task redo_left). Needs [permission] redo = \"allow\". Returns the task with the new version and redos left; its poster is attached.",
+			"(get_task redo_left). Refused when [permission] redo = \"deny\". Returns the task with the new version and redos left; its poster is attached.",
 		paidTool, redo, s.redoGeometry)
 
 	conf := nonNullDeep(inputSchema[confirmGeometryArgs](map[string]string{"wait": "true", "symmetric": "true", "hyper": "true"}))
@@ -232,7 +232,7 @@ func (s *Server) registerFlowTools() {
 	addTool(s, "confirm_geometry", "Confirm the geometry",
 		"Confirm a geometry draft version (default the newest) as the model's mesh: raw (Triangle) simplified to faces or full, quad with a "+
 			"quality or face count, or smart low-poly. An extreme-low draft is paid for here (a high draft paid at its submit); quote_cost "+
-			"gives the price. Needs [permission] confirm_geometry = \"allow\" and expected_credits from quote_cost (operation "+
+			"gives the price. Refused when [permission] confirm_geometry = \"deny\"; needs expected_credits from quote_cost (operation "+
 			"confirm_geometry, task_id, mesh, smart_low_poly and bang_version when used). Returns the task at stage geometry; next generate_texture or export_model.",
 		paidTool, conf, s.confirmGeometry)
 
@@ -240,7 +240,7 @@ func (s *Server) registerFlowTools() {
 	textureMode(tex)
 	addTool(s, "generate_texture", "Texture the model",
 		"Generate the material draft of a confirmed geometry (stage geometry): texture tier, HD, sharp (the web's 8K chip), de-light, face "+
-			"restore, PBR temperature and the reference image. Needs [permission] generate_texture = \"allow\" and expected_credits from "+
+			"restore, PBR temperature and the reference image. Refused when [permission] generate_texture = \"deny\"; needs expected_credits from "+
 			"quote_cost (operation generate_texture, task_id, texture_mode and the options). Returns the task at stage material_draft; next redo_material or "+
 			"confirm_material.",
 		paidTool, tex, s.generateTexture)
@@ -250,12 +250,12 @@ func (s *Server) registerFlowTools() {
 	withEnum(rmat, "seed", "keep", "new")
 	addTool(s, "redo_material", "Redo the material draft",
 		"Generate a new version of a material draft (stage material_draft) with its settings, changing only what is given. The web shows a price only at "+
-			"texture_mode extreme-high (2 credits); quote_cost (operation redo_material, task_id) says whether it is known; the plan limits the number of redos (get_task redo_left). Needs "+
-			"[permission] redo = \"allow\".",
+			"texture_mode extreme-high (2 credits); quote_cost (operation redo_material, task_id) says whether it is known; the plan limits the number of redos (get_task redo_left). Refused "+
+			"when [permission] redo = \"deny\".",
 		paidTool, rmat, s.redoMaterial)
 
 	addTool(s, "confirm_material", "Confirm the material",
-		"Confirm a material draft version (default the newest). Needs [permission] confirm_material = \"allow\" and expected_credits from "+
+		"Confirm a material draft version (default the newest). Refused when [permission] confirm_material = \"deny\"; needs expected_credits from "+
 			"quote_cost (operation confirm_material, task_id). Returns the task at stage material; next export_model.",
 		paidTool, nonNullDeep(inputSchema[confirmMaterialArgs](map[string]string{"wait": "true"})), s.confirmMaterial)
 
@@ -267,7 +267,7 @@ func (s *Server) registerFlowTools() {
 	withEnum(exp, "material", "all", "pbr", "shaded")
 	addTool(s, "export_model", "Pack the model files",
 		"Pack a task's files for download: the confirmed mesh (stage geometry) or the textured model with its maps (stage material), in "+
-			"one format, texture size, geometry level and material set. Needs [permission] export = \"allow\" and expected_credits from "+
+			"one format, texture size, geometry level and material set. Refused when [permission] export = \"deny\"; needs expected_credits from "+
 			"quote_cost (operation export_model, task_id, format, resolution, geometry, material). Returns the task (packed once done) and the packed file "+
 			"names; next download_model.",
 		paidTool, exp, s.exportModel)
@@ -276,12 +276,12 @@ func (s *Server) registerFlowTools() {
 	withEnum(fork, "stage", "geometry", "material")
 	addTool(s, "fork_task", "Fork a task",
 		"Branch a new task from a task's geometry (back to a geometry draft) or material (back to a material draft); the original stays as it "+
-			"is. The web offers it for tasks younger than 30 days. Needs [permission] fork = \"allow\" and expected_credits from quote_cost "+
+			"is. The web offers it for tasks younger than 30 days. Refused when [permission] fork = \"deny\"; needs expected_credits from quote_cost "+
 			"(operation fork_task, task_id, settings.stage). The new task is made private unless public is true. Returns the new task.",
 		paidTool, fork, s.forkTask)
 
 	addTool(s, "select_candidate", "Pick a batch draft",
-		"Keep one draft of a batch submit (stage geometry_draft): candidate is its version. Free. Needs [permission] redo = \"allow\".",
+		"Keep one draft of a batch submit (stage geometry_draft): candidate is its version. Free. Refused when [permission] redo = \"deny\".",
 		paidTool, nonNullDeep(inputSchema[selectArgs](nil)), s.selectCandidate)
 
 	addTool(s, "set_private", "Make a task private or public",

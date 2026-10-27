@@ -38,7 +38,7 @@ const instructions = "Rodin (Hyper3D) image-to-3D generations of the signed-in a
 	"The staged flow is generate_model (draft), redo_geometry, confirm_geometry, generate_texture, redo_material, confirm_material, " +
 	"export_model (pack), then download_model; fork_task branches a task. The other modes: generate_agentic (Agentic build from images), " +
 	"split_parts (split a draft into parts), rig_model and animate_model (skeleton, animations; list_animation_presets), and " +
-	"texture_model (start from your own model file). Each of these needs its [permission] key set to allow in " +
+	"texture_model (start from your own model file). Each of these runs unless the user set its [permission] key to deny in " +
 	"config.toml (get_account shows them), and the paid ones need expected_credits: the credits quote_cost returned for the same call. " +
 	"Never resend a paid call that timed out; get_task or list_tasks shows whether it started. " +
 	"New tasks are private; set_private (free, no permission key) changes the privacy of a task, and public true on a tool that " +

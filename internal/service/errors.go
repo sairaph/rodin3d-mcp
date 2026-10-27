@@ -109,7 +109,7 @@ func Classify(err error) render.Error {
 	case errors.Is(err, context.Canceled):
 		return render.Error{Code: render.CodeUnavailable, Message: "The call was cancelled before it finished.", Hint: "Send it again to retry."}
 	case errors.Is(err, config.ErrMalformed):
-		return render.Error{Code: render.CodeInvalidInput, Message: err.Error(), Hint: "Fix config.toml (every value is \"allow\" or \"deny\") or delete it to deny every write."}
+		return render.Error{Code: render.CodeInvalidInput, Message: err.Error(), Hint: "Fix config.toml (every value is \"allow\" or \"deny\"; only \"deny\" denies) or delete it to allow every write."}
 	}
 	var rej *auth.LoginRejected
 	if errors.As(err, &rej) {

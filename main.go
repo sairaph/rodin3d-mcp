@@ -24,7 +24,6 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/app"
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/commands"
-	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/install"
 	"github.com/sairaph/rodin3d-mcp/internal/mcpserver"
@@ -266,22 +265,16 @@ func (configCheck) Name() string { return "Config" }
 
 func (c configCheck) Run(context.Context) doctor.Result {
 	path := c.svc.Paths().Config
-	if _, err := c.svc.Config(); err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error() + " (every write is denied until it is fixed)"}
+	cfg, err := c.svc.Config()
+	if err != nil {
+		return doctor.Result{Name: c.Name(), Status: doctor.Fail, Detail: err.Error()}
 	}
 	if _, err := os.Stat(path); err != nil {
-		return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: "no " + path + ": every paid or changing operation is denied"}
+		return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: "no " + path + ": every paid or changing operation is allowed"}
 	}
-	cfg, _ := config.Load(path)
-	var allowed []string
-	for _, k := range config.Keys {
-		if cfg.Permission.Allowed(k.Name) {
-			allowed = append(allowed, k.Name)
-		}
-	}
-	detail := path + ": every write denied"
-	if len(allowed) > 0 {
-		detail = path + ": allows " + strings.Join(allowed, ", ")
+	detail := path + ": every write allowed"
+	if denied := cfg.Permission.Denied(); len(denied) > 0 {
+		detail = path + ": denies " + strings.Join(denied, ", ")
 	}
 	return doctor.Result{Name: c.Name(), Status: doctor.OK, Detail: detail}
 }

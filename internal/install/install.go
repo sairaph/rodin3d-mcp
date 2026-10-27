@@ -21,7 +21,6 @@ import (
 	"github.com/sairaph/mcp-wizard/tui"
 
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
-	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 )
@@ -189,7 +188,7 @@ func runWizard(ctx context.Context, env Env, detector *harness.Detector, scope h
 
 	state := &State{}
 	steps := []flow.Step[State]{
-		installer.HarnessStep(ctx, detector, harnessState, installer.HarnessStepOptions{AllDetected: true, Scope: scope}),
+		harnessStep{installer.HarnessStep(ctx, detector, harnessState, installer.HarnessStepOptions{AllDetected: true, Scope: scope})},
 	}
 	if account && !cmd.DryRun {
 		steps = append(steps,
@@ -227,12 +226,10 @@ func printNext(w io.Writer, svc *service.Service) {
 		fmt.Fprintf(w, "\n  %s\n", err)
 		return
 	}
-	for _, k := range config.Keys {
-		if cfg.Permission.Allowed(k.Name) {
-			return
-		}
+	if len(cfg.Permission.Denied()) > 0 {
+		return
 	}
-	fmt.Fprintf(w, "\n  Every paid or changing operation is denied. Allow them under Permissions\n  in `%s` (the app), or edit %s.\n", domain.BinaryName, svc.Paths().Config)
+	fmt.Fprintf(w, "\n  Every paid or changing operation is allowed. Deny any of them under\n  Permissions in `%s` (the app), or edit %s.\n", domain.BinaryName, svc.Paths().Config)
 }
 
 func runUnattended(ctx context.Context, env Env, detector *harness.Detector, scope harness.Scope, cmd cli.Command, desired harness.DesiredState) int {
@@ -299,12 +296,31 @@ func printPlan(ctx context.Context, env Env, detector *harness.Detector, scope h
 
 // --- wizard steps ---
 
+// harnessStep is mcp-wizard's client list with a correct view. Its View
+// (mcp-wizard v0.1.1 installer/step_harness.go:213) shows every client that
+// has an entry in HarnessState.Selected as selected, whether the entry is
+// true or false; space and a set entries to false, so a client turned off
+// still showed selected while registration (which reads the value) skipped
+// it. Dropping the false entries after every update keeps what the map
+// means (a missing entry is false) and makes the view show it.
+type harnessStep struct{ flow.Step[State] }
+
+func (s harnessStep) Update(msg tea.Msg, state *State) (flow.Directive, tea.Cmd) {
+	d, cmd := s.Step.Update(msg, state)
+	for id, on := range state.Harness.Selected {
+		if !on {
+			delete(state.Harness.Selected, id)
+		}
+	}
+	return d, cmd
+}
+
 // signInStep is the sign-in screen as a flow step.
 type signInStep struct{ signIn *SignIn }
 
 func (s *signInStep) ID() string { return "signin" }
 
-func (s *signInStep) Title(*State) string { return "Hyper3D account" }
+func (s *signInStep) Title(*State) string { return "Sign in to Hyper3D" }
 
 func (s *signInStep) Hints(*State) []struct{ Key, Label string } { return hintPairs(s.signIn.Hints()) }
 

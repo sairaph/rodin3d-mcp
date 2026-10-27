@@ -13,6 +13,8 @@ import (
 
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/fakehyper"
+	"github.com/sairaph/rodin3d-mcp/internal/fbx"
+	"github.com/sairaph/rodin3d-mcp/internal/fbx/fbxtest"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 )
 
@@ -178,5 +180,73 @@ func TestCommandsAgainstTheFake(t *testing.T) {
 	}
 	if strings.Contains(out.String()+errOut.String(), fakehyper.SignatureMark) {
 		t.Fatal("output carries a signature")
+	}
+}
+
+// M-2: rig <id> fbx=<file> reskin sends the reskin only, as rig_model's
+// reskin does, in both written forms; a word or an option a command does
+// not take is refused before anything is sent.
+func TestRigReskinAndUnknownArguments(t *testing.T) {
+	reg, _, errOut, fake, newSvc := setup(t)
+	ctx := context.Background()
+	svc := newSvc()
+	_, started, err := svc.Login(ctx, service.LoginInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect, _ := fake.Approve(started.AuthorizeURL)
+	if _, err := svc.CompleteLogin(ctx, redirect); err != nil {
+		t.Fatal(err)
+	}
+	cfg := svc.Paths().Config
+	svc.Close()
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("[permission]\nrig = \"allow\"\nconfirm_geometry = \"allow\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := fbxtest.Human()
+	path := filepath.Join(t.TempDir(), "skeleton.fbx")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bones, err := fbx.Skeleton(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	var parents []int
+	var inv [][16]float64
+	for _, b := range bones {
+		names, parents, inv = append(names, b.Name), append(parents, b.Parent), append(inv, b.Transform.Invert())
+	}
+	fake.SetFile(fakehyper.PackedID+"/model.glb.rigging.rodinrig", fbxtest.RigFile(names, parents, inv))
+	fake.Tasks(fakehyper.PackedID).Rig, fake.Tasks(fakehyper.PackedID).RigSkinning = "custom", "shell"
+
+	rigging := func() int { return len(fake.Bodies("task/rodin_rigging")) }
+	for i, form := range []string{"reskin", "reskin=true"} {
+		errOut.Reset()
+		if _, code := reg.Dispatch(ctx, "rig", []string{fakehyper.PackedID, "fbx=" + path, form, "expected=-1"}); code != 0 || rigging() != i+1 {
+			t.Fatalf("%s: exit %d, %d rigging calls: %s", form, code, rigging(), errOut)
+		}
+		h, _ := fake.Bodies("task/rodin_rigging")[i]["settings"].(map[string]any)["rodinrig_hierarchy"].([]any)
+		if len(h) != len(bones) || h[0].(map[string]any)["transform"] == nil {
+			t.Fatalf("%s: the call is not the reskin: %v", form, h)
+		}
+	}
+	for _, c := range [][]string{
+		{"rig", fakehyper.PackedID, "fbx=" + path, "reskin", "reskin=false", "expected=-1"},
+		{"rig", fakehyper.PackedID, "fbx=" + path, "reskn", "expected=-1"},
+		{"rig", fakehyper.PackedID, "fbx=" + path, "reskni=true", "expected=-1"},
+		{"confirm-geometry", fakehyper.DraftID, "bang_versoin=b1", "expected=-1"},
+	} {
+		errOut.Reset()
+		if _, code := reg.Dispatch(ctx, c[0], c[1:]); code != 2 {
+			t.Errorf("%v: exit %d: %s", c, code, errOut)
+		}
+	}
+	if rigging() != 2 || fake.Calls("task/rodin_confirm") != 0 {
+		t.Fatalf("a refused command sent a request: %d rigging, %d confirm", rigging(), fake.Calls("task/rodin_confirm"))
 	}
 }

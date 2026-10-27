@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -176,9 +177,47 @@ func Register(reg *command.Registry, env Env) {
 		})})
 	reg.Register(command.Handler{Name: "permissions", Description: "Show the [permission] values of config.toml", Usage: "permissions [json]",
 		Run: run(func(_ context.Context, s *service.Service, _ args) (service.Result, error) { return permissions(s) })})
-	registerFlow(reg, run)
-	registerModes(reg, run)
+	paid := strict{reg: reg, env: env}
+	registerFlow(paid, run)
+	registerModes(paid, run)
 	registerViewer(reg, env, run)
+}
+
+// registrar takes command handlers: the registry, or strict around it.
+type registrar interface{ Register(command.Handler) }
+
+// strict registers the paid and changing commands so that an option their
+// usage does not name is refused before anything is read or sent: a
+// mistyped or unsupported option never drops out silently.
+type strict struct {
+	reg *command.Registry
+	env Env
+}
+
+// usageKey finds the options a usage line names: key=value and [word].
+var usageKey = regexp.MustCompile(`([a-z_]+)(?:=|\])`)
+
+func (s strict) Register(h command.Handler) {
+	allowed := map[string]bool{}
+	for _, m := range usageKey.FindAllStringSubmatch(h.Usage, -1) {
+		allowed[m[1]] = true
+	}
+	run := h.Run
+	h.Run = func(ctx context.Context, raw []string) int {
+		a := parse(raw)
+		keys := make([]string, 0, len(a.opts))
+		for k := range a.opts {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			if !allowed[k] {
+				return s.env.print(service.Result{}, usage("unknown option "+strconv.Quote(k)+"; "+h.Name+" takes: "+h.Usage), a.json)
+			}
+		}
+		return run(ctx, raw)
+	}
+	s.reg.Register(h)
 }
 
 func previewFile(res service.Result) (string, bool) {

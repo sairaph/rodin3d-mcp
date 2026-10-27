@@ -52,7 +52,7 @@ func listOpt(a args, key string) []string {
 	return out
 }
 
-func registerModes(reg *command.Registry, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
+func registerModes(reg registrar, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
 	reg.Register(command.Handler{Name: "agentic", Description: "Start an Agentic build from 1-5 images (paid)",
 		Usage: "agentic <image>... budget=basic|standard|pro [prompt=..] [ngons=false] [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
@@ -78,6 +78,9 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.SplitInput{Wait: waitOf(&a), TaskID: a.arg(0), Version: a.opts["version"], Step: a.opts["step"],
 				BangVersion: a.opts["bang_version"], Part: a.opts["part"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var e1, e2 error
 			in.Expected, e1 = floatOpt(a, "expected")
 			in.Strength, e2 = intOpt(a, "strength", 0)
@@ -92,6 +95,15 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.RigInput{Wait: waitOf(&a), TaskID: a.arg(0), Template: a.opts["template"], Description: a.opts["description"],
 				Skinning: a.opts["skinning"]}
+			// reskin, as the bare word of the usage or reskin=true, sends only
+			// the reskin call, as rig_model's reskin does.
+			var err error
+			if in.Reskin, err = flagOf(&a, "reskin"); err != nil {
+				return service.Result{}, err
+			}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			if f := a.opts["skeleton"]; f != "" {
 				text, err := readText(f)
 				if err != nil {
@@ -106,13 +118,9 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 				}
 				in.FBXSkeleton = abs
 			}
-			var e1, e2 error
-			in.Expected, e1 = floatOpt(a, "expected")
-			reskin, e2 := boolOpt(a, "reskin")
-			if err := optErrs(e1, e2); err != nil {
+			if in.Expected, err = floatOpt(a, "expected"); err != nil {
 				return service.Result{}, err
 			}
-			in.Reskin = reskin != nil && *reskin
 			return s.RigModel(ctx, in)
 		})})
 
@@ -121,6 +129,9 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.AnimateInput{Wait: waitOf(&a), TaskID: a.arg(0), Presets: listOpt(a, "presets"), Format: a.opts["format"],
 				Resolution: a.opts["resolution"], Material: a.opts["material"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var err error
 			if in.Files, err = absPaths(listOpt(a, "files")); err != nil {
 				return service.Result{}, err
@@ -138,6 +149,9 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 	reg.Register(command.Handler{Name: "animation-presets", Description: "List the animation presets",
 		Usage: "animation-presets [category] [template=..] [json]",
 		Run: run(func(_ context.Context, s *service.Service, a args) (service.Result, error) {
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			return s.AnimationPresets(service.AnimationPresetsInput{Category: a.arg(0), Template: a.opts["template"]})
 		})})
 

@@ -54,18 +54,44 @@ func intPtrOpt(a args, key string) (*int, error) {
 
 // waitOf is false when the word nowait is among the positional arguments,
 // which it then leaves out.
-func waitOf(a *args) bool {
-	wait := true
+func waitOf(a *args) bool { return !wordOf(a, "nowait") }
+
+// wordOf reports whether word is among the positional arguments and leaves
+// it out of them.
+func wordOf(a *args, word string) bool {
+	found := false
 	var keep []string
 	for _, p := range a.pos {
-		if strings.EqualFold(p, "nowait") {
-			wait = false
+		if strings.EqualFold(p, word) {
+			found = true
 			continue
 		}
 		keep = append(keep, p)
 	}
 	a.pos = keep
-	return wait
+	return found
+}
+
+// flagOf reads a switch given as the bare word or as word=<bool>.
+func flagOf(a *args, word string) (bool, error) {
+	bare := wordOf(a, word)
+	v, err := boolOpt(*a, word)
+	switch {
+	case err != nil:
+		return false, err
+	case bare && v != nil && !*v:
+		return false, usage(word + " and " + word + "=false contradict each other")
+	}
+	return bare || (v != nil && *v), nil
+}
+
+// extraArgs refuses positional arguments past the n a paid or changing
+// command takes, so a mistyped option is never dropped silently.
+func extraArgs(a args, n int) error {
+	if len(a.pos) <= n {
+		return nil
+	}
+	return usage("unknown argument " + strconv.Quote(a.pos[n]) + ": options are key=value (see the command's usage)")
 }
 
 // imageSpec is <path>[:VIEW[:weight]]; a Windows drive colon stays in the
@@ -102,9 +128,9 @@ func optErrs(errs ...error) error {
 	return nil
 }
 
-func registerFlow(reg *command.Registry, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
+func registerFlow(reg registrar, run func(func(context.Context, *service.Service, args) (service.Result, error)) func(context.Context, []string) int) {
 	reg.Register(command.Handler{Name: "generate", Description: "Submit a geometry draft from 1-5 images (paid)",
-		Usage: "generate <image>[:VIEW[:weight]]... | input_set=<id> [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [copy=<id>] [public=true] expected=<credits> [nowait] [json]",
+		Usage: "generate <image>[:VIEW[:weight]]... | input_set=<id> [tier=..] [model=..] [mode=..] [prompt=..] [image_mode=..] [face_enhance=..] [seed=N] [batch=N] [copy=<id>] [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.GenerateInput{Wait: waitOf(&a), Model: a.opts["model"], Tier: a.opts["tier"], Mode: a.opts["mode"], Prompt: a.opts["prompt"],
 				ImageMode: a.opts["image_mode"], CopySettingsFrom: a.opts["copy"], InputSet: a.opts["input_set"]}
@@ -136,6 +162,9 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		Usage: "redo-geometry <id> [prompt=..] [seed=N] [expected=<credits>] [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.RedoGeometryInput{Wait: waitOf(&a), TaskID: a.arg(0), Prompt: a.opts["prompt"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var e1, e2 error
 			in.Expected, e1 = floatOpt(a, "expected")
 			seed, e2 := intPtrOpt(a, "seed")
@@ -149,9 +178,13 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		})})
 
 	reg.Register(command.Handler{Name: "confirm-geometry", Description: "Confirm a geometry draft (paid)",
-		Usage: "confirm-geometry <id> [mesh=raw|quad] [faces=N] [quality=..] [smart_low_poly=true] [bake_normal=true] [symmetric=false] [smooth=true] [version=vN] expected=<credits> [nowait] [json]",
+		Usage: "confirm-geometry <id> [mesh=raw|quad] [faces=N] [quality=..] [smart_low_poly=true] [bake_normal=true] [symmetric=false] [hyper=false] [smooth=true] [version=vN] [bang_version=..] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
-			in := service.ConfirmGeometryInput{Wait: waitOf(&a), TaskID: a.arg(0), Mesh: a.opts["mesh"], Quality: a.opts["quality"], Version: a.opts["version"]}
+			in := service.ConfirmGeometryInput{Wait: waitOf(&a), TaskID: a.arg(0), Mesh: a.opts["mesh"], Quality: a.opts["quality"], Version: a.opts["version"],
+				BangVersion: a.opts["bang_version"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var errs [7]error
 			in.Expected, errs[0] = floatOpt(a, "expected")
 			in.Faces, errs[1] = intPtrOpt(a, "faces")
@@ -179,6 +212,9 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		in.FaceEnhance, errs[4] = boolOpt(*a, "face_enhance")
 		in.Escore, errs[5] = floatOpt(*a, "escore")
 		in.ReferenceScale, errs[6] = floatOpt(*a, "reference_scale")
+		if err := extraArgs(*a, 1); err != nil {
+			return in, err
+		}
 		if ref := in.ReferenceImage; ref != "" && ref != "ALL" && strings.ContainsAny(ref, `/\`) {
 			abs, err := filepath.Abs(ref)
 			if err != nil {
@@ -189,7 +225,7 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		return in, optErrs(errs[:]...)
 	}
 	reg.Register(command.Handler{Name: "texture", Description: "Generate the material draft of a confirmed geometry (paid)",
-		Usage: "texture <id> [texture_mode=..] [hd_texture=true] [sharp=true] [delight=true] [face_enhance=true] [escore=7] [reference=<name|ALL|path>] [prompt=..] expected=<credits> [nowait] [json]",
+		Usage: "texture <id> [texture_mode=..] [hd_texture=true] [sharp=true] [delight=true] [face_enhance=true] [escore=7] [reference_scale=..] [reference=<name|ALL|path>] [prompt=..] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in, err := texture(&a)
 			if err != nil {
@@ -198,7 +234,7 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 			return s.GenerateTexture(ctx, in)
 		})})
 	reg.Register(command.Handler{Name: "redo-material", Description: "Redo a material draft (quote redo_material for its price)",
-		Usage: "redo-material <id> [texture_mode=..] [hd_texture=..] [sharp=..] [delight=..] [face_enhance=..] [escore=..] [seed=keep|new] [prompt=..] [expected=<credits>] [nowait] [json]",
+		Usage: "redo-material <id> [texture_mode=..] [hd_texture=..] [sharp=..] [delight=..] [face_enhance=..] [escore=..] [reference_scale=..] [seed=keep|new] [prompt=..] [expected=<credits>] [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in, err := texture(&a)
 			if err != nil {
@@ -211,6 +247,9 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		Usage: "confirm-material <id> [version=vN] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.ConfirmMaterialInput{Wait: waitOf(&a), TaskID: a.arg(0), Version: a.opts["version"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var err error
 			if in.Expected, err = floatOpt(a, "expected"); err != nil {
 				return service.Result{}, err
@@ -219,10 +258,13 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		})})
 
 	reg.Register(command.Handler{Name: "export", Description: "Pack a task's files for download (paid)",
-		Usage: "export <id> [format=obj] [resolution=2k] [geometry=base] [material=all] [align_ground=true] [height=N] expected=<credits> [nowait] [json]",
+		Usage: "export <id> [type=mesh|material] [format=obj] [resolution=2k] [geometry=base] [material=all] [align_ground=true] [height=N] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.ExportInput{Wait: waitOf(&a), TaskID: a.arg(0), Type: a.opts["type"], Format: a.opts["format"], Resolution: a.opts["resolution"],
 				Geometry: a.opts["geometry"], Material: a.opts["material"]}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			var errs [3]error
 			in.Expected, errs[0] = floatOpt(a, "expected")
 			in.AlignGround, errs[1] = boolOpt(a, "align_ground")
@@ -237,6 +279,9 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 		Usage: "fork <id> geometry|material [public=true] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.ForkInput{Wait: waitOf(&a), TaskID: a.arg(0), Stage: a.arg(1)}
+			if err := extraArgs(a, 2); err != nil {
+				return service.Result{}, err
+			}
 			var e1, e2 error
 			in.Expected, e1 = floatOpt(a, "expected")
 			public, e2 := boolOpt(a, "public")
@@ -254,12 +299,18 @@ func registerFlow(reg *command.Registry, run func(func(context.Context, *service
 			if err != nil {
 				return service.Result{}, err
 			}
+			if err := extraArgs(a, 1); err != nil {
+				return service.Result{}, err
+			}
 			return s.SetPrivate(ctx, service.SetPrivateInput{TaskID: a.arg(0), Private: private == nil || *private})
 		})})
 
 	reg.Register(command.Handler{Name: "select-candidate", Description: "Keep one draft of a batch",
 		Usage: "select-candidate <id> <version> [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
+			if err := extraArgs(a, 2); err != nil {
+				return service.Result{}, err
+			}
 			return s.SelectCandidate(ctx, service.SelectInput{TaskID: a.arg(0), Candidate: a.arg(1)})
 		})})
 }

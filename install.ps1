@@ -126,13 +126,36 @@
   } catch {}
 
   # The user PATH entry is exactly $installDir, prepended: uninstall removes
-  # the entry equal to it.
+  # the entry equal to it. The value is read and written raw through the
+  # registry with its own type: SetEnvironmentVariable would expand %VAR%
+  # entries and turn a REG_EXPAND_SZ into REG_SZ (mcp-wizard issue #5).
   $pathChanged = $false
-  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  if ($userPath -notlike "*$installDir*") {
-    $newPath = if ($userPath) { "$installDir;$userPath" } else { $installDir }
-    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-    $pathChanged = $true
+  $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+  try {
+    $userPath = ''
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    if ($envKey.GetValueNames() -contains 'Path') {
+      $userPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      $kind = $envKey.GetValueKind('Path')
+    }
+    if (-not (@($userPath -split ';') | Where-Object { $_.TrimEnd('\') -eq $installDir })) {
+      $newPath = if ($userPath) { "$installDir;$userPath" } else { $installDir }
+      $envKey.SetValue('Path', $newPath, $kind)
+      $pathChanged = $true
+    }
+  } finally { $envKey.Close() }
+  if ($pathChanged) {
+    # Tell Explorer and new terminals, as SetEnvironmentVariable would.
+    try {
+      if (-not ('Rodin3dMcpInstaller.NativeMethods' -as [type])) {
+        Add-Type -Namespace Rodin3dMcpInstaller -Name NativeMethods -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+      }
+      $result = [System.UIntPtr]::Zero
+      [void][Rodin3dMcpInstaller.NativeMethods]::SendMessageTimeout([System.IntPtr]0xffff, 0x1a, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+    } catch { }
   }
   if ($env:Path -notlike "*$installDir*") { $env:Path = "$installDir;$env:Path" }
 

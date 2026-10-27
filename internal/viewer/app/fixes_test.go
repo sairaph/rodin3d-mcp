@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -440,5 +441,47 @@ func TestStripLoadsListed(t *testing.T) {
 	}
 	if !a.listed(a.strip[0]) || !a.listed(input) || a.listed(old) {
 		t.Fatal("listed is wrong")
+	}
+}
+
+// TestImageNames: shown images get unique names (their buttons and the
+// agent's texture_map select by name): the file name when it is unique, the
+// folder when the file name repeats, the list position when both repeat.
+func TestImageNames(t *testing.T) {
+	a := filepath.Join("cache", "task", "aaaa", "poster.webp")
+	b := filepath.Join("cache", "task", "bbbb", "poster.webp")
+	c := filepath.Join("shots", "front.png")
+	got := imageNames([]string{a, b, c, a})
+	want := []string{"aaaa/poster.webp #0", "bbbb/poster.webp", "front.png", "aaaa/poster.webp #3"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("imageNames = %q, want %q", got, want)
+	}
+}
+
+// TestImageButtons: with images of the same file name, each toolbar button
+// is hit and clicked on its own: a click on the second shows the second.
+func TestImageButtons(t *testing.T) {
+	files := []string{filepath.Join("a", "poster.webp"), filepath.Join("b", "poster.webp"), filepath.Join("c", "poster.webp")}
+	a := &App{ui: newUI(), sw: 1280, sh: 800, kind: viewer.KindImages, layout: viewer.LayoutTextures, flat: -1, popup: -1}
+	for _, n := range imageNames(files) {
+		a.textures = append(a.textures, &thumb{kind: "image", name: n})
+	}
+	a.ui.layout(a)
+	for i := len(files) - 1; i >= 0; i-- { // image 0 is selected at the start
+		id := "texture:" + strconv.Itoa(i)
+		var r image.Rectangle
+		for _, w := range a.ui.widgets {
+			if w.id == id {
+				r = w.r
+			}
+		}
+		c := r.Min.Add(r.Size().Div(2))
+		if got := a.ui.hitWidget(c.X, c.Y); got != id {
+			t.Fatalf("button %d: hit %q, want %q", i, got, id)
+		}
+		a.ui.click(id)
+		if a.texSel != i || a.selected.TextureMap != a.textures[i].name {
+			t.Fatalf("click on button %d selected %d", i, a.texSel)
+		}
 	}
 }

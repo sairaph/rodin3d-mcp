@@ -50,13 +50,42 @@ func (a *App) startLoads(p *prepared) {
 			a.loadThumb(it, it.file)
 		}
 	case viewer.KindImages:
-		for _, f := range p.images {
-			a.textures = append(a.textures, &thumb{kind: "image", name: filepath.Base(f), file: f, src: func() (image.Image, error) {
+		names := imageNames(p.images)
+		for i, f := range p.images {
+			a.textures = append(a.textures, &thumb{kind: "image", name: names[i], file: f, src: func() (image.Image, error) {
 				img, _, _, err := decodeFile(f, 0)
 				return img, err
 			}})
 		}
 	}
+}
+
+// imageNames names the shown image files: the file name, with its folder
+// when another file has the same name (posters of several tasks), and the
+// list position when that repeats too. The names are unique: the window's
+// buttons and the agent's texture_map select an image by its name.
+func imageNames(files []string) []string {
+	out := make([]string, len(files))
+	seen := map[string]int{}
+	for i, f := range files {
+		out[i] = filepath.Base(f)
+		seen[out[i]]++
+	}
+	for i, f := range files {
+		if seen[out[i]] > 1 {
+			out[i] = filepath.Base(filepath.Dir(f)) + "/" + out[i]
+		}
+	}
+	clear(seen)
+	for _, n := range out {
+		seen[n]++
+	}
+	for i, n := range out {
+		if seen[n] > 1 {
+			out[i] = fmt.Sprintf("%s #%d", n, i)
+		}
+	}
+	return out
 }
 
 // Memory (notes 41, fix rounds 3 and 4): the window holds the meshes and

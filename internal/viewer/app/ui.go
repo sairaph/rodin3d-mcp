@@ -226,7 +226,7 @@ func (s *uiState) layout(a *App) {
 	if a.layout == viewer.LayoutTextures {
 		for i, t := range a.textures {
 			i := i
-			place("texture:"+t.name, t.name, a.texSel == i, false, false, func() { a.userSelectTexture(i) })
+			place("texture:"+strconv.Itoa(i), t.name, a.texSel == i, false, false, func() { a.userSelectTexture(i) })
 		}
 		group()
 		place("texfit", "Fit", false, false, true, func() {

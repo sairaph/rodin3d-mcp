@@ -1,0 +1,7 @@
+The notice of dlmalloc, quoted from the first lines of dlmalloc/src/malloc.c
+in wasi-libc at commit 2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13:
+
+  This is a version (aka dlmalloc) of malloc/free/realloc written by
+  Doug Lea and released to the public domain, as explained at
+  http://creativecommons.org/publicdomain/zero/1.0/ Send questions,
+  comments, complaints, performance data, etc to dl@cs.oswego.edu

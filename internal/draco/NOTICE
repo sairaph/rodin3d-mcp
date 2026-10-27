@@ -12,14 +12,43 @@ is LICENSE-draco in this directory, copied unchanged from the Draco 1.5.7
 source tree; its last section covers a documentation script of the Draco
 repository that is not part of the decoder. Draco ships no NOTICE file.
 
-The module also contains the parts of the wasi-sdk 34 sysroot it links
-(wasi-libc and the LLVM C++ runtime). The wasi-sdk 34 release archive
-carries no license files, and their license texts are not reproduced here
-yet.
+The module also links parts of the wasi-sdk 34 sysroot. wasi-sdk 34 is
+built from wasi-libc at commit 2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13 and
+llvm-project at commit 895aa2c896ada719451be2e3673c83da8ddf1141 (clang
+23.1.0-wasi-sdk). The link of the module (wasm-ld --trace, same output
+checksum) takes these inputs from it:
+
+- wasi-libc: crt1-reactor.o and 350 members of libc.a. They come from the
+  musl part (libc-top-half/musl), the cloudlibc part
+  (libc-bottom-half/cloudlibc), wasi-libc's own sources
+  (libc-bottom-half/sources) and dlmalloc. emmalloc and fts are not linked.
+- LLVM: 15 members of libc++.a, 10 of libc++abi.a and 18 of the compiler-rt
+  builtins (libclang_rt.builtins.a), plus code of the libc++ headers.
+
+Their license files, copied unchanged from those commits, are in licenses/:
+
+- licenses/wasi-libc/LICENSE: how wasi-libc is licensed (Apache License 2.0
+  with LLVM Exceptions, Apache License 2.0, or MIT) and the parts derived
+  from other works.
+- licenses/wasi-libc/LICENSE-APACHE-LLVM, LICENSE-APACHE, LICENSE-MIT: the
+  three licenses it names.
+- licenses/wasi-libc/musl-COPYRIGHT: musl (libc-top-half/musl/COPYRIGHT,
+  MIT).
+- licenses/wasi-libc/cloudlibc-LICENSE: cloudlibc
+  (libc-bottom-half/cloudlibc/LICENSE, BSD-2-Clause).
+- licenses/wasi-libc/dlmalloc-NOTICE: dlmalloc's public domain (CC0)
+  notice, quoted from dlmalloc/src/malloc.c.
+- licenses/llvm/libcxx-LICENSE.TXT, libcxxabi-LICENSE.TXT,
+  compiler-rt-LICENSE.TXT: libc++, libc++abi and compiler-rt (Apache
+  License 2.0 with LLVM Exceptions; older code also under the legacy
+  University of Illinois/NCSA and MIT licenses), from libcxx/LICENSE.TXT,
+  libcxxabi/LICENSE.TXT and compiler-rt/LICENSE.TXT.
 
 internal/draco runs the module with wazero (github.com/tetratelabs/wazero
 v1.12.0, Apache License, Version 2.0), a Go module dependency compiled into
-the rodin3d-mcp binary. wazero's NOTICE file reads:
+the rodin3d-mcp binary; its license and NOTICE are in
+THIRD_PARTY_NOTICES.txt with the other Go modules. wazero's NOTICE file
+reads:
 
     wazero
     Copyright 2020-2023 wazero authors

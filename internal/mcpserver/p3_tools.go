@@ -78,7 +78,8 @@ func (s *Server) registerP3Tools() {
 	addTool(s, "generate_agentic", "Agentic 3D build",
 		"Start a Rodin Agentic task from 1-5 images of one object: Hyper3D plans and builds the model within a time budget (basic about 3 "+
 			"minutes, standard 5, pro 10). The server picks the producer: high-poly makes an ordinary Rodin task that ends as a geometry "+
-			"draft (confirm_geometry and the other stage tools continue it); n-gons makes a RodinAgentic task. Needs [permission] agentic = \"allow\" and expected_credits from "+
+			"draft (confirm_geometry and the other stage tools continue it); n-gons makes a RodinAgentic task, which no tool here acts on "+
+			"(get_task, wait_task and get_preview read it). Needs [permission] agentic = \"allow\" and expected_credits from "+
 			"quote_cost (operation generate_agentic, settings.budget). The new task is made private unless public is true. Returns the task "+
 			"and the producer; follow it with wait_task. Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, ag, s.generateAgentic)
@@ -88,9 +89,10 @@ func (s *Server) registerP3Tools() {
 	withEnum(sp, "step", "both", "plan", "generate")
 	addTool(s, "split_parts", "Split a draft into parts",
 		"Split a geometry draft (stage geometry_draft) into separate parts, the web's Bang: a plan lays out the parts (strength = how many), "+
-			"then the split makes a Bang result of the draft version with one mesh per part. step plan stops after the plan and attaches its "+
-			"picture so the user can approve it; step generate splits by that plan. The parts file is saved in the task's files folder and a "+
-			"render attached. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
+			"then the split makes a Bang result of the draft version with one mesh per part. step plan stops after the plan and, when the "+
+			"plan is made within the wait, attaches its picture so the user can approve it; step generate splits by that plan. When the split "+
+			"finishes within the wait, its parts file is saved in the task's files folder and a render attached; otherwise get_task lists the "+
+			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
 			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
 		paidTool, sp, s.splitParts)
 
@@ -103,8 +105,9 @@ func (s *Server) registerP3Tools() {
 	withEnum(rg, "skinning", "shell", "core")
 	addTool(s, "rig_model", "Rig the model",
 		"Give a task with confirmed geometry (stages geometry, material_draft, material) a skeleton and skin: a built-in template, your own "+
-			"bone hierarchy, or a skeleton described in words. The rigged model is saved in the task's files folder and a render attached. "+
-			"Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation rig_model, task_id). Next: animate_model.",
+			"bone hierarchy, or a skeleton described in words. The rig is kept by Hyper3D with the task (get_task shows it as rig); "+
+			"animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
+			"rig_model, task_id, settings.template and skinning).",
 		paidTool, rg, s.rigModel)
 
 	an := nonNull(inputSchema[animateArgs](map[string]string{"format": `"glb"`, "resolution": `"2k"`, "align_ground": "true", "wait": "true"}))
@@ -115,8 +118,9 @@ func (s *Server) registerP3Tools() {
 	withEnum(an, "material", "all", "pbr", "shaded")
 	addTool(s, "animate_model", "Export the rigged model with animations",
 		"Export a rigged task (rig_model) with up to 10 animations: presets from list_animation_presets and your own FBX animations. "+
-			"Needs [permission] animate = \"allow\" and expected_credits from quote_cost (operation animate_model, task_id). Returns the exported "+
-			"file names; download_model saves them.",
+			"Needs [permission] animate = \"allow\" and expected_credits from quote_cost (operation animate_model, task_id, settings.format, "+
+			"resolution, material, animations and animation_files). When the export finishes within the wait, returns the exported file "+
+			"names; otherwise get_task lists the files once it is done. download_model saves them.",
 		paidTool, an, s.animateModel)
 
 	pa := nonNull(inputSchema[presetsArgs](nil))
@@ -139,7 +143,7 @@ func (s *Server) registerP3Tools() {
 	addTool(s, "texture_model", "Texture your own model",
 		"Start a Rodin 3D Editing task from your own model file and pictures of the object (the web's 3D Editing): the task runs the "+
 			"ordinary stages, so confirm_geometry, generate_texture and export_model follow. Needs [permission] texture_model = \"allow\" and "+
-			"expected_credits from quote_cost (operation texture_model, settings.model). The new task is made private unless public is true. "+
+			"expected_credits from quote_cost (operation texture_model, settings.model and images). The new task is made private unless public is true. "+
 			"Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, tm, s.textureModel)
 }

@@ -125,7 +125,7 @@ type previewInput struct {
 type downloadInput struct {
 	TaskID    string   `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	OutputDir *string  `json:"output_dir,omitempty" jsonschema:"absolute folder to save into; default downloads/<id8>-<prompt> in the data directory"`
-	Files     []string `json:"files,omitempty" jsonschema:"names to save, from get_task files.pack, files.videos, or the download names of its bang results and rig; default the whole pack"`
+	Files     []string `json:"files,omitempty" jsonschema:"names to save, from get_task files.pack, files.videos, or the download names of its bang results; default the whole pack"`
 }
 
 func (s *Server) registerTools() {
@@ -240,7 +240,7 @@ func (s *Server) registerTools() {
 	addTool(s, "download_model", "Download model files",
 		"Save the files of a task's finished pack (the model in its packed format, textures) to output_dir or downloads/<id8>-<prompt> in "+
 			"the data directory; files limits the download to names from get_task files.pack, and the stage videos (files.videos), the parts "+
-			"files of Bang results (bang) and the rigged model (rig) can be named by their download names too. Answers conflict when the task has no finished pack yet. Returns each file's path and size.",
+			"files of Bang results (bang) can be named by their download names too. Answers conflict when the task has no finished pack yet. Returns each file's path and size.",
 		localTool, nonNull(inputSchema[downloadInput](nil)), s.downloadModel)
 
 	s.registerFlowTools()

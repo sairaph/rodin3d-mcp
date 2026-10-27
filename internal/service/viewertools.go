@@ -462,23 +462,31 @@ func (s *Service) CloseViewer(ctx context.Context) (Result, error) {
 }
 
 // closeCall sends the close call and waits at most closeCallWait for its
-// answer. The call runs on its own goroutine and is abandoned at that bound,
-// so a connect that blocks (the socket's Dial takes no context: N19) holds
-// close_viewer no longer than an answer that does not come; the abandoned
-// call ends within viewerCallTimeout on its own. An abandoned call is
-// context.DeadlineExceeded, which the stop path treats like a silent window;
-// a caller's cancel is context.Canceled.
+// answer (boundedCall).
 func (s *Service) closeCall(ctx context.Context) (viewer.StateReply, error) {
+	return boundedCall(ctx, closeCallWait, func(cctx context.Context, rep *viewer.StateReply) error {
+		return s.viewerCall(cctx, viewer.MethodClose, nil, rep)
+	})
+}
+
+// boundedCall runs call on its own goroutine and waits at most bound for
+// its answer; the call is abandoned at that bound, so a connect that blocks
+// (the socket's Dial takes no context: N19) holds close_viewer no longer
+// than an answer that does not come, and the abandoned call ends within
+// viewerCallTimeout on its own (its context is cancelled on return). An
+// abandoned call is context.DeadlineExceeded, which the stop path treats
+// like a silent window; a caller's cancel is context.Canceled.
+func boundedCall(ctx context.Context, bound time.Duration, call func(context.Context, *viewer.StateReply) error) (viewer.StateReply, error) {
 	type answer struct {
 		rep viewer.StateReply
 		err error
 	}
-	cctx, cancel := context.WithTimeout(ctx, closeCallWait)
+	cctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	done := make(chan answer, 1) // the abandoned goroutine never blocks
 	go func() {
 		var a answer
-		a.err = s.viewerCall(cctx, viewer.MethodClose, nil, &a.rep)
+		a.err = call(cctx, &a.rep)
 		done <- a
 	}()
 	select {

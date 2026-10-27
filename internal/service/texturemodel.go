@@ -122,6 +122,10 @@ func (s *Service) TextureModel(ctx context.Context, in TextureModelInput) (Resul
 		}
 		paths, detail.Rendered = []string{front}, true
 	}
+	// A picture the user gives goes through the web's image helper fQ, as on
+	// the generate page (longest side at most 1024 px; chunk 3713:7055-7073);
+	// prepareImages does the same. The web sends its viewer snapshots as
+	// captured; the front render is made at 1024 px, so it is sent as is.
 	list := make([]GenerateImage, len(paths))
 	for i, p := range paths {
 		list[i] = GenerateImage{Path: p}

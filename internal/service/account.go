@@ -278,10 +278,16 @@ type logoutFront struct {
 	DaemonStopped bool   `yaml:"daemon_stopped"`
 }
 
+// SignOut revokes the Hyper3D grant and deletes the tokens (the first part
+// of Logout, which uninstall reports in its own words).
+func (s *Service) SignOut(ctx context.Context) (auth.LogoutResult, error) {
+	return s.login.Logout(ctx)
+}
+
 // Logout is the logout tool: revoke the grant, delete the tokens, stop the
 // syncer. The task index stays.
 func (s *Service) Logout(ctx context.Context) (Result, error) {
-	res, err := s.login.Logout(ctx)
+	res, err := s.SignOut(ctx)
 	if err != nil {
 		return Result{}, err
 	}

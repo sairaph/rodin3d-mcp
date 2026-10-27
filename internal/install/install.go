@@ -2,6 +2,7 @@
 // machine and runs the setup wizard: pick the clients, sign in to Hyper3D,
 // set the write permissions, register (mcp-wizard's installer and flow
 // steps around two steps of this package). Unattended runs register only.
+// Uninstall (uninstall.go) removes everything the installers put here.
 package install
 
 import (
@@ -28,6 +29,7 @@ import (
 // Env is what install needs from the program.
 type Env struct {
 	Service func() *service.Service
+	Stdin   io.Reader // uninstall's question
 	Stdout  io.Writer
 	Stderr  io.Writer
 }
@@ -116,44 +118,6 @@ func Add(ctx context.Context, env Env, cmd cli.Command) int {
 		return runWizard(ctx, env, detector, scope, cmd, false)
 	}
 	return runUnattended(ctx, env, detector, scope, cmd, harness.Present)
-}
-
-// Uninstall removes the registrations and stops the background syncer. The
-// data folder stays; the summary says how to remove it.
-func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
-	detector, err := NewDetector(serverName(cmd))
-	if err != nil {
-		fmt.Fprintln(env.Stderr, err)
-		return 1
-	}
-	scope := harness.Scope{}
-	if cmd.Scope == string(harness.ScopeProject) {
-		dir, err := projectDir(cmd)
-		if err != nil {
-			fmt.Fprintln(env.Stderr, err)
-			return 1
-		}
-		scope = harness.ProjectScopeDir(dir)
-	}
-	code := runUnattended(ctx, env, detector, scope, cmd, harness.Absent)
-	if cmd.DryRun || scope.IsProject() {
-		return code
-	}
-	svc := env.Service()
-	defer svc.Close()
-	if svc.DaemonRunning() {
-		if err := svc.StopDaemon(); err != nil {
-			fmt.Fprintf(env.Stderr, "  Could not stop the background syncer: %v\n", err)
-		} else {
-			fmt.Fprintln(env.Stdout, "  Stopped the background syncer.")
-		}
-	}
-	root := svc.Paths().Root
-	if _, err := os.Stat(root); err == nil {
-		fmt.Fprintf(env.Stdout, "\n  Your data stays in %s (sign-in, permissions, task index, downloads).\n", root)
-		fmt.Fprintf(env.Stdout, "  To remove it: run `%s logout` (it revokes the Hyper3D grant), then delete that folder.\n", domain.BinaryName)
-	}
-	return code
 }
 
 // selectIDs picks the harnesses to act on. --clients wins, then --all, and by

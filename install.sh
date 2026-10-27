@@ -5,6 +5,8 @@ set -e
 OWNER="sairaph"
 REPO="rodin3d-mcp"
 BIN="rodin3d-mcp"
+# The binary goes to ~/.rodin3d-mcp/bin, inside the data folder, so
+# `rodin3d-mcp uninstall` removes it with the data.
 # Extra flags for the configure step, e.g. CONFIGURE_ARGS="--yes --all" sh install.sh
 CONFIGURE_ARGS="${CONFIGURE_ARGS:-}"
 
@@ -120,6 +122,8 @@ case ":$PATH:" in
   *) on_path=0 ;;
 esac
 
+# `rodin3d-mcp uninstall` removes the marker line below and the export line
+# right under it (internal/install/leftovers.go); keep the two in step.
 if [ "$on_path" -eq 0 ]; then
   line="export PATH=\"$INSTALL_DIR:\$PATH\""
   # The trailing `|| true` keeps `set -e` from ending the script when none of

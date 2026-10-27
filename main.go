@@ -53,7 +53,7 @@ func commandEnv() commands.Env {
 }
 
 func installEnv() install.Env {
-	return install.Env{Service: newService, Stdout: os.Stdout, Stderr: os.Stderr}
+	return install.Env{Service: newService, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 }
 
 func init() {
@@ -63,7 +63,7 @@ func init() {
 var usageSpecs = []cli.Spec{
 	{Name: "mcp", Description: "Run the MCP server over stdio (default when not in a terminal)"},
 	{Name: "install", Description: "Set up: register with the AI clients, sign in, set the permissions"},
-	{Name: "uninstall", Description: "Remove the AI client registrations and stop the syncer"},
+	{Name: "uninstall", Description: "Remove everything rodin3d-mcp put on this computer: sign-in, client entries, data, program, PATH lines (asks first)"},
 	{Name: "add", Description: "Register the server in this project's AI client configs"},
 	{Name: "login", Description: "Sign in to Hyper3D (login [no-browser] [\"<final address>\"]: quote the address, it holds &)"},
 	{Name: "daemon", Description: "Run the background syncer (daemon --stop stops it)"},
@@ -169,7 +169,7 @@ func printUsage(w *os.File) {
 		fmt.Fprintf(w, "  %s %s\n", domain.BinaryName, h.Usage)
 	}
 	fmt.Fprintln(w, "\nInstall, add and uninstall flags:")
-	fmt.Fprintln(w, "  --yes          non-interactive: register only")
+	fmt.Fprintln(w, "  --yes          install, add: non-interactive, register only; uninstall: do not ask")
 	fmt.Fprintln(w, "  --dry-run      show what would change without writing")
 	fmt.Fprintln(w, "  --all          register with every detected client")
 	fmt.Fprintln(w, "  --clients      comma-separated client ids")

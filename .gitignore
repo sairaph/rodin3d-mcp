@@ -3,7 +3,6 @@ notes/
 data/
 tmp/
 .env
-src/rodin-bridge/
 .claude/
 # build outputs
 /rodin3d-mcp

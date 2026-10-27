@@ -77,11 +77,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("step %q is not both, plan or generate.", in.Step),
 			"Pass plan (lay out the parts and show the plan), generate (split by the existing plan) or both.")
 	}
-	strength := in.Strength
-	if strength == 0 {
-		strength = 5 // the web slider's default
-	}
-	if strength < 1 || strength > 12 {
+	if in.Strength < 0 || in.Strength > 12 {
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("strength %d is not 1-12.", in.Strength), "Pass the number of parts to aim for, 1-12 (default 5).")
 	}
 	part, bangVer := strings.TrimSpace(in.Part), strings.TrimSpace(in.BangVersion)
@@ -104,21 +100,9 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	// Step generate splits by the plan already made, so its strength is the
-	// plan's: the newest plan split_parts recorded on the version, else
-	// (a plan made in the web) the strength given, else not known.
-	planUnknown := false
-	if step == "generate" {
-		if j, ok := s.latestJob(uuid, jobPlan, version); ok {
-			ps, _ := strconv.Atoi(j.Detail["strength"])
-			if in.Strength != 0 && in.Strength != ps {
-				return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("strength %d is not the strength of the plan the split follows: split_parts made the newest plan of geometry %s at strength %d (sent at %s).", in.Strength, version, ps, sentAt(j)),
-					"Leave strength out for step generate, or make a new plan with step plan (or both) at the strength wanted.")
-			}
-			strength = ps
-		} else if in.Strength == 0 {
-			strength, planUnknown = 0, true
-		}
+	strength, planUnknown, err := s.splitStrength(uuid, version, step, in.Strength)
+	if err != nil {
+		return Result{}, err
 	}
 	pin := price.Input{BangStep: step, Strength: strength, BangPart: part != "", PlanStrengthUnknown: planUnknown}
 	pinFromCard(&pin, card)
@@ -166,7 +150,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	var planID int64
 	if step == "generate" {
 		var busy *store.Job
-		if c, busy, err = s.claimJob(uuid, jobSplit, version, nil, splitKinds, 0); err != nil {
+		if c, busy, err = s.claimJob(ctx, uuid, jobSplit, version, nil, splitKinds, 0); err != nil {
 			return Result{}, err
 		}
 		if busy != nil {
@@ -175,7 +159,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	} else {
 		// A plan is blocked by nothing (as before the record): it is
 		// recorded first so a split in another session sees it running.
-		if c, _, err = s.claimJob(uuid, jobPlan, version, map[string]string{"bang_version": bangVer, "part": part, "strength": strconv.Itoa(strength)}, nil, 0); err != nil {
+		if c, _, err = s.claimJob(ctx, uuid, jobPlan, version, map[string]string{"bang_version": bangVer, "part": part, "strength": strconv.Itoa(strength)}, nil, 0); err != nil {
 			return Result{}, err
 		}
 	}
@@ -213,7 +197,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		}
 		// Step both: the split is claimed after its own plan ended.
 		var busy *store.Job
-		if c, busy, err = s.claimJob(uuid, jobSplit, version, nil, splitKinds, planID); err != nil || busy != nil {
+		if c, busy, err = s.claimJob(ctx, uuid, jobSplit, version, nil, splitKinds, planID); err != nil || busy != nil {
 			sp.close(ctx, nil)
 			if err == nil {
 				err = s.splitRunning(uuid, version, *busy)
@@ -249,6 +233,36 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		}
 	}
 	return s.finishSplit(ctx, sp, uuid, detail, images), nil
+}
+
+// splitStrength is the strength split_parts sends, quotes and reports for
+// step on geometry version of task uuid, given the strength passed (0: none).
+// Step generate splits by the plan already made, so its strength is the
+// plan's: the newest plan split_parts recorded on the version (a different
+// strength passed is refused), else (a plan made elsewhere, or no task) the
+// strength passed, else not known (unknown true, strength 0). The other
+// steps make a plan at the strength passed, or the web slider's 5.
+func (s *Service) splitStrength(uuid, version, step string, given int) (strength int, unknown bool, err error) {
+	if step != "generate" {
+		if given == 0 {
+			return 5, false, nil
+		}
+		return given, false, nil
+	}
+	if uuid != "" {
+		if j, ok := s.latestJob(uuid, jobPlan, version); ok {
+			ps, _ := strconv.Atoi(j.Detail["strength"])
+			if given != 0 && given != ps {
+				return 0, false, fail(render.CodeInvalidInput, fmt.Sprintf("strength %d is not the strength of the plan the split follows: split_parts made the newest plan of geometry %s at strength %d (sent at %s).", given, version, ps, sentAt(j)),
+					"Leave strength out for step generate, or make a new plan with step plan (or both) at the strength wanted.")
+			}
+			return ps, false, nil
+		}
+	}
+	if given == 0 {
+		return 0, true, nil
+	}
+	return given, false, nil
 }
 
 func isCode(err error, code string) bool {

@@ -214,6 +214,7 @@ type QuoteInput struct {
 	ForkStage                       string
 	BangStep                        string // split_parts: plan | generate | both
 	Strength                        int    // split_parts part count
+	Version                         string // split_parts: the geometry draft version (default the newest)
 	Part                            string // split_parts: the part of an earlier Bang result split again
 	BangVersion                     string // confirm_geometry: the Bang result confirmed
 	RigTemplate                     string // rig_model template
@@ -259,9 +260,10 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 	}
 	var task *TaskFront
 	var base map[string]any // the draft's settings a material redo repeats
+	uuid := ""
 	if strings.TrimSpace(in.TaskID) != "" {
-		uuid, err := s.resolveTask(in.TaskID)
-		if err != nil {
+		var err error
+		if uuid, err = s.resolveTask(in.TaskID); err != nil {
 			return Result{}, err
 		}
 		card, err := s.client.Card(ctx, uuid)
@@ -274,6 +276,28 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		pin.Forked = s.forkedHere(uuid)
 		if in.Operation == "redo_material" {
 			base = card.Settings
+		}
+	}
+	if in.Operation == "split_parts" {
+		// The strength split_parts would send: for step generate the plan's
+		// (splitStrength), read on the version it would split.
+		step := strings.ToLower(strings.TrimSpace(in.BangStep))
+		version := ""
+		if step == "generate" && uuid != "" {
+			hist, err := s.client.GeometryHistory(ctx, uuid)
+			if err != nil {
+				return Result{}, wrapf(err, "read the geometry versions")
+			}
+			if version, err = pickVersion(in.Version, keysOf(hist), "geometry"); err != nil {
+				return Result{}, err
+			}
+		}
+		if in.Strength < 0 || in.Strength > 12 {
+			return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("strength %d is not 1-12.", in.Strength), "Pass the number of parts to aim for, 1-12 (default 5).")
+		}
+		var err error
+		if pin.Strength, pin.PlanStrengthUnknown, err = s.splitStrength(uuid, version, step, in.Strength); err != nil {
+			return Result{}, err
 		}
 	}
 	pinTextureOptions(&pin, in.HD, in.Sharp, in.FaceEnhance, in.Delight, base)

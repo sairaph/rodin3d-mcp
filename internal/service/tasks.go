@@ -97,10 +97,19 @@ func (s *Service) liveTaskFront(ctx context.Context, card *rodin.Card) TaskFront
 		return front
 	}
 	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
-	if r := s.rigState(ctx, card.TaskUUID, st); r != nil && r.State == "done" {
+	r := s.rigState(ctx, card.TaskUUID, st)
+	addRigAction(&front, r != nil && r.State == "done")
+	return front
+}
+
+// addRigAction adds animate_model to the actions of front when the task has
+// a rig, only where rig_model is offered: animate_model works where rig_model
+// does (AnimateModel, actionCardAs), so get_task and every reply offer it by
+// the same rule.
+func addRigAction(front *TaskFront, rigged bool) {
+	if rigged && registered("animate_model") && slices.Contains(front.Actions, "rig_model") && !slices.Contains(front.Actions, "animate_model") {
 		front.Actions = append(front.Actions, "animate_model")
 	}
-	return front
 }
 
 // taskActions are the tools that act on the task of card at status st. A
@@ -595,9 +604,8 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 			front.Bang = s.bangVersions(ctx, uuid, d.hist.Geometry)
 			front.BangPlan, planImg = s.planState(ctx, uuid)
 		}
-		if front.Rig = s.rigState(ctx, uuid, d.status); front.Rig != nil && front.Rig.State == "done" && registered("animate_model") {
-			front.Task.Actions = append(front.Task.Actions, "animate_model")
-		}
+		front.Rig = s.rigState(ctx, uuid, d.status)
+		addRigAction(&front.Task, front.Rig != nil && front.Rig.State == "done")
 	}
 
 	if d.status.State == stage.Packed {

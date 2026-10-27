@@ -27,7 +27,7 @@ type splitArgs struct {
 	Step            *string `json:"step,omitempty" jsonschema:"both (default): lay out the parts, then split; plan: only lay out the parts and return the plan picture; generate: split by the plan made before"`
 	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"split one part of this earlier Bang result again (with part)"`
 	Part            *string `json:"part,omitempty" jsonschema:"the part name of bang_version to split again (get_task and the earlier reply list part names)"`
-	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for split_parts on this task with the same step, strength and part; -1 accepts a price quote_cost reports as not known"`
+	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for split_parts on this task with the same step, strength, version and part; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds in all (default true); false returns right after the request of step plan or generate (get_task follows the plan as bang_plan, the split as bang); step both needs its finished plan, so it waits as with true"`
 }
 
@@ -99,7 +99,7 @@ func (s *Server) registerP3Tools() {
 			"names no part); it takes the plan's strength. A split of the same version still running is not sent again. When the split "+
 			"finishes within the wait, its parts file is saved in the task's files folder and a render attached; otherwise get_task lists the "+
 			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
-			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
+			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength, version and part).",
 		paidTool, sp, s.splitParts)
 
 	rg := nonNull(inputSchema[rigArgs](map[string]string{"wait": "true"}))

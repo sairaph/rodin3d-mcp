@@ -28,11 +28,16 @@ func TestClaimJob(t *testing.T) {
 	if _, _, err := s.ClaimJob(Job{UUID: "t1", Kind: "rig", Key: "texture_refine"}, block, 0); err != nil {
 		t.Fatalf("other key: %v", err)
 	}
+	// A send that took long: the filled row's time is the fill's (a read of
+	// its jobs is measured from the reply, review 58 L1).
+	if _, err := s.db.Exec(`UPDATE jobs SET at_ms = ? WHERE id = ?`, time.Now().Add(-time.Minute).UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetJobs(id, []string{"j1"}, map[string]string{"result": "r1"}); err != nil {
 		t.Fatal(err)
 	}
 	j, err := s.LatestJob("t1", "rig", "model_refine")
-	if err != nil || len(j.Jobs) != 1 || j.Detail["template"] != "custom" || j.Detail["result"] != "r1" || j.State != JobRunning {
+	if err != nil || len(j.Jobs) != 1 || j.Detail["template"] != "custom" || j.Detail["result"] != "r1" || j.State != JobRunning || time.Since(j.At) > 10*time.Second {
 		t.Fatalf("filled claim: %+v %v", j, err)
 	}
 	// The caller's own running call does not block its next step.

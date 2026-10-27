@@ -18,7 +18,7 @@ type Job struct {
 	Detail map[string]string // what the call was of (FBX file, part, ...)
 	Jobs   []string          // scheduler job ids
 	State  string            // JobRunning until an end was read: succeeded | failed | canceled
-	At     time.Time
+	At     time.Time         // when it was claimed; once its jobs are recorded, when the reply named them
 }
 
 // JobRunning is the state of a recorded call whose end was not read yet.
@@ -82,11 +82,29 @@ func (s *Store) ClaimJob(j Job, blocking []string, except int64) (int64, Job, er
 }
 
 // SetJobs records the scheduler jobs of a claimed call, and detail values
-// the reply gave (merged into the claim's).
+// the reply gave (merged into the claim's). The row's time becomes the
+// reply's: from then on it says when the scheduler was given the jobs, which
+// is what a read of them is measured from (a job may be unknown to the
+// scheduler for a moment after its request).
 func (s *Store) SetJobs(id int64, jobs []string, detail map[string]string) error {
 	if len(jobs) == 0 {
 		return errors.New("no scheduler job to record")
 	}
+	jb, err := json.Marshal(jobs)
+	if err != nil {
+		return err
+	}
+	return s.updateDetail(id, detail, `jobs = ?, at_ms = ?`, string(jb), nowMS())
+}
+
+// SetDetail merges detail values into a recorded call's.
+func (s *Store) SetDetail(id int64, detail map[string]string) error {
+	return s.updateDetail(id, detail, "")
+}
+
+// updateDetail merges detail into row id's and sets the other columns of
+// set (an UPDATE assignment list with args) in the same transaction.
+func (s *Store) updateDetail(id int64, detail map[string]string, set string, args ...any) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -110,14 +128,54 @@ func (s *Store) SetJobs(id int64, jobs []string, detail map[string]string) error
 	if err != nil {
 		return err
 	}
-	jb, err := json.Marshal(jobs)
-	if err != nil {
-		return err
+	if set != "" {
+		set += ", "
 	}
-	if _, err := tx.Exec(`UPDATE jobs SET jobs = ?, detail = ? WHERE id = ?`, string(jb), string(db), id); err != nil {
+	args = append(append(args, string(db)), id)
+	if _, err := tx.Exec(`UPDATE jobs SET `+set+`detail = ? WHERE id = ?`, args...); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// RunningJobs returns every recorded call of the kinds on task uuid and key
+// that is still marked running (other than row except), newest first: the
+// rows ClaimJob would refuse on.
+func (s *Store) RunningJobs(uuid, key string, kinds []string, except int64) ([]Job, error) {
+	return s.jobsOf(uuid, key, kinds, `AND state = ? AND id <> ?`, JobRunning, except)
+}
+
+// JobsOf returns every recorded call of the kinds on task uuid and key,
+// newest first per kind (a claim past ClaimBound without jobs left out).
+func (s *Store) JobsOf(uuid, key string, kinds []string) ([]Job, error) {
+	return s.jobsOf(uuid, key, kinds, "")
+}
+
+func (s *Store) jobsOf(uuid, key string, kinds []string, where string, args ...any) ([]Job, error) {
+	var out []Job
+	for _, kind := range kinds {
+		a := append([]any{uuid, kind, key}, args...)
+		rows, err := s.db.Query(`SELECT id, uuid, kind, key, detail, jobs, state, at_ms FROM jobs
+			WHERE uuid = ? AND kind = ? AND key = ? `+where+` AND `+live+` ORDER BY at_ms DESC, id DESC`,
+			append(a, nowMS()-ClaimBound.Milliseconds())...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			j, err := scanJob(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, j)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // DropJob removes a claimed call whose send failed or named no job.
@@ -141,7 +199,12 @@ func (s *Store) LatestJob(uuid, kind, key string) (Job, error) {
 		uuid, kind, key, key, nowMS()-ClaimBound.Milliseconds()))
 }
 
-func scanJob(row *sql.Row) (Job, error) {
+// Job returns recorded call id, or ErrNotFound.
+func (s *Store) Job(id int64) (Job, error) {
+	return scanJob(s.db.QueryRow(`SELECT id, uuid, kind, key, detail, jobs, state, at_ms FROM jobs WHERE id = ?`, id))
+}
+
+func scanJob(row interface{ Scan(...any) error }) (Job, error) {
 	var j Job
 	var detail, jobs string
 	var ms int64

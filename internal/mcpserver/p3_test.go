@@ -531,6 +531,67 @@ func TestRigModelFollowsItsJobs(t *testing.T) {
 			t.Fatalf("reskin: %s %d:\n%s", r.code(), rigging(f), r.text)
 		}
 	})
+	// L5, L7 (review 58): the calls describe the rig they made, known by its
+	// generation_time, not by its template: a rig made later in the web with
+	// the same template is not theirs. reskin true of the rig a recorded FBX
+	// call made (the first call outlasted the wait) checks only what Reskin
+	// checks, as right after the rig: a rig with a bone more is reskinned.
+	t.Run("the rig a recorded FBX call made", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		bones, _ := fbx.Skeleton(fbxtest.Human())
+		var names []string
+		var parents []int
+		var inv [][16]float64
+		for _, b := range bones {
+			names, parents, inv = append(names, b.Name), append(parents, b.Parent), append(inv, b.Transform.Invert())
+		}
+		names, parents, inv = append(names, "Tail"), append(parents, 0), append(inv, bones[0].Transform.Invert())
+		f.fake.SetFile(fakehyper.PackedID+"/model.glb.rigging.rodinrig", fbxtest.RigFile(names, parents, inv))
+		f.fake.JobState = "Running"
+		setFlowWait(t)
+		if r := f.call("rig_model", args(path, false)); r.code() != "" || get(r.front, "detail", "rig", "state") != "running" {
+			t.Fatalf("first call: %s:\n%s", r.code(), r.text)
+		}
+		f.fake.JobState = "Succeeded"
+		if g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID}); get(g.front, "rig", "fbx") != path || get(g.front, "rig", "reskin") != "not sent" {
+			t.Fatalf("get_task after the rig %v", get(g.front, "rig"))
+		}
+		task := f.fake.Tasks(fakehyper.PackedID)
+		ours := task.RigTime
+		task.RigTime = "2026-10-27T11:00:00.000Z" // a custom rig made in the web
+		if g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID}); get(g.front, "rig", "state") != "done" || get(g.front, "rig", "fbx") != nil || get(g.front, "rig", "reskin") != nil {
+			t.Fatalf("get_task after a web rig %v", get(g.front, "rig"))
+		}
+		if r := f.call("rig_model", args(path, true)); r.code() != "conflict" || !strings.Contains(r.text, "the rig has 23 bones and the FBX 22") || rigging(f) != 1 {
+			t.Fatalf("reskin of the web rig: %s:\n%s", r.code(), r.text)
+		}
+		task.RigTime = ours
+		if r := f.call("rig_model", args(path, true)); r.code() != "" || rigging(f) != 2 || get(r.front, "detail", "rig", "reskin") != "succeeded" {
+			t.Fatalf("reskin of the recorded call's rig: %s:\n%s", r.code(), r.text)
+		}
+		if g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID}); get(g.front, "rig", "fbx") != path || get(g.front, "rig", "reskin") != "succeeded" {
+			t.Fatalf("get_task after the reskin %v", get(g.front, "rig"))
+		}
+	})
+	// L3 (review 58): a rig call that failed leaves the task's earlier rig,
+	// so the reply offers animate_model as get_task does.
+	t.Run("a failed rig keeps the earlier one", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		task := f.fake.Tasks(fakehyper.PackedID)
+		task.Rig, task.RigTime = "human", "2026-10-27T09:00:00.000Z"
+		f.fake.JobState = "Failed"
+		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "template": "human", "expected_credits": 0})
+		if r.code() != "" || get(r.front, "detail", "rig", "state") != "failed" || !contains(get(r.front, "task", "actions"), "animate_model") {
+			t.Fatalf("%s %v:\n%s", r.code(), get(r.front, "task", "actions"), r.text)
+		}
+		g := f.call("get_task", map[string]any{"task_id": fakehyper.PackedID})
+		if get(g.front, "rig", "last_call") != "failed" || !contains(get(g.front, "task", "actions"), "animate_model") {
+			t.Fatalf("get_task %v %v", get(g.front, "rig"), get(g.front, "task", "actions"))
+		}
+	})
 	t.Run("a rig of another skeleton", func(t *testing.T) {
 		f := newFixture(t, true, true)
 		f.allow("rig")
@@ -632,6 +693,25 @@ func TestSplitPartsFollowsItsPlan(t *testing.T) {
 		}
 		if r := f.call("split_parts", gen(part)); r.code() != "" || f.fake.Calls("task/bang_generate") != 1 {
 			t.Fatalf("part split after its plan: %s:\n%s", r.code(), r.text)
+		}
+	})
+	// M1 (review 58): a plan sent before the newest one is read from the
+	// scheduler before the split's claim, by step generate and by step both,
+	// so it does not block every split once it ended.
+	t.Run("an older plan no read follows", func(t *testing.T) {
+		for _, step := range []string{"generate", "both"} {
+			f := splitFixture(t)
+			f.fake.JobState = "Running"
+			for i := 0; i < 2; i++ {
+				if r := f.call("split_parts", map[string]any{"task_id": fakehyper.DraftID, "step": "plan", "expected_credits": 0, "wait": false}); r.code() != "" {
+					t.Fatalf("plan %d: %s:\n%s", i, r.code(), r.text)
+				}
+			}
+			f.fake.JobState = "Succeeded"
+			r := f.call("split_parts", map[string]any{"task_id": fakehyper.DraftID, "step": step, "expected_credits": 0.5})
+			if r.code() != "" || f.fake.Calls("task/bang_generate") != 1 || get(r.front, "detail", "split") != "succeeded" {
+				t.Fatalf("step %s after two plans: %s:\n%s", step, r.code(), r.text)
+			}
 		}
 	})
 	t.Run("a split still running", func(t *testing.T) {

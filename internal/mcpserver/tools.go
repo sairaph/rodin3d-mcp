@@ -81,7 +81,8 @@ type quoteSettings struct {
 	Batch        *int    `json:"batch,omitempty" jsonschema:"generate_model: drafts per submit (more than 1 needs the Business plan)"`
 	Stage        *string `json:"stage,omitempty" jsonschema:"fork_task: the stage to fork from (default material, the priced one)"`
 	Step         *string `json:"step,omitempty" jsonschema:"split_parts: plan, generate or both (default both)"`
-	Strength     *int    `json:"strength,omitempty" jsonschema:"split_parts: the part count 1-12 (default 5)"`
+	Strength     *int    `json:"strength,omitempty" jsonschema:"split_parts: the part count 1-12 (default 5; step generate with task_id takes the strength of the newest plan split_parts made on the version, as split_parts does)"`
+	Version      *string `json:"version,omitempty" jsonschema:"split_parts: the geometry draft version, as passed to split_parts (default the newest)"`
 	Part         *string `json:"part,omitempty" jsonschema:"split_parts: the part name when one part of an earlier Bang result is split again"`
 	BangVersion  *string `json:"bang_version,omitempty" jsonschema:"confirm_geometry: the Bang result the confirm confirms"`
 	Template     *string `json:"template,omitempty" jsonschema:"rig_model: the template (default human); custom for an own skeleton, an FBX skeleton or a description"`
@@ -117,7 +118,7 @@ type previewInput struct {
 	TaskID string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	Stage  *string `json:"stage,omitempty" jsonschema:"which stage: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
 	Mode   *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded, or for a Gen-1.5 geometry draft, which has no mesh, a frame of the server's turntable: turntable_dark, turntable_copper, turntable_light, turntable_normal, picked by view) or a local render of the stage mesh (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, tracer, depth, uv_checker)"`
-	View   *string `json:"view,omitempty" jsonschema:"camera of a render (server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
+	View   *string `json:"view,omitempty" jsonschema:"camera of a render, and for a turntable_* look the frame nearest its turn round the model (no top; the other server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
 	Size   *int    `json:"size,omitempty" jsonschema:"edge of the PNG in pixels, 256-1024 (server images: the longer edge)"`
 	SaveTo *string `json:"save_to,omitempty" jsonschema:"absolute path of the PNG to write; default the previews folder of the data directory"`
 }
@@ -288,7 +289,7 @@ func (s *Server) quoteCost(ctx context.Context, _ *mcp.CallToolRequest, in quote
 		q.Resolution, q.Geometry, q.Budget = optString(st.Resolution), optString(st.Geometry), optString(st.Budget)
 		q.Batch = optInt(st.Batch, 0)
 		q.ForkStage = optString(st.Stage)
-		q.BangStep, q.Strength = optString(st.Step), optInt(st.Strength, 0)
+		q.BangStep, q.Strength, q.Version = optString(st.Step), optInt(st.Strength, 0), optString(st.Version)
 		q.Part, q.BangVersion = optString(st.Part), optString(st.BangVersion)
 		q.RigTemplate, q.Skinning = optString(st.Template), optString(st.Skinning)
 		q.Animations, q.AnimationFiles, q.Images = optInt(st.Animations, 0), optInt(st.AnimFiles, 0), optInt(st.Images, 0)

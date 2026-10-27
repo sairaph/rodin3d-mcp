@@ -100,8 +100,9 @@ const (
 	jobSplit  = "bang_generate" // key: the geometry version
 )
 
-// jobFresh is how long after its request a job that reads Canceled may
-// still be one the scheduler does not know yet (waitJobs: three polls).
+// jobFresh is how long after the reply that named it (the recorded call's
+// At, set when its jobs are recorded) a job that reads Canceled may still be
+// one the scheduler does not know yet (waitJobs: three polls).
 const jobFresh = 10 * time.Second
 
 // claim is a call the card does not show, recorded before it is sent
@@ -115,20 +116,30 @@ type claim struct {
 // claimJob records a call of kind on task uuid and key about to be sent, in
 // one store step with the check that no call of a kind in blocking runs on
 // the same task and key (other than the recorded call except): two sessions
-// cannot both pass a busy check and send. The calling tool reads the
-// scheduler for the recorded calls first (rigBusy, splitBusy, planFits), so
-// a call that ended is recorded ended before this check. busy is the running
-// call that refused it.
-func (s *Service) claimJob(uuid, kind, key string, detail map[string]string, blocking []string, except int64) (c claim, busy *store.Job, err error) {
+// cannot both pass a busy check and send. Every call of a blocking kind the
+// store still marks running is read from the scheduler first and its end
+// recorded, so only a call that really runs refuses (also an older one no
+// other read follows, such as a plan sent before the newest plan). busy is
+// the running call that refused it.
+func (s *Service) claimJob(ctx context.Context, uuid, kind, key string, detail map[string]string, blocking []string, except int64) (c claim, busy *store.Job, err error) {
 	c.s = s
 	st, err := s.Store()
 	if err != nil {
 		return c, nil, nil // no store: nothing is recorded or followed
 	}
-	id, running, err := st.ClaimJob(store.Job{UUID: uuid, Kind: kind, Key: key, Detail: detail}, blocking, except)
+	running, err := st.RunningJobs(uuid, key, blocking, except)
+	if err != nil {
+		return c, nil, wrapf(err, "read the recorded calls before sending the %s call", kind)
+	}
+	for _, j := range running {
+		if _, err := s.jobState(ctx, j); err != nil {
+			return c, nil, wrapf(err, "read the state of the %s call sent at %s", j.Kind, sentAt(j))
+		}
+	}
+	id, blocker, err := st.ClaimJob(store.Job{UUID: uuid, Kind: kind, Key: key, Detail: detail}, blocking, except)
 	switch {
 	case errors.Is(err, store.ErrBusy):
-		return c, &running, nil
+		return c, &blocker, nil
 	case err != nil:
 		return c, nil, wrapf(err, "record the %s call before sending it", kind)
 	}
@@ -138,7 +149,9 @@ func (s *Service) claimJob(uuid, kind, key string, detail map[string]string, blo
 
 // fill records the scheduler jobs the reply named (and detail values of the
 // reply) and returns the record's id; a reply without jobs leaves nothing to
-// follow, so the claim is removed (0).
+// follow, so the claim is removed (0). When the jobs cannot be recorded (a
+// store error), the claim stays: the call was sent and runs, so it keeps
+// blocking a repeat until store.ClaimBound, as a claim being sent does.
 func (c claim) fill(jobs []string, detail map[string]string) int64 {
 	if c.id == 0 {
 		return 0
@@ -147,10 +160,11 @@ func (c claim) fill(jobs []string, detail map[string]string) int64 {
 	if err != nil {
 		return 0
 	}
-	if len(jobs) == 0 || st.SetJobs(c.id, jobs, detail) != nil {
+	if len(jobs) == 0 {
 		_ = st.DropJob(c.id)
 		return 0
 	}
+	_ = st.SetJobs(c.id, jobs, detail)
 	return c.id
 }
 
@@ -209,7 +223,8 @@ func (s *Service) jobState(ctx context.Context, j store.Job) (string, error) {
 			failed = true
 		case "Canceled":
 			// An unknown job reads Canceled, and a job may be unknown for a
-			// moment after its request. The scheduler keeps ended jobs (read
+			// moment after the reply that named it (j.At, however long the
+			// send took). The scheduler keeps ended jobs (read
 			// 2026-10-27: a job of 2026-09-16 still answered Succeeded), so
 			// past jobFresh Canceled is the job's own end.
 			if time.Since(j.At) < jobFresh {

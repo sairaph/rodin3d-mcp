@@ -20,6 +20,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/price"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
+	"github.com/sairaph/rodin3d-mcp/internal/store"
 )
 
 // Bang (split into parts) works on a geometry draft version of the same task
@@ -53,11 +54,11 @@ type bangPart struct {
 
 type splitDetail struct {
 	Version   string    `yaml:"geometry_version"`
-	Strength  int       `yaml:"strength"`
+	Strength  int       `yaml:"strength,omitempty"` // 0: the plan of step generate was made elsewhere, strength not known
 	Step      string    `yaml:"step"`
 	Part      string    `yaml:"part,omitempty"`
-	Plan      string    `yaml:"plan"`             // done | running | failed | canceled | existing
-	Split     string    `yaml:"split,omitempty"`  // done | running | failed | canceled
+	Plan      string    `yaml:"plan"`             // succeeded | running | failed | canceled | existing
+	Split     string    `yaml:"split,omitempty"`  // succeeded | running | failed | canceled
 	Result    *bangPart `yaml:"result,omitempty"` // the new Bang version
 	TimedOut  bool      `yaml:"-"`
 	PlanImage bool      `yaml:"-"`
@@ -95,17 +96,33 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	pin := price.Input{BangStep: step, Strength: strength, BangPart: part != ""}
-	pinFromCard(&pin, card)
-	sp, err := s.prepare(ctx, "split_parts", uuid, pin, in.Expected, true)
-	if err != nil {
-		return Result{}, err
-	}
 	hist, err := s.client.GeometryHistory(ctx, uuid)
 	if err != nil {
 		return Result{}, wrapf(err, "read the geometry versions")
 	}
 	version, err := pickVersion(in.Version, keysOf(hist), "geometry")
+	if err != nil {
+		return Result{}, err
+	}
+	// Step generate splits by the plan already made, so its strength is the
+	// plan's: the newest plan split_parts recorded on the version, else
+	// (a plan made in the web) the strength given, else not known.
+	planUnknown := false
+	if step == "generate" {
+		if j, ok := s.latestJob(uuid, jobPlan, version); ok {
+			ps, _ := strconv.Atoi(j.Detail["strength"])
+			if in.Strength != 0 && in.Strength != ps {
+				return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("strength %d is not the strength of the plan the split follows: split_parts made the newest plan of geometry %s at strength %d (sent at %s).", in.Strength, version, ps, sentAt(j)),
+					"Leave strength out for step generate, or make a new plan with step plan (or both) at the strength wanted.")
+			}
+			strength = ps
+		} else if in.Strength == 0 {
+			strength, planUnknown = 0, true
+		}
+	}
+	pin := price.Input{BangStep: step, Strength: strength, BangPart: part != "", PlanStrengthUnknown: planUnknown}
+	pinFromCard(&pin, card)
+	sp, err := s.prepare(ctx, "split_parts", uuid, pin, in.Expected, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -142,16 +159,38 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	// step both needs the finished plan before it can split, so it waits.
 	wait := in.Wait || step == "both"
 	var images []Image
+	// Each call is recorded before it is sent, in one store step with the
+	// check that no split (nor, before a split, a plan) of the version runs:
+	// two sessions cannot both pass splitBusy or planFits and send.
+	var c claim
+	var planID int64
+	if step == "generate" {
+		var busy *store.Job
+		if c, busy, err = s.claimJob(uuid, jobSplit, version, nil, splitKinds, 0); err != nil {
+			return Result{}, err
+		}
+		if busy != nil {
+			return Result{}, s.splitRunning(uuid, version, *busy)
+		}
+	} else {
+		// A plan is blocked by nothing (as before the record): it is
+		// recorded first so a split in another session sees it running.
+		if c, _, err = s.claimJob(uuid, jobPlan, version, map[string]string{"bang_version": bangVer, "part": part, "strength": strconv.Itoa(strength)}, nil, 0); err != nil {
+			return Result{}, err
+		}
+	}
 	sp.open()
 	if step == "generate" {
 		detail.Plan = "existing"
 	} else {
 		reply, err := s.client.BangPlan(ctx, req, strength)
 		if err != nil {
+			c.drop()
 			sp.close(ctx, err)
 			return Result{}, sendFailure("split_parts (bang_plan)", uuid, err)
 		}
-		id := s.recordJobs(uuid, jobPlan, version, map[string]string{"bang_version": bangVer, "part": part, "strength": strconv.Itoa(strength)}, reply.UUIDs())
+		id := c.fill(reply.UUIDs(), nil)
+		planID = id
 		jr := jobsResult{}
 		if wait {
 			if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
@@ -172,14 +211,25 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			sp.close(ctx, nil)
 			return s.finishSplit(ctx, sp, uuid, detail, images), nil
 		}
+		// Step both: the split is claimed after its own plan ended.
+		var busy *store.Job
+		if c, busy, err = s.claimJob(uuid, jobSplit, version, nil, splitKinds, planID); err != nil || busy != nil {
+			sp.close(ctx, nil)
+			if err == nil {
+				err = s.splitRunning(uuid, version, *busy)
+			}
+			e := Classify(err)
+			return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split was not sent: %s", version, e.Message), e.Hint, e.Fields)
+		}
 	}
 	reply, err := s.client.BangGenerate(ctx, uuid, version)
 	if err != nil {
+		c.drop()
 		sp.close(ctx, err)
 		return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
 	}
 	detail.Result = &bangPart{Version: reply.Version}
-	id := s.recordJobs(uuid, jobSplit, version, map[string]string{"result": reply.Version}, reply.UUIDs())
+	id := c.fill(reply.UUIDs(), map[string]string{"result": reply.Version})
 	jr := jobsResult{}
 	if wait {
 		if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
@@ -236,7 +286,26 @@ func (s *Service) splitBusy(ctx context.Context, uuid, version string) error {
 	if state != "running" {
 		return nil
 	}
-	return failFields(render.CodeConflict, fmt.Sprintf("The split of geometry %s that split_parts sent at %s (Bang version %s) is still running.", version, sentAt(j), j.Detail["result"]),
+	return s.splitRunning(uuid, version, j)
+}
+
+// splitKinds are the calls that block a split of a version: a split, and a
+// plan (the split would follow whichever plan the server takes; planFits).
+var splitKinds = []string{jobSplit, jobPlan}
+
+// splitRunning is the refusal of a split while the recorded call j (a
+// split, or a plan) of the version runs.
+func (s *Service) splitRunning(uuid, version string, j store.Job) error {
+	if j.Kind == jobPlan {
+		return failFields(render.CodeConflict, fmt.Sprintf("The Bang plan of geometry %s that split_parts sent at %s is still running.", version, sentAt(j)),
+			"In a minute, get_task with "+uuid+": its bang_plan block says when the plan is made and attaches its picture; then split_parts with step generate splits by it.",
+			map[string]any{"geometry_version": version, "plan_of": planOf(j.Detail["bang_version"], j.Detail["part"]), "plan_state": "running"})
+	}
+	what := ""
+	if r := j.Detail["result"]; r != "" {
+		what = " (Bang version " + r + ")"
+	}
+	return failFields(render.CodeConflict, fmt.Sprintf("The split of geometry %s that split_parts sent at %s%s is still running.", version, sentAt(j), what),
 		"In a minute or two, get_task with "+uuid+": its bang block lists the result once it is done. Do not call split_parts again for it.",
 		map[string]any{"geometry_version": version, "bang_version": j.Detail["result"]})
 }
@@ -260,8 +329,7 @@ func (s *Service) planFits(ctx context.Context, uuid, version, bangVer, part str
 	fields := map[string]any{"geometry_version": version, "plan_of": planOf(j.Detail["bang_version"], j.Detail["part"]), "plan_state": state}
 	switch {
 	case state == "running":
-		return failFields(render.CodeConflict, fmt.Sprintf("The Bang plan of geometry %s that split_parts sent at %s is still running.", version, sentAt(j)),
-			"In a minute, get_task with "+uuid+": its bang_plan block says when the plan is made and attaches its picture; then split_parts with step generate splits by it.", fields)
+		return s.splitRunning(uuid, version, j)
 	case state != "succeeded":
 		return failFields(render.CodeConflict, fmt.Sprintf("The newest Bang plan of geometry %s that split_parts sent (at %s) ended %s.", version, sentAt(j), state),
 			"split_parts with step plan (or both) makes a new plan.", fields)

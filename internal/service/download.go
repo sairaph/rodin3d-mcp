@@ -48,7 +48,7 @@ func (s *Service) Download(ctx context.Context, in DownloadInput) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	front := downloadFront{Task: s.taskFront(card)}
+	front := downloadFront{Task: s.liveTaskFront(ctx, card)}
 
 	type item struct{ name, url string }
 	var pack []item

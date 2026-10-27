@@ -19,6 +19,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/rigdata"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/stage"
+	"github.com/sairaph/rodin3d-mcp/internal/store"
 )
 
 // Rigging and animation (notes 14 section 6; web call sites
@@ -67,9 +68,11 @@ type rigFront struct {
 	// and rig_model with reskin true), running (a rig call rig_model sent is
 	// still running), failed, canceled, or none (get_task: no rig).
 	State string `yaml:"state"`
-	// LastCall (get_task) is how the newest rig call rig_model sent on the
+	// LastCall (get_task) is how the newest rig call this tool sent on the
 	// task ended when that was not a success: failed or canceled (the rig
-	// shown, if any, is an earlier one).
+	// shown, if any, is an earlier one; left out when the task's rig was
+	// made after that call was sent). FBX and Reskin are shown only while
+	// the task's rig is the one those calls made (rigState).
 	LastCall string `yaml:"last_call,omitempty"`
 	// FBX and Reskin: the imported skeleton file and the state of the
 	// reskin call that turns the rig's bones to its frames (succeeded |
@@ -230,14 +233,30 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if fbxPath != "" {
 		detail["fbx"] = fbxPath
 	}
+	// The call is recorded in the same store step that checks no rig or
+	// reskin call runs, so a second session cannot pass rigBusy meanwhile.
+	kind := jobRig
+	if in.Reskin {
+		kind = jobReskin
+	}
+	c, busy, err := s.claimJob(uuid, kind, source, detail, rigKinds, 0)
+	if err != nil {
+		return Result{}, err
+	}
+	if busy != nil {
+		return Result{}, rigRunning(uuid, *busy)
+	}
 	sp.open()
+	var rigID int64
 	if !in.Reskin {
 		reply, err := s.client.Rigging(ctx, uuid, settings)
 		if err != nil {
+			c.drop()
 			sp.close(ctx, err)
 			return Result{}, sendFailure("rig_model", uuid, err)
 		}
-		id := s.recordJobs(uuid, jobRig, source, detail, reply.Job.UUIDs)
+		id := c.fill(reply.Job.UUIDs, nil)
+		rigID = id
 		jr := jobsResult{}
 		if wait {
 			if jr, err = s.waitJobs(ctx, reply.Job.UUIDs, deadline); err != nil {
@@ -256,10 +275,22 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if fbxPath != "" {
 		if !in.Reskin && rig.State == "succeeded" {
 			call, block = s.reskinFor(ctx, uuid, source, bones, true)
+			if call != nil {
+				// The reskin is claimed like the rig: another session's
+				// reskin true may have started since the rig ended.
+				c, busy, err = s.claimJob(uuid, jobReskin, source, map[string]string{"fbx": fbxPath, "template": call.template}, rigKinds, rigID)
+				switch {
+				case err != nil:
+					call, block = nil, &reskinBlock{why: Classify(err).Message, hint: "Call rig_model with the same fbx_skeleton_path and reskin true in a moment.", retry: true}
+				case busy != nil:
+					call, block = nil, &reskinBlock{why: fmt.Sprintf("a %s call rig_model sent at %s on this task is still running", busy.Kind, sentAt(*busy)),
+						hint: "In a minute or two, get_task with " + uuid + ": its rig block says when it is done. Do not call rig_model again until then."}
+				}
+			}
 		}
 		rig.Reskin = "not sent"
 		if call != nil {
-			state, err := s.sendReskin(ctx, uuid, source, fbxPath, call, deadline)
+			state, err := s.sendReskin(ctx, uuid, c, call, deadline)
 			if err != nil {
 				sp.close(ctx, err)
 				return Result{}, reskinFailure(uuid, in.Reskin, err)
@@ -357,12 +388,20 @@ func (s *Service) rigBusy(ctx context.Context, uuid, source string) error {
 			return wrapf(err, "read the state of the %s call sent at %s", kind, sentAt(j))
 		}
 		if state == "running" {
-			return failFields(render.CodeConflict, fmt.Sprintf("The %s call rig_model sent on this task at %s is still running.", kind, sentAt(j)),
-				"In a minute or two, get_task with "+uuid+": its rig block says when it is done. Do not call rig_model again until then.",
-				map[string]any{"call": kind, "sent": j.At.UTC().Format(time.RFC3339)})
+			return rigRunning(uuid, j)
 		}
 	}
 	return nil
+}
+
+// rigKinds are the calls one rig source takes one at a time (rigBusy).
+var rigKinds = []string{jobRig, jobReskin}
+
+// rigRunning is the refusal of a rig while the recorded call j runs.
+func rigRunning(uuid string, j store.Job) error {
+	return failFields(render.CodeConflict, fmt.Sprintf("The %s call rig_model sent on this task at %s is still running.", j.Kind, sentAt(j)),
+		"In a minute or two, get_task with "+uuid+": its rig block says when it is done. Do not call rig_model again until then.",
+		map[string]any{"call": j.Kind, "sent": j.At.UTC().Format(time.RFC3339)})
 }
 
 // reskinCall is the web's second Import FBX call computed for the task's
@@ -420,8 +459,13 @@ func (s *Service) reskinFor(ctx context.Context, uuid, source string, bones []fb
 	if err != nil {
 		return nil, &reskinBlock{why: "the rig's skeleton cannot be read: " + err.Error(), hint: asIs}
 	}
-	if err := rigdata.SameSkeleton(bones, joints); err != nil {
-		return nil, &reskinBlock{why: "the task's rig is not the rig of these FBX bones: " + err.Error(), hint: firstCall}
+	// reskin true reskins only the rig made from these bones. Right after
+	// that rig the web checks nothing more than Reskin does (every FBX bone
+	// among the rig's joints, no count rule; main.fmt.js:56092-56115).
+	if !justRigged {
+		if err := rigdata.SameSkeleton(bones, joints); err != nil {
+			return nil, &reskinBlock{why: "the task's rig is not the rig of these FBX bones: " + err.Error(), hint: firstCall}
+		}
 	}
 	hierarchy, err := rigdata.Reskin(bones, joints)
 	if err != nil {
@@ -433,14 +477,15 @@ func (s *Service) reskinFor(ctx context.Context, uuid, source string, bones []fb
 		"skinning_method": skinning, "rodinrig_hierarchy": hierarchy, "rodinrig_template": res.Template}}, nil
 }
 
-// sendReskin sends a reskin call and follows its job until deadline; the
-// job is recorded, so get_task follows it after the wait.
-func (s *Service) sendReskin(ctx context.Context, uuid, source, fbxPath string, call *reskinCall, deadline time.Time) (string, error) {
+// sendReskin sends a reskin call claimed as c and follows its job until
+// deadline; the job is recorded, so get_task follows it after the wait.
+func (s *Service) sendReskin(ctx context.Context, uuid string, c claim, call *reskinCall, deadline time.Time) (string, error) {
 	reply, err := s.client.Rigging(ctx, uuid, call.settings)
 	if err != nil {
+		c.drop()
 		return "", err
 	}
-	id := s.recordJobs(uuid, jobReskin, source, map[string]string{"fbx": fbxPath}, reply.Job.UUIDs)
+	id := c.fill(reply.Job.UUIDs, nil)
 	jr, err := s.waitJobs(ctx, reply.Job.UUIDs, deadline)
 	if err != nil {
 		return "running", nil // sent; get_task follows the recorded job
@@ -475,6 +520,7 @@ func (s *Service) rigState(ctx context.Context, uuid string, st stage.Status) *r
 	}
 	res, err := s.client.RiggingResult(ctx, uuid, source)
 	out := &rigFront{Source: source, State: "done"}
+	var made time.Time // when the task's rig was made (zero: not given)
 	switch {
 	case isCode(err, "RIGGING_NOT_FOUND"):
 		out.State = "none"
@@ -482,6 +528,15 @@ func (s *Service) rigState(ctx context.Context, uuid string, st stage.Status) *r
 		return nil
 	default:
 		out.Template, out.Skinning = res.Template, scalarOf(res.Raw["skinning_method"])
+		made, _ = time.Parse(time.RFC3339Nano, scalarOf(res.Raw["generation_time"]))
+	}
+	// A rig made in the web after a recorded call is not that call's: the
+	// recorded calls describe the task's rig only while its template is the
+	// call's and it was not made before the call was sent.
+	before := func(j store.Job) bool { return !made.IsZero() && made.Before(j.At) }
+	after := func(j store.Job) bool { return !made.IsZero() && made.After(j.At) }
+	from := func(j store.Job) bool {
+		return out.State == "done" && j.Detail["template"] == out.Template && !before(j)
 	}
 	rigCall, hasRigCall := s.latestJob(uuid, jobRig, source)
 	if hasRigCall {
@@ -492,16 +547,27 @@ func (s *Service) rigState(ctx context.Context, uuid string, st stage.Status) *r
 			// The result may still be an earlier rig's.
 			out.State, out.Template, out.Skinning = "running", "", ""
 		case state != "succeeded":
-			out.LastCall = state
-		}
-		if f := rigCall.Detail["fbx"]; f != "" {
-			out.FBX, out.Reskin = f, "not sent"
+			// A rig made after this call was sent is newer than its failure.
+			if !after(rigCall) {
+				out.LastCall = state
+			}
+		case from(rigCall) && rigCall.Detail["fbx"] != "":
+			out.FBX, out.Reskin = rigCall.Detail["fbx"], "not sent"
 		}
 	}
 	if r, ok := s.latestJob(uuid, jobReskin, source); ok && (!hasRigCall || !r.At.Before(rigCall.At)) {
-		out.FBX, out.Reskin = r.Detail["fbx"], ""
-		if state, err := s.jobState(ctx, r); err == nil {
-			out.Reskin = state
+		state, err := s.jobState(ctx, r)
+		// A running reskin is shown as such (the result still shows the rig
+		// it reskins); an ended one while the task's rig has its template
+		// (calls recorded before the template was kept name none), and a
+		// succeeded one only when that rig was made after it was sent.
+		tmpl := r.Detail["template"] == "" || r.Detail["template"] == out.Template
+		ours := out.State == "done" && tmpl && (err != nil || state != "succeeded" || !before(r))
+		if err == nil && state == "running" || ours {
+			out.FBX, out.Reskin = r.Detail["fbx"], ""
+			if err == nil {
+				out.Reskin = state
+			}
 		}
 	}
 	return out

@@ -23,7 +23,7 @@ type agenticArgs struct {
 type splitArgs struct {
 	TaskID          string  `json:"task_id" jsonschema:"the task id of a geometry draft (an id prefix of 8 or more characters works too)"`
 	Version         *string `json:"version,omitempty" jsonschema:"the draft version to split (default the newest; get_task lists versions)"`
-	Strength        *int    `json:"strength,omitempty" jsonschema:"how many parts to aim for, 1-12 (the web's Strength, default 5; above 5 needs the RodinBangGenerateAdvancedQuality privilege)"`
+	Strength        *int    `json:"strength,omitempty" jsonschema:"how many parts the plan aims for, 1-12 (the web's Strength; left out: 5 for a plan, the plan's own for step generate; above 5 needs the RodinBangGenerateAdvancedQuality privilege)"`
 	Step            *string `json:"step,omitempty" jsonschema:"both (default): lay out the parts, then split; plan: only lay out the parts and return the plan picture; generate: split by the plan made before"`
 	BangVersion     *string `json:"bang_version,omitempty" jsonschema:"split one part of this earlier Bang result again (with part)"`
 	Part            *string `json:"part,omitempty" jsonschema:"the part name of bang_version to split again (get_task and the earlier reply list part names)"`
@@ -37,7 +37,7 @@ type rigArgs struct {
 	Skeleton        *string `json:"skeleton,omitempty" jsonschema:"instead of template: your own bone hierarchy, one bone name per line, depth by leading - characters (Hips, -Spine, --Chest)"`
 	Description     *string `json:"description,omitempty" jsonschema:"instead of template: the skeleton described in words; Hyper3D plans the bones"`
 	FBXSkeleton     *string `json:"fbx_skeleton_path,omitempty" jsonschema:"instead of template: absolute path of an FBX file whose skeleton the rig takes, as the web's Import FBX: its bones (pose bones left out), skinned with shell, then turned to the FBX bones' frames by a second (reskin) call"`
-	Reskin          *bool   `json:"reskin,omitempty" jsonschema:"with fbx_skeleton_path: send only the reskin call, for the task's rig made from the same FBX bones (when an earlier call's rig outlasted its wait or its reskin was not sent); refused before any request for another rig"`
+	Reskin          *bool   `json:"reskin,omitempty" jsonschema:"with fbx_skeleton_path: send only the reskin call, for the task's rig made from the same FBX bones (when an earlier call's rig outlasted its wait or its reskin was not sent); refused before any paid request for another rig"`
 	Skinning        *string `json:"skinning,omitempty" jsonschema:"core (human template only; its default) or shell (the default otherwise)"`
 	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for rig_model on this task with the same template (custom for skeleton, description and fbx_skeleton_path) and skinning; -1 accepts a price quote_cost reports as not known"`
 	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the rig (default true); with fbx_skeleton_path it waits as with true, since the reskin call needs the finished rig"`
@@ -86,7 +86,8 @@ func (s *Server) registerP3Tools() {
 			"and the producer; follow it with wait_task. Never resend after a time-out: list_tasks shows whether it started.",
 		paidTool, ag, s.generateAgentic)
 
-	sp := nonNull(inputSchema[splitArgs](map[string]string{"strength": "5", "step": `"both"`, "wait": "true"}))
+	// No filled strength: step generate takes the plan's (SplitParts).
+	sp := nonNull(inputSchema[splitArgs](map[string]string{"step": `"both"`, "wait": "true"}))
 	withRange(sp, 1, 12, "strength")
 	withEnum(sp, "step", "both", "plan", "generate")
 	addTool(s, "split_parts", "Split a draft into parts",
@@ -95,7 +96,7 @@ func (s *Server) registerP3Tools() {
 			"plan is made within the wait, attaches its picture so the user can approve it; get_task shows the newest plan split_parts sent "+
 			"(bang_plan) with its picture, free, until a split of its version follows. step generate splits by the plan made before: it is "+
 			"refused before any paid request while the newest plan split_parts sent on the version runs, when it failed or was canceled, or when it is of another part (bang_generate "+
-			"names no part); a split of the same version still running is not sent again. When the split "+
+			"names no part); it takes the plan's strength. A split of the same version still running is not sent again. When the split "+
 			"finishes within the wait, its parts file is saved in the task's files folder and a render attached; otherwise get_task lists the "+
 			"result and download_model saves it. Confirm the parts with confirm_geometry bang_version. Needs [permission] split_parts = \"allow\" and "+
 			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
@@ -113,7 +114,7 @@ func (s *Server) registerP3Tools() {
 			"bone hierarchy, a skeleton described in words, or the skeleton of an FBX file (two calls, as the web's Import FBX: the rig from "+
 			"its bones, then the reskin to their frames; reskin true sends only the second). The rig is kept by Hyper3D with the task: get_task "+
 			"shows it as rig, with the rig and reskin calls this tool sent while they run; a call while one of them still runs is refused before "+
-			"any request. animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
+			"any paid request. animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
 			"rig_model, task_id, settings.template and skinning).",
 		paidTool, rg, s.rigModel)
 

@@ -194,13 +194,23 @@ type strict struct {
 	env Env
 }
 
-// usageKey finds the options a usage line names: key=value and [word].
-var usageKey = regexp.MustCompile(`([a-z_]+)(?:=|\])`)
+// usageKey finds the options a usage line names as key=value. A bare [word]
+// (json, nowait) is a positional word, not an option: word=value of it is
+// not read, so it is refused. flagWords are the bare words a command also
+// reads as word=<bool> (flagOf).
+var usageKey = regexp.MustCompile(`([a-z_]+)=`)
+
+var flagWords = []string{"reskin"}
 
 func (s strict) Register(h command.Handler) {
 	allowed := map[string]bool{}
 	for _, m := range usageKey.FindAllStringSubmatch(h.Usage, -1) {
 		allowed[m[1]] = true
+	}
+	for _, w := range flagWords {
+		if strings.Contains(h.Usage, "["+w+"]") {
+			allowed[w] = true
+		}
 	}
 	run := h.Run
 	h.Run = func(ctx context.Context, raw []string) int {

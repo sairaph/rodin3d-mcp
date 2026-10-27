@@ -113,5 +113,5 @@ func (s *Service) SetPrivate(ctx context.Context, in SetPrivateInput) (Result, e
 	if !changed {
 		body = fmt.Sprintf("Task %s was already %s; nothing was sent.", short(uuid), privacyWord(card.IsPrivate))
 	}
-	return Result{Front: setPrivateFront{Task: s.taskFront(card), Changed: changed}, Body: body}, nil
+	return Result{Front: setPrivateFront{Task: s.liveTaskFront(ctx, card), Changed: changed}, Body: body}, nil
 }

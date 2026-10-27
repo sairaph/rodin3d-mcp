@@ -104,18 +104,64 @@ const (
 // still be one the scheduler does not know yet (waitJobs: three polls).
 const jobFresh = 10 * time.Second
 
-// recordJobs keeps the scheduler jobs of a call the card does not show, so
-// get_task and later calls follow them; 0 when they cannot be kept.
-func (s *Service) recordJobs(uuid, kind, key string, detail map[string]string, jobs []string) int64 {
+// claim is a call the card does not show, recorded before it is sent
+// (claimJob), so get_task and later calls follow it; id 0 when nothing is
+// recorded (no store).
+type claim struct {
+	s  *Service
+	id int64
+}
+
+// claimJob records a call of kind on task uuid and key about to be sent, in
+// one store step with the check that no call of a kind in blocking runs on
+// the same task and key (other than the recorded call except): two sessions
+// cannot both pass a busy check and send. The calling tool reads the
+// scheduler for the recorded calls first (rigBusy, splitBusy, planFits), so
+// a call that ended is recorded ended before this check. busy is the running
+// call that refused it.
+func (s *Service) claimJob(uuid, kind, key string, detail map[string]string, blocking []string, except int64) (c claim, busy *store.Job, err error) {
+	c.s = s
 	st, err := s.Store()
-	if err != nil || len(jobs) == 0 {
+	if err != nil {
+		return c, nil, nil // no store: nothing is recorded or followed
+	}
+	id, running, err := st.ClaimJob(store.Job{UUID: uuid, Kind: kind, Key: key, Detail: detail}, blocking, except)
+	switch {
+	case errors.Is(err, store.ErrBusy):
+		return c, &running, nil
+	case err != nil:
+		return c, nil, wrapf(err, "record the %s call before sending it", kind)
+	}
+	c.id = id
+	return c, nil, nil
+}
+
+// fill records the scheduler jobs the reply named (and detail values of the
+// reply) and returns the record's id; a reply without jobs leaves nothing to
+// follow, so the claim is removed (0).
+func (c claim) fill(jobs []string, detail map[string]string) int64 {
+	if c.id == 0 {
 		return 0
 	}
-	id, err := st.AddJob(store.Job{UUID: uuid, Kind: kind, Key: key, Detail: detail, Jobs: jobs})
+	st, err := c.s.Store()
 	if err != nil {
 		return 0
 	}
-	return id
+	if len(jobs) == 0 || st.SetJobs(c.id, jobs, detail) != nil {
+		_ = st.DropJob(c.id)
+		return 0
+	}
+	return c.id
+}
+
+// drop removes the claim of a call whose send failed.
+func (c claim) drop() {
+	if c.id == 0 {
+		return
+	}
+	if st, err := c.s.Store(); err == nil {
+		_ = st.DropJob(c.id)
+	}
 }
 
 // endJobs records the end waitJobs read; jobs still running stay running.
@@ -146,6 +192,11 @@ func (s *Service) jobState(ctx context.Context, j store.Job) (string, error) {
 	if j.State != store.JobRunning {
 		return j.State, nil
 	}
+	if len(j.Jobs) == 0 {
+		// Claimed and being sent (claimJob); a claim past store.ClaimBound
+		// is never read.
+		return "running", nil
+	}
 	failed, canceled := false, false
 	for _, id := range j.Jobs {
 		st, err := s.client.JobStatus(ctx, id)
@@ -158,7 +209,9 @@ func (s *Service) jobState(ctx context.Context, j store.Job) (string, error) {
 			failed = true
 		case "Canceled":
 			// An unknown job reads Canceled, and a job may be unknown for a
-			// moment after its request.
+			// moment after its request. The scheduler keeps ended jobs (read
+			// 2026-10-27: a job of 2026-09-16 still answered Succeeded), so
+			// past jobFresh Canceled is the job's own end.
 			if time.Since(j.At) < jobFresh {
 				return "running", nil
 			}

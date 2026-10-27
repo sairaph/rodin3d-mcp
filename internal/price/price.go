@@ -73,6 +73,10 @@ type Input struct {
 	BangStep string
 	// Strength is split_parts' part count (1-12; 0 is the web's 5).
 	Strength int
+	// PlanStrengthUnknown is true for a split (step generate) by a plan
+	// this tool did not make: the plan's strength is not known (Strength
+	// is then ignored).
+	PlanStrengthUnknown bool
 	// BangPart is true when split_parts splits one part of an earlier Bang
 	// result again (bang_version and part).
 	BangPart bool
@@ -352,12 +356,15 @@ func splitParts(in Input, acct Account) (Quote, error) {
 	// Measured 2026-10-27 at strength 5 of the whole model of a gen-2.5
 	// extreme-low draft (notes 35, P3-2 and P3-3): the plan took nothing;
 	// the split froze 0.5 at submit and took it when done.
-	exact := model == "gen-2.5" && tier == "extreme-low" && strength == 5 && !in.BangPart
+	exact := model == "gen-2.5" && tier == "extreme-low" && strength == 5 && !in.BangPart && !in.PlanStrengthUnknown
 	of := "the whole model"
 	if in.BangPart {
 		of = "one part"
 	}
 	this := fmt.Sprintf("this is strength %d of %s on a %s draft", strength, of, task(model, tier))
+	if in.PlanStrengthUnknown {
+		this = fmt.Sprintf("this splits %s of a %s draft by a plan made elsewhere, whose strength is not known", of, task(model, tier))
+	}
 	const planCase = "a Bang plan was measured only at strength 5 of the whole model on a gen-2.5 extreme-low draft (free; the web shows no price for it)"
 	const splitLabel = `web label "0.5 Credits" on Bang to Parts`
 	const charged = "submit (frozen), taken when the split is done"
@@ -371,7 +378,7 @@ func splitParts(in Input, acct Account) (Quote, error) {
 		return q, nil
 	case "generate":
 		if !exact {
-			return label(0.5, charged, splitLabel+"; a split was measured only at strength 5 of the whole model on a gen-2.5 extreme-low draft (0.5 frozen at submit, taken when done)"), nil
+			return label(0.5, charged, splitLabel+"; a split was measured only at strength 5 of the whole model on a gen-2.5 extreme-low draft (0.5 frozen at submit, taken when done); "+this), nil
 		}
 		return measured(0.5, charged, splitLabel+"; measured 2026-10-27: a split at strength 5 of the whole model on a gen-2.5 extreme-low draft froze 0.5 at submit and took it when done"), nil
 	case "", "both":

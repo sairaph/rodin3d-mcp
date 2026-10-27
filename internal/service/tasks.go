@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,6 +85,22 @@ func (s *Service) taskFront(card *rodin.Card) TaskFront {
 		Created: card.Time, Updated: card.GenerateTime, Actions: actions,
 		FilesDir: s.downloadDir(card.TaskUUID, card.Prompt),
 	}
+}
+
+// liveTaskFront is taskFront with the actions the task's rig adds: the card
+// shows no rig, so animate_model is offered after one free read of the rig
+// (rigState, as get_task reads it) wherever rig_model is, and every reply's
+// task block gives the same actions as get_task.
+func (s *Service) liveTaskFront(ctx context.Context, card *rodin.Card) TaskFront {
+	front := s.taskFront(card)
+	if card.Type == rodin.TypeAgentic || !registered("animate_model") || !slices.Contains(front.Actions, "rig_model") {
+		return front
+	}
+	st := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
+	if r := s.rigState(ctx, card.TaskUUID, st); r != nil && r.State == "done" {
+		front.Actions = append(front.Actions, "animate_model")
+	}
+	return front
 }
 
 // taskActions are the tools that act on the task of card at status st. A
@@ -629,7 +646,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 		b.WriteString("\n\nThe draft has Bang (parts) results (bang): confirm_geometry with bang_version confirms one; download_model with files [its download name] saves its parts file.")
 	}
 	if p := front.BangPlan; p != nil {
-		at := "geometry " + p.Version + " (" + planOf(p.BangVersion, p.Part) + ")"
+		at := fmt.Sprintf("geometry %s (%s, strength %d)", p.Version, planOf(p.BangVersion, p.Part), p.Strength)
 		args := "version " + p.Version
 		if p.Part != "" {
 			args += ", bang_version " + p.BangVersion + " and part " + p.Part
@@ -640,7 +657,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 			if planImg != nil {
 				b.WriteString("; its picture is attached for the user to approve")
 			}
-			b.WriteString(". split_parts with step generate and " + args + " splits the draft by it.")
+			b.WriteString(". split_parts with step generate and " + args + " (no strength: the split takes the plan's) splits the draft by it.")
 		case "running":
 			fmt.Fprintf(&b, "\n\nThe newest Bang plan split_parts sent, of %s, is still running (bang_plan): get_task again in a minute shows its picture.", at)
 		default:
@@ -657,7 +674,7 @@ func (s *Service) GetTask(ctx context.Context, id string) (Result, error) {
 			b.WriteString("\n\nThe task is rigged (rig): animate_model exports the rigged model, with animations or without.")
 		}
 		if r.LastCall != "" {
-			fmt.Fprintf(&b, " The newest rig call rig_model sent ended %s", r.LastCall)
+			fmt.Fprintf(&b, " The newest rig call this tool sent on the task (rig_model) ended %s", r.LastCall)
 			if r.State == "done" {
 				b.WriteString("; the rig shown is an earlier one")
 			}
@@ -819,7 +836,7 @@ func (s *Service) WaitTask(ctx context.Context, id string, timeout time.Duration
 			}
 		}
 	}
-	front.Task = s.taskFront(card)
+	front.Task = s.liveTaskFront(ctx, card)
 	front.Waited = int(time.Since(start).Round(time.Second).Seconds())
 	now := stage.Of(card.Step, card.UserState, int(card.PendingJobs))
 

@@ -91,6 +91,7 @@ func (s *Service) actionCardAs(ctx context.Context, id, tool, action string) (st
 	}
 	hint := "Call wait_task with this id until the job finishes, then get_task for the actions."
 	if st.State != stage.Running {
+		front = s.liveTaskFront(ctx, card)
 		hint = "Allowed now: " + orNone(front.Actions) + "."
 	}
 	return "", nil, stage.Status{}, failFields(render.CodeConflict,
@@ -397,7 +398,7 @@ type flowFront struct {
 
 // finishFlow builds the reply of a stage tool from its settled card.
 func (s *Service) finishFlow(ctx context.Context, sp *spend, set *settled, lead string, extra any) Result {
-	front := flowFront{Task: s.taskFront(set.card), Charge: sp.front(), Waited: set.waited, TimedOut: set.timedOut, Extra: extra}
+	front := flowFront{Task: s.liveTaskFront(ctx, set.card), Charge: sp.front(), Waited: set.waited, TimedOut: set.timedOut, Extra: extra}
 	var b strings.Builder
 	b.WriteString(lead)
 	fmt.Fprintf(&b, " Now: %s, %s.", describeStage(set.status), set.status.State)

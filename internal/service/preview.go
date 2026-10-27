@@ -265,7 +265,7 @@ func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) 
 		return Result{}, wrapf(err, "write %s", out)
 	}
 	info.File = out
-	front := previewResultFront{Preview: info, Task: s.taskFront(d.card), Other: avail}
+	front := previewResultFront{Preview: info, Task: s.liveTaskFront(ctx, d.card), Other: avail}
 	body := lead + " Saved to " + out + "." + extra
 	body += "\n\nNext: get_preview with another stage, mode or view from available (server images: poster, geometry_image, material_image, texture_*; the other modes are local renders of the stage mesh); get_task for the settings."
 	return Result{Front: front, Body: body, Images: []Image{{PNG: png, What: stg + " " + mode}}}, nil

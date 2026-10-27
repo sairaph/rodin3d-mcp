@@ -268,7 +268,7 @@ func (s *Service) Quote(ctx context.Context, in QuoteInput) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		t := s.taskFront(card)
+		t := s.liveTaskFront(ctx, card)
 		task = &t
 		pinFromCard(&pin, card)
 		pin.Forked = s.forkedHere(uuid)

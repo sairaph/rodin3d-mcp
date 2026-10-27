@@ -33,12 +33,14 @@ type splitArgs struct {
 
 type rigArgs struct {
 	TaskID          string  `json:"task_id" jsonschema:"the task id of a task with confirmed geometry (an id prefix of 8 or more characters works too)"`
-	Template        *string `json:"template,omitempty" jsonschema:"built-in skeleton (default human, the Mixamo skeleton); quadruped, bird and kaiju share a four-legged skeleton with a tail, dragon adds wings"`
+	Template        *string `json:"template,omitempty" jsonschema:"built-in skeleton: human (the Mixamo skeleton; the default when no skeleton, description or fbx_skeleton_path is given); quadruped, bird and kaiju share a four-legged skeleton with a tail, dragon adds wings"`
 	Skeleton        *string `json:"skeleton,omitempty" jsonschema:"instead of template: your own bone hierarchy, one bone name per line, depth by leading - characters (Hips, -Spine, --Chest)"`
 	Description     *string `json:"description,omitempty" jsonschema:"instead of template: the skeleton described in words; Hyper3D plans the bones"`
+	FBXSkeleton     *string `json:"fbx_skeleton_path,omitempty" jsonschema:"instead of template: absolute path of an FBX file whose skeleton the rig takes, as the web's Import FBX: its bones (pose bones left out), skinned with shell, then turned to the FBX bones' frames by a second (reskin) call"`
+	Reskin          *bool   `json:"reskin,omitempty" jsonschema:"with fbx_skeleton_path: send only the reskin call for the task's current rig (when the rig outlasted the wait of an earlier call)"`
 	Skinning        *string `json:"skinning,omitempty" jsonschema:"core (human template only; its default) or shell (the default otherwise)"`
 	ExpectedCredits float64 `json:"expected_credits" jsonschema:"the credits quote_cost returned for rig_model on this task; -1 accepts a price quote_cost reports as not known"`
-	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the rig (default true)"`
+	Wait            *bool   `json:"wait,omitempty" jsonschema:"wait up to 45 seconds for the rig (default true); with fbx_skeleton_path it waits as with true, since the reskin call needs the finished rig"`
 }
 
 type animateArgs struct {
@@ -96,7 +98,7 @@ func (s *Server) registerP3Tools() {
 			"expected_credits from quote_cost (operation split_parts, task_id, settings.step, strength and part).",
 		paidTool, sp, s.splitParts)
 
-	rg := nonNull(inputSchema[rigArgs](map[string]string{"template": `"human"`, "wait": "true"}))
+	rg := nonNull(inputSchema[rigArgs](map[string]string{"wait": "true"}))
 	tmpl := make([]string, len(catalog.RigTemplates))
 	for i, t := range catalog.RigTemplates {
 		tmpl[i] = t.Name
@@ -105,7 +107,7 @@ func (s *Server) registerP3Tools() {
 	withEnum(rg, "skinning", "shell", "core")
 	addTool(s, "rig_model", "Rig the model",
 		"Give a task with confirmed geometry (stages geometry, material_draft, material) a skeleton and skin: a built-in template, your own "+
-			"bone hierarchy, or a skeleton described in words. The rig is kept by Hyper3D with the task (get_task shows it as rig); "+
+			"bone hierarchy, a skeleton described in words, or the skeleton of an FBX file. The rig is kept by Hyper3D with the task (get_task shows it as rig); "+
 			"animate_model exports the rigged model. Needs [permission] rig = \"allow\" and expected_credits from quote_cost (operation "+
 			"rig_model, task_id, settings.template and skinning).",
 		paidTool, rg, s.rigModel)
@@ -161,7 +163,7 @@ func (s *Server) splitParts(ctx context.Context, _ *mcp.CallToolRequest, in spli
 
 func (s *Server) rigModel(ctx context.Context, _ *mcp.CallToolRequest, in rigArgs) (*mcp.CallToolResult, any, error) {
 	return reply(s.svc.RigModel(ctx, service.RigInput{TaskID: in.TaskID, Template: optString(in.Template), Skeleton: optString(in.Skeleton),
-		Description: optString(in.Description), Skinning: optString(in.Skinning), Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true)})), nil, nil
+		Description: optString(in.Description), Skinning: optString(in.Skinning), FBXSkeleton: optString(in.FBXSkeleton), Reskin: optBool(in.Reskin, false), Expected: expectedPtr(in.ExpectedCredits), Wait: optBool(in.Wait, true)})), nil, nil
 }
 
 func (s *Server) animateModel(ctx context.Context, _ *mcp.CallToolRequest, in animateArgs) (*mcp.CallToolResult, any, error) {

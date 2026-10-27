@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -13,7 +14,9 @@ import (
 	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/catalog"
+	"github.com/sairaph/rodin3d-mcp/internal/fbx"
 	"github.com/sairaph/rodin3d-mcp/internal/price"
+	"github.com/sairaph/rodin3d-mcp/internal/rigdata"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/stage"
 )
@@ -45,8 +48,14 @@ type RigInput struct {
 	Skeleton    string // own bone hierarchy, one bone per line, depth by leading "-"
 	Description string // a skeleton described in words: the server plans the bones
 	Skinning    string // shell | core
-	Expected    *float64
-	Wait        bool
+	// FBXSkeleton is the path of an FBX file whose skeleton the rig takes:
+	// its bones (the first call), then their frames (the reskin call).
+	FBXSkeleton string
+	// Reskin applies the frames of FBXSkeleton to the task's current rig
+	// only (the second call), for a rig whose first call outlasted the wait.
+	Reskin   bool
+	Expected *float64
+	Wait     bool
 }
 
 type rigFront struct {
@@ -55,21 +64,47 @@ type rigFront struct {
 	Skinning string `yaml:"skinning,omitempty"`
 	Bones    int    `yaml:"bones,omitempty"`
 	State    string `yaml:"state"` // succeeded (rig_model) | done (get_task) | running | failed | canceled | none
+	// FBX and Reskin: the imported skeleton file and the state of the
+	// reskin call that turns the rig's bones to its frames (succeeded |
+	// running | failed | canceled | not sent).
+	FBX    string `yaml:"fbx,omitempty"`
+	Reskin string `yaml:"reskin,omitempty"`
 }
 
-// rigSettings builds the rodin_rigging settings of in for source.
-func rigSettings(in RigInput, source string) (map[string]any, rigFront, error) {
+// fbxSkeleton reads the skeleton of the FBX file at path as the web's
+// import does (an .fbx name, three.js FBXLoader, the rigging panel's bone
+// walk).
+func fbxSkeleton(path string) ([]fbx.Bone, error) {
+	bad := func(msg, hint string) error { return fail(render.CodeInvalidInput, msg, hint) }
+	if !filepath.IsAbs(path) || !strings.EqualFold(filepath.Ext(path), ".fbx") {
+		return nil, bad(fmt.Sprintf("fbx_skeleton_path %q is not an absolute path of an .fbx file.", path), "Pass the absolute path of the FBX file whose skeleton the rig should take.")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, bad(fmt.Sprintf("fbx_skeleton_path cannot be read: %v.", err), "Pass the path of an existing FBX file.")
+	}
+	bones, err := fbx.Skeleton(data)
+	if err != nil {
+		return nil, bad("The FBX skeleton cannot be used: "+err.Error()+".", "Pass an FBX file with a skeleton (bones), as the web's Import FBX takes.")
+	}
+	return bones, nil
+}
+
+// rigSettings builds the rodin_rigging settings of in for source; bones
+// are the FBX skeleton when in has one.
+func rigSettings(in RigInput, source string, bones []fbx.Bone) (map[string]any, rigFront, error) {
 	bad := func(msg, hint string) error { return fail(render.CodeInvalidInput, msg, hint) }
 	tmpl := strings.ToLower(strings.TrimSpace(in.Template))
-	skel, desc := strings.TrimSpace(in.Skeleton), strings.TrimSpace(in.Description)
+	skel, desc, fbxPath := strings.TrimSpace(in.Skeleton), strings.TrimSpace(in.Description), strings.TrimSpace(in.FBXSkeleton)
 	given := 0
-	for _, v := range []string{tmpl, skel, desc} {
+	for _, v := range []string{tmpl, skel, desc, fbxPath} {
 		if v != "" {
 			given++
 		}
 	}
 	if given > 1 {
-		return nil, rigFront{}, bad("Pass one of template, skeleton or description.", "template picks a built-in skeleton; skeleton gives your own bone hierarchy; description lets Hyper3D plan the bones from words.")
+		return nil, rigFront{}, bad("Pass one of template, skeleton, description or fbx_skeleton_path.",
+			"template picks a built-in skeleton; skeleton gives your own bone hierarchy; description lets Hyper3D plan the bones from words; fbx_skeleton_path takes the skeleton of an FBX file.")
 	}
 	if given == 0 {
 		tmpl = "human" // the web panel's default template
@@ -99,6 +134,19 @@ func rigSettings(in RigInput, source string) (map[string]any, rigFront, error) {
 		}
 		st["rodinrig_hierarchy"], st["rodinrig_template"] = bones, "custom"
 		front.Template, front.Bones = "custom", len(bones)
+	case fbxPath != "":
+		// The web sends the FBX bones' names and parents and always skins
+		// an own skeleton file with shell (main.fmt.js:55808-55812, 55925).
+		if skinning == "core" {
+			return nil, rigFront{}, bad("core skinning works with the human template only; an FBX skeleton is skinned with shell.", "Leave skinning out.")
+		}
+		h := make([]catalog.Bone, len(bones))
+		for i, b := range bones {
+			h[i] = catalog.Bone{Name: b.Name, Parent: b.Parent}
+		}
+		st["rodinrig_hierarchy"], st["rodinrig_template"] = h, "custom"
+		front.Template, front.Bones, front.FBX = "custom", len(h), fbxPath
+		skinning = "shell"
 	default:
 		st["rodinrig_description"], st["rigging_mode"], st["rodinrig_template"] = desc, "generate", "custom"
 		front.Template = "custom"
@@ -114,19 +162,36 @@ func rigSettings(in RigInput, source string) (map[string]any, rigFront, error) {
 	return st, front, nil
 }
 
-// RigModel is rig_model.
+// RigModel is rig_model. With an FBX skeleton it sends what the web's
+// Import FBX sends: the rig from the FBX bones, then, once that rig is
+// done, the reskin call that turns its bones to the FBX bones' frames
+// (both within one wait and one quote).
 func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if _, err := s.permit("rig_model"); err != nil {
 		return Result{}, err
+	}
+	fbxPath := strings.TrimSpace(in.FBXSkeleton)
+	if in.Reskin && fbxPath == "" {
+		return Result{}, fail(render.CodeInvalidInput, "reskin needs fbx_skeleton_path: the FBX whose bone frames the rig takes.", "Pass fbx_skeleton_path with reskin true.")
+	}
+	var bones []fbx.Bone
+	if fbxPath != "" {
+		var err error
+		if bones, err = fbxSkeleton(fbxPath); err != nil {
+			return Result{}, err
+		}
 	}
 	uuid, card, st, err := s.actionCard(ctx, in.TaskID, "rig_model")
 	if err != nil {
 		return Result{}, err
 	}
 	source, _ := rigSource(st)
-	settings, rig, err := rigSettings(in, source)
+	settings, rig, err := rigSettings(in, source, bones)
 	if err != nil {
 		return Result{}, err
+	}
+	if in.Reskin {
+		rig.State = "existing"
 	}
 	pin := price.Input{Operation: "rig_model", RigTemplate: rig.Template, Skinning: rig.Skinning}
 	pinFromCard(&pin, card)
@@ -134,22 +199,50 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	sp.open()
-	reply, err := s.client.Rigging(ctx, uuid, settings)
-	if err != nil {
-		sp.close(ctx, err)
-		return Result{}, sendFailure("rig_model", uuid, err)
-	}
-	jr := jobsResult{TimedOut: true}
-	if in.Wait {
-		if jr, err = s.waitJobs(ctx, reply.Job.UUIDs, time.Now().Add(FlowWait)); err != nil {
-			sp.close(ctx, nil)
-			return Result{}, wrapf(err, "the rigging was started; get_task shows when it is done")
+	if in.Reskin {
+		if _, err := s.client.RiggingResult(ctx, uuid, source); err != nil {
+			if isCode(err, "RIGGING_NOT_FOUND") {
+				return Result{}, fail(render.CodeConflict, "The task has no rig to reskin.", "Call rig_model with fbx_skeleton_path (without reskin) first.")
+			}
+			return Result{}, wrapf(err, "read the task's rig")
 		}
 	}
+	deadline := time.Now().Add(FlowWait)
+	// The FBX import needs the finished rig before its reskin call, so it
+	// waits as with wait true.
+	wait := in.Wait || fbxPath != ""
+	sp.open()
+	jr := jobsResult{TimedOut: true}
+	if !in.Reskin {
+		reply, err := s.client.Rigging(ctx, uuid, settings)
+		if err != nil {
+			sp.close(ctx, err)
+			return Result{}, sendFailure("rig_model", uuid, err)
+		}
+		if wait {
+			if jr, err = s.waitJobs(ctx, reply.Job.UUIDs, deadline); err != nil {
+				sp.close(ctx, nil)
+				return Result{}, wrapf(err, "the rigging was started; get_task shows when it is done")
+			}
+		}
+		rig.State = jobWord(jr)
+	}
+	var note string
+	if fbxPath != "" && (in.Reskin || rig.State == "succeeded") {
+		state, why, err := s.reskin(ctx, uuid, source, bones, deadline)
+		if err != nil {
+			sp.close(ctx, err)
+			return Result{}, sendFailure("rig_model (reskin)", uuid, err)
+		}
+		rig.Reskin, note = state, why
+		if in.Reskin {
+			rig.State = state
+		}
+	} else if fbxPath != "" {
+		rig.Reskin = "not sent"
+	}
 	sp.close(ctx, nil)
-	rig.State = jobWord(jr)
-	if jr.Done && jr.Status == "Succeeded" {
+	if rig.State == "succeeded" {
 		// The result is the web's own rig data (a gzipped DRCRIG01 file of
 		// bones and skin weights the browser applies), not a model file:
 		// animate_model exports the rigged model.
@@ -161,7 +254,8 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if err != nil {
 		card2 = card
 	}
-	front := flowFront{Task: s.taskFront(card2), Charge: sp.front(), TimedOut: !jr.Done, Extra: map[string]any{"rig": rig}}
+	done := rig.State == "succeeded" && (fbxPath == "" || rig.Reskin == "succeeded")
+	front := flowFront{Task: s.taskFront(card2), Charge: sp.front(), TimedOut: rig.State == "running" || rig.Reskin == "running", Extra: map[string]any{"rig": rig}}
 	if rig.State == "succeeded" && registered("animate_model") {
 		front.Task.Actions = append(front.Task.Actions, "animate_model")
 	}
@@ -174,19 +268,77 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	default:
 		fmt.Fprintf(&b, "Rigging ended %s.", rig.State)
 	}
+	if fbxPath != "" {
+		switch rig.Reskin {
+		case "succeeded":
+			fmt.Fprintf(&b, " The %d bones of %s were then turned to the FBX bones' frames (the reskin call, as the web's Import FBX does).", rig.Bones, filepath.Base(fbxPath))
+		case "running":
+			b.WriteString(" The reskin call that turns the bones to the FBX bones' frames was sent and is still running.")
+		case "not sent":
+			b.WriteString(" The reskin call that turns the bones to the FBX bones' frames was not sent: it needs the finished rig.")
+		default:
+			fmt.Fprintf(&b, " The reskin call ended %s.", rig.Reskin)
+		}
+		if note != "" {
+			b.WriteString(" " + note)
+		}
+	}
 	b.WriteString("\n\n" + sp.walletText())
-	switch rig.State {
-	case "succeeded":
+	switch {
+	case done:
 		t, _ := catalog.RigTemplateNamed(rig.Template)
 		next := "\n\nNext: animate_model exports the rigged model, with animations or without (list_animation_presets lists them"
 		if t.Animations != "" {
 			next += "; category " + t.Animations + " fits this skeleton"
 		}
 		b.WriteString(next + "); download_model then saves the files.")
-	case "running":
+	case rig.State == "running" && fbxPath != "":
+		b.WriteString("\n\nNext: in a minute or two, get_task with " + uuid + ": once its rig block says done, rig_model with the same fbx_skeleton_path and reskin true sends the reskin call. Do not call rig_model again without reskin for it.")
+	case rig.Reskin == "not sent" && rig.State == "succeeded":
+		b.WriteString("\n\nNext: rig_model with the same fbx_skeleton_path and reskin true sends the reskin call; animate_model already works with the rig as it is.")
+	case rig.State == "running" || rig.Reskin == "running":
 		b.WriteString("\n\nNext: in a minute or two, get_task with " + uuid + ": its rig block says when the rig is done. Do not call rig_model again for it.")
 	}
 	return Result{Front: front, Body: b.String()}, nil
+}
+
+// reskin sends the web's second Import FBX call for the task's current rig
+// (rigdata.Reskin) and follows its job until deadline. The returned note
+// says why it was not sent when the rig and the FBX do not match.
+func (s *Service) reskin(ctx context.Context, uuid, source string, bones []fbx.Bone, deadline time.Time) (state, note string, err error) {
+	res, err := s.client.RiggingResult(ctx, uuid, source)
+	if err != nil || res.URL == "" {
+		return "not sent", "The rig's result could not be read.", nil
+	}
+	var buf bytes.Buffer
+	if _, _, err := s.client.Fetch(ctx, res.URL, &buf, 256<<20); err != nil {
+		return "not sent", "The rig file could not be read.", nil
+	}
+	h, err := rigdata.DecodeHeader(buf.Bytes())
+	if err != nil {
+		return "not sent", "The rig file cannot be read: " + err.Error() + ".", nil
+	}
+	joints, err := rigdata.Joints(h)
+	if err != nil {
+		return "not sent", "The rig's skeleton cannot be read: " + err.Error() + ".", nil
+	}
+	hierarchy, err := rigdata.Reskin(bones, joints)
+	if err != nil {
+		// The web stops here too and shows the reason.
+		return "not sent", "The rig's bones and the FBX bones do not match: " + err.Error() + ".", nil
+	}
+	skinning, _ := res.Raw["skinning_method"].(string)
+	settings := map[string]any{"source": map[string]string{"stage": source}, "skinning_method": skinning,
+		"rodinrig_hierarchy": hierarchy, "rodinrig_template": res.Template}
+	reply, err := s.client.Rigging(ctx, uuid, settings)
+	if err != nil {
+		return "", "", err
+	}
+	jr, err := s.waitJobs(ctx, reply.Job.UUIDs, deadline)
+	if err != nil {
+		return "running", "", nil
+	}
+	return jobWord(jr), "", nil
 }
 
 // rigState reads the rig of a task at status st for get_task: nil when the
@@ -341,6 +493,10 @@ func (s *Service) AnimateModel(ctx context.Context, in AnimateInput) (Result, er
 			for _, it := range items {
 				names = append(names, it.Name)
 			}
+			// An export in a format the task already has replaces the files of
+			// those names (live 2026-10-27: a second glb export left one
+			// base_basic_pbr.glb, holding the new animation), so the names
+			// are the new export's.
 			names = exportedFiles(names, format, false)
 			detail["files"] = names
 		}
@@ -348,7 +504,7 @@ func (s *Service) AnimateModel(ctx context.Context, in AnimateInput) (Result, er
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Animation export requested (%d presets, %d own files, %s).", len(in.Presets), len(files), format), detail)
 	if len(names) > 0 {
 		res.Body += "\n\nExported files: " + strings.Join(names, ", ") + ". download_model with these as files saves them " +
-			"(the task's file list also holds its earlier packs)."
+			"(an export replaces the task's earlier files of the same name; files of other formats stay)."
 	}
 	return res, nil
 }

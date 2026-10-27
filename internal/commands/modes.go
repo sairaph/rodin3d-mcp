@@ -88,7 +88,7 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 		})})
 
 	reg.Register(command.Handler{Name: "rig", Description: "Give a confirmed model a skeleton and skin (paid)",
-		Usage: "rig <id> [template=human|quadruped|bird|dragon|kaiju | skeleton=<file> | description=..] [skinning=shell|core] expected=<credits> [nowait] [json]",
+		Usage: "rig <id> [template=human|quadruped|bird|dragon|kaiju | skeleton=<file> | description=.. | fbx=<file> [reskin]] [skinning=shell|core] expected=<credits> [nowait] [json]",
 		Run: run(func(ctx context.Context, s *service.Service, a args) (service.Result, error) {
 			in := service.RigInput{Wait: waitOf(&a), TaskID: a.arg(0), Template: a.opts["template"], Description: a.opts["description"],
 				Skinning: a.opts["skinning"]}
@@ -99,10 +99,20 @@ func registerModes(reg *command.Registry, run func(func(context.Context, *servic
 				}
 				in.Skeleton = text
 			}
-			var err error
-			if in.Expected, err = floatOpt(a, "expected"); err != nil {
+			if f := a.opts["fbx"]; f != "" {
+				abs, err := filepath.Abs(f)
+				if err != nil {
+					return service.Result{}, err
+				}
+				in.FBXSkeleton = abs
+			}
+			var e1, e2 error
+			in.Expected, e1 = floatOpt(a, "expected")
+			reskin, e2 := boolOpt(a, "reskin")
+			if err := optErrs(e1, e2); err != nil {
 				return service.Result{}, err
 			}
+			in.Reskin = reskin != nil && *reskin
 			return s.RigModel(ctx, in)
 		})})
 

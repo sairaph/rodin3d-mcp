@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/fakehyper"
+	"github.com/sairaph/rodin3d-mcp/internal/fbx"
+	"github.com/sairaph/rodin3d-mcp/internal/fbx/fbxtest"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 )
@@ -312,4 +314,143 @@ func setFlowWait(t *testing.T) time.Duration {
 	service.FlowWait, service.JobPoll = 300*time.Millisecond, 50*time.Millisecond
 	t.Cleanup(func() { service.FlowWait, service.JobPoll = old, oldPoll })
 	return old
+}
+
+// fbxRig writes the human FBX fixture and serves, as the task's rig file,
+// a rig whose bones are the FBX bones (named as listed) at their FBX
+// frames.
+func fbxRig(t *testing.T, f *fixture, id string, rename func(string) string) string {
+	t.Helper()
+	data := fbxtest.Human()
+	path := writeFile(t, "skeleton.fbx", data)
+	bones, err := fbx.Skeleton(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	var parents []int
+	var inv [][16]float64
+	for _, b := range bones {
+		names = append(names, rename(b.Name))
+		parents = append(parents, b.Parent)
+		inv = append(inv, b.Transform.Invert())
+	}
+	f.fake.SetFile(id+"/model.glb.rigging.rodinrig", fbxtest.RigFile(names, parents, inv))
+	return path
+}
+
+// M6: rig_model with an FBX skeleton sends the web's Import FBX: the rig
+// from the FBX bones (shell, custom), then the reskin call with the rig's
+// bones turned to the FBX frames, under one quote; reskin true sends only
+// the second; the refusals send nothing.
+func TestRigModelFBXSkeleton(t *testing.T) {
+	same := func(s string) string { return s }
+	t.Run("both calls", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "expected_credits": -1})
+		if r.code() != "" || get(r.front, "detail", "rig", "reskin") != "succeeded" {
+			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+		calls := f.fake.Bodies("task/rodin_rigging")
+		if len(calls) != 2 {
+			t.Fatalf("%d rigging calls", len(calls))
+		}
+		bones, _ := fbx.Skeleton(fbxtest.Human())
+		first := calls[0]["settings"].(map[string]any)
+		h := first["rodinrig_hierarchy"].([]any)
+		if first["skinning_method"] != "shell" || first["rodinrig_template"] != "custom" || len(h) != len(bones) ||
+			get(first, "source", "stage") != "texture_refine" {
+			t.Fatalf("first call %v", first)
+		}
+		for i, b := range bones {
+			e := h[i].(map[string]any)
+			if e["name"] != b.Name || e["parent"] != float64(b.Parent) || len(e) != 2 {
+				t.Fatalf("first call bone %d: %v", i, e)
+			}
+		}
+		second := calls[1]["settings"].(map[string]any)
+		h2 := second["rodinrig_hierarchy"].([]any)
+		if second["skinning_method"] != "shell" || second["rodinrig_template"] != "custom" || len(h2) != len(bones) {
+			t.Fatalf("second call %v", second)
+		}
+		for i, b := range bones {
+			e := h2[i].(map[string]any)
+			tr, _ := e["transform"].([]any)
+			if e["name"] != strings.TrimPrefix(b.Name, "mixamorig:") || len(tr) != 16 {
+				t.Fatalf("second call bone %d: %v", i, e)
+			}
+			for k := range tr {
+				if d := tr[k].(float64) - b.Transform[k]; d > 1e-9 || d < -1e-9 {
+					t.Fatalf("%s element %d: %v, want %v", e["name"], k, tr[k], b.Transform[k])
+				}
+			}
+		}
+		if !strings.Contains(r.text, "turned to the FBX bones' frames") {
+			t.Fatalf("text:\n%s", r.text)
+		}
+	})
+	t.Run("reskin only", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		f.fake.Tasks(fakehyper.PackedID).Rig, f.fake.Tasks(fakehyper.PackedID).RigSkinning = "custom", "shell"
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "reskin": true, "expected_credits": -1})
+		if r.code() != "" || len(f.fake.Bodies("task/rodin_rigging")) != 1 || get(r.front, "detail", "rig", "reskin") != "succeeded" {
+			t.Fatalf("%s %d:\n%s", r.code(), len(f.fake.Bodies("task/rodin_rigging")), r.text)
+		}
+		if _, ok := f.fake.Bodies("task/rodin_rigging")[0]["settings"].(map[string]any)["rodinrig_hierarchy"].([]any)[0].(map[string]any)["transform"]; !ok {
+			t.Fatal("the reskin call carries no transforms")
+		}
+	})
+	t.Run("bones that do not match", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, func(s string) string { return strings.Replace(s, "Head", "Skull", 1) })
+		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "expected_credits": -1})
+		if r.code() != "" || len(f.fake.Bodies("task/rodin_rigging")) != 1 || get(r.front, "detail", "rig", "reskin") != "not sent" ||
+			!strings.Contains(r.text, "do not match: cannot match imported bone: mixamorig:Head") {
+			t.Fatalf("%s:\n%s", r.code(), r.text)
+		}
+	})
+	t.Run("refusals", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.allow("rig")
+		path := fbxRig(t, f, fakehyper.PackedID, same)
+		notFBX := writeFile(t, "skeleton.obj", []byte("o x\n"))
+		for name, args := range map[string]map[string]any{
+			"reskin without rig":   {"fbx_skeleton_path": path, "reskin": true},
+			"core":                 {"fbx_skeleton_path": path, "skinning": "core"},
+			"template and fbx":     {"fbx_skeleton_path": path, "template": "dragon"},
+			"not an fbx name":      {"fbx_skeleton_path": notFBX},
+			"reskin without a fbx": {"reskin": true},
+		} {
+			args["task_id"], args["expected_credits"] = fakehyper.PackedID, -1
+			r := f.call("rig_model", args)
+			if r.code() != "invalid_input" && r.code() != "conflict" {
+				t.Errorf("%s: %s:\n%s", name, r.code(), r.text)
+			}
+		}
+		if n := len(f.fake.Bodies("task/rodin_rigging")); n != 0 {
+			t.Fatalf("%d rigging calls", n)
+		}
+	})
+}
+
+// The rig_model schema fills no template, so a skeleton text or a
+// description reaches the service alone (a filled template refused them).
+func TestRigModelTextSkeletonReachesTheService(t *testing.T) {
+	f := newFixture(t, true, true)
+	f.allow("rig")
+	for _, args := range []map[string]any{{"skeleton": "Root\n-Tail"}, {"description": "a snake"}} {
+		args["task_id"], args["expected_credits"] = fakehyper.PackedID, -1
+		if r := f.call("rig_model", args); r.code() != "" {
+			t.Fatalf("%v: %s:\n%s", args, r.code(), r.text)
+		}
+	}
+	calls := f.fake.Bodies("task/rodin_rigging")
+	if len(calls) != 2 || calls[0]["settings"].(map[string]any)["rodinrig_template"] != "custom" || calls[1]["settings"].(map[string]any)["rigging_mode"] != "generate" {
+		t.Fatalf("calls %v", calls)
+	}
 }

@@ -14,7 +14,7 @@ import (
 // hierarchy with core skinning and template human; every other choice as
 // the web builds it (main.fmt.js:55804-55975).
 func TestRigSettings(t *testing.T) {
-	st, front, err := rigSettings(RigInput{}, rodin.RigSourceTexture)
+	st, front, err := rigSettings(RigInput{}, rodin.RigSourceTexture, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,15 +25,15 @@ func TestRigSettings(t *testing.T) {
 	if src, _ := st["source"].(map[string]string); src["stage"] != "texture_refine" {
 		t.Fatalf("source %v", st["source"])
 	}
-	st, _, err = rigSettings(RigInput{Template: "Dragon"}, rodin.RigSourceModel)
+	st, _, err = rigSettings(RigInput{Template: "Dragon"}, rodin.RigSourceModel, nil)
 	if err != nil || st["skinning_method"] != "shell" || st["rodinrig_template"] != "dragon" {
 		t.Fatalf("dragon: %v %v", st, err)
 	}
-	st, front, err = rigSettings(RigInput{Skeleton: "Root\n-Tail"}, rodin.RigSourceModel)
+	st, front, err = rigSettings(RigInput{Skeleton: "Root\n-Tail"}, rodin.RigSourceModel, nil)
 	if err != nil || st["rodinrig_template"] != "custom" || front.Bones != 2 || st["skinning_method"] != "shell" {
 		t.Fatalf("own skeleton: %v %v", st, err)
 	}
-	st, _, err = rigSettings(RigInput{Description: "a snake"}, rodin.RigSourceModel)
+	st, _, err = rigSettings(RigInput{Description: "a snake"}, rodin.RigSourceModel, nil)
 	if err != nil || st["rigging_mode"] != "generate" || st["rodinrig_description"] != "a snake" || st["rodinrig_hierarchy"] != nil {
 		t.Fatalf("description: %v %v", st, err)
 	}
@@ -42,7 +42,7 @@ func TestRigSettings(t *testing.T) {
 		{Template: "human", Description: "x"}, {Template: "robot"}, {Template: "quadruped", Skinning: "core"},
 		{Skeleton: "-\n--"}, {Skinning: "bones"}, {Description: "x", Skinning: "core"},
 	} {
-		if _, _, err := rigSettings(in, rodin.RigSourceModel); !errors.As(err, &f) || f.E.Code != "invalid_input" {
+		if _, _, err := rigSettings(in, rodin.RigSourceModel, nil); !errors.As(err, &f) || f.E.Code != "invalid_input" {
 			t.Errorf("%+v: %v", in, err)
 		}
 	}

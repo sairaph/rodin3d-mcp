@@ -65,7 +65,9 @@ type Task struct {
 	Planned bool
 	Bangs   map[string][]string
 	// Rig is the rodin_rigging_result template; empty: RIGGING_NOT_FOUND.
-	Rig string
+	// RigSkinning is its skinning method (default core). rodin_rigging sets
+	// both from its settings; the rig file is <uuid>/model.glb.rigging.rodinrig.
+	Rig, RigSkinning string
 }
 
 // Server is the fake.
@@ -661,7 +663,14 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 				writeJSON(w, 201, map[string]any{"error": "RIGGING_NOT_FOUND"})
 				return
 			}
-			writeJSON(w, 201, map[string]any{"url": s.fileURL(t.UUID + "/model.glb.rigging.rodinrig"), "rodinrig_template": t.Rig, "skinning_method": "core"})
+			writeJSON(w, 201, map[string]any{"url": s.fileURL(t.UUID + "/model.glb.rigging.rodinrig"), "rodinrig_template": t.Rig, "skinning_method": cmp.Or(t.RigSkinning, "core")})
+		}
+	case proc == "task/rodin_rigging":
+		if t, ok := bangTask(); ok {
+			st, _ := in["settings"].(map[string]any)
+			t.Rig, _ = st["rodinrig_template"].(string)
+			t.RigSkinning, _ = st["skinning_method"].(string)
+			writeJSON(w, 201, map[string]any{"job": map[string]any{"uuids": []string{fmt.Sprintf("job-rig-%d", s.calls[name])}, "subscription_key": "k"}})
 		}
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})

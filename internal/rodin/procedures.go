@@ -104,7 +104,7 @@ func (c *Client) GeometryHistory(ctx context.Context, uuid string) (map[string]G
 		}
 		hasBang, _ := m["has_bang"].(bool)
 		out[version] = GeometryVersion{
-			PreviewCover: scalarText(m["preview_cover"]), PreviewDRC: scalarText(m["preview_drc"]),
+			PreviewCover: scalarText(m["preview_cover"]), PreviewDRC: scalarText(m["preview_drc"]), PreviewImage: scalarText(m["preview_image"]),
 			Settings: scalarText(m["settings"]), GenerationTime: scalarText(m["generation_time"]), HasBang: hasBang,
 		}
 	}

@@ -104,6 +104,9 @@ type pane struct {
 	mapsFailed   map[string]string // maps of the shown mode that failed to load: kind -> message (mapsError)
 	frame        render3d.Frame
 	draft        bool
+	// sheet is a Gen-1.5 draft's turntable sheet (no mesh): the pane shows
+	// the frame nearest the camera's turn in the mode's look.
+	sheet image.Image
 
 	img       *ebiten.Image
 	shown     renderKey
@@ -425,6 +428,11 @@ func (a *App) applyShow(p *prepared, params viewer.ShowParams) viewer.StateReply
 		panes = []*pane{{index: 0, kind: viewer.KindModelFile, file: p.file, div: 2}}
 	}
 	modes := a.modesOf(panes)
+	if p.kind == viewer.KindCompare && len(modes) == 0 {
+		// A Gen-1.5 draft shows the server's turntable looks, which no mesh has.
+		return a.conflict("The compared stages share no mode: a Gen-1.5 geometry draft shows only the server's turntable looks (turntable_*), which a mesh stage has not.",
+			"Compare it with another Gen-1.5 draft, or compare later stages.", nil)
+	}
 	mode := a.mode
 	if params.Mode != "" {
 		if p.kind == viewer.KindModelFile {
@@ -804,6 +812,7 @@ func (a *App) setStage(st service.ViewStage) {
 	a.releaseThumbs(a.strip)
 	a.trimSoon()
 	p.mesh, p.simple, p.maps, p.mapsWanted, p.mapsFailed, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, false, nil, false, false, ""
+	p.sheet = nil
 	a.flat = -1
 	a.loadPane(p)
 	a.loadStrip(p.vt, st)

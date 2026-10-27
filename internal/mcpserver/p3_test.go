@@ -411,7 +411,8 @@ func TestRigModelFBXSkeleton(t *testing.T) {
 		path := fbxRig(t, f, fakehyper.PackedID, func(s string) string { return strings.Replace(s, "Head", "Skull", 1) })
 		r := f.call("rig_model", map[string]any{"task_id": fakehyper.PackedID, "fbx_skeleton_path": path, "expected_credits": -1})
 		if r.code() != "" || len(f.fake.Bodies("task/rodin_rigging")) != 1 || get(r.front, "detail", "rig", "reskin") != "not sent" ||
-			!strings.Contains(r.text, "not the rig of these FBX bones: the rig has no bone mixamorig:Head") {
+			// L2: right after the rig only the web's own match decides.
+			!strings.Contains(r.text, "the rig's bones and the FBX bones do not match: cannot match imported bone: mixamorig:Head") {
 			t.Fatalf("%s:\n%s", r.code(), r.text)
 		}
 		// L3: a reskin that cannot work is not advised.

@@ -174,7 +174,7 @@ func contentSchema(c *jsonschema.Schema) {
 }
 
 func (s *Server) registerViewerTools() {
-	modes := service.RenderModes()
+	modes := service.ViewerModes()
 
 	open := nonNullDeep(inputSchema[openViewerArgs](nil))
 	contentSchema(property(open, "show"))

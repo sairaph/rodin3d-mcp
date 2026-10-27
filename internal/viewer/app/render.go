@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sairaph/rodin3d-mcp/internal/assets"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
+	"github.com/sairaph/rodin3d-mcp/internal/turntable"
 )
 
 // Progressive rendering (plan 2.11, notes 41 decision V1): while the view
@@ -54,6 +56,7 @@ type renderJob struct {
 	maps  *render3d.Maps
 	frame render3d.Frame
 	draft bool
+	sheet image.Image // a turntable pane: no mesh
 }
 
 type renderDone struct {
@@ -237,6 +240,14 @@ func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 	}()
 	k := j.key
 	cam := k.cam
+	if j.sheet != nil {
+		// A Gen-1.5 draft: the server's frame nearest the camera's turn, in
+		// the mode's look, scaled by the zoom (no pan, no elevation).
+		look, _ := assets.TurntableLook(k.mode)
+		res.img, res.err = turntable.View(j.sheet, look, turntable.FrameAt(cam.Theta), k.w, k.h, cam.Zoom)
+		res.full = true
+		return res
+	}
 	w, h, ss := frameSize(k.w, k.h, k.interactive, k.mode)
 	o := render3d.Options{Mode: render3d.Mode(k.mode), Width: w, Height: h, Camera: &cam, Frame: &j.frame, Draft: j.draft,
 		Background: backgrounds[k.bg], WireOverlay: k.overlay, Cancel: cancel, SS: ss, Interactive: k.interactive}

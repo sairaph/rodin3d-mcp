@@ -251,7 +251,7 @@ func (a *App) wantKey(p *pane, now time.Time) renderKey {
 // scheduleRenders submits the frame each visible pane needs.
 func (a *App) scheduleRenders(now time.Time) {
 	for _, p := range a.visiblePanes() {
-		if p.status != "ready" || p.mesh == nil {
+		if p.status != "ready" || p.mesh == nil && p.sheet == nil {
 			continue
 		}
 		if miss := missingMaps(p, a.mode); len(miss) > 0 {
@@ -280,7 +280,7 @@ func (a *App) scheduleRenders(now time.Time) {
 			mesh = p.simple
 		}
 		p.queued, p.hasQueued = want, true
-		a.rend.submit(&renderJob{p: p, key: want, mesh: mesh, maps: p.maps, frame: p.frame, draft: p.draft})
+		a.rend.submit(&renderJob{p: p, key: want, mesh: mesh, maps: p.maps, frame: p.frame, draft: p.draft, sheet: p.sheet})
 	}
 }
 

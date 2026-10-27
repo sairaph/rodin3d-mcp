@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +22,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/store"
+	"github.com/sairaph/rodin3d-mcp/internal/turntable"
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
 )
 
@@ -51,10 +54,17 @@ type ViewStage struct {
 	Maps    []ViewAsset // material stage: texture_diffuse, _pbr, _normal, _shaded
 	mesh    assets.Asset
 	hasMesh bool
+	// sheet is the Gen-1.5 draft's turntable sheet (no mesh): the pane shows
+	// its frame nearest the camera, in the look of the mode (turntable_*).
+	sheet assets.Asset
 }
 
-// HasMesh reports whether the stage can be drawn in 3D.
-func (s ViewStage) HasMesh() bool { return s.hasMesh }
+// HasMesh reports whether the stage can be shown in a 3D pane: a mesh, or
+// a turntable sheet (Turntable).
+func (s ViewStage) HasMesh() bool { return s.hasMesh || s.sheet.URL != "" }
+
+// Turntable reports whether the stage is a turntable sheet, not a mesh.
+func (s ViewStage) Turntable() bool { return !s.hasMesh && s.sheet.URL != "" }
 
 // ViewAsset is a server file of a stage.
 type ViewAsset struct {
@@ -102,12 +112,12 @@ func (t *ViewTask) DraftVersion(v string) (ViewStage, error) {
 		return ViewStage{}, failFields(render.CodeConflict, fmt.Sprintf("The task has no geometry version %q.", v),
 			"Use one of the versions listed: "+strings.Join(t.Versions, ", ")+".", map[string]any{"versions": t.Versions})
 	}
-	mesh, poster := assets.GeometryDraftAt(t.d.hist, v)
-	if mesh.URL == "" {
+	mesh, sheet, poster := assets.GeometryDraftAt(t.d.hist, v)
+	if mesh.URL == "" && sheet.URL == "" {
 		return ViewStage{}, fail(render.CodeConflict, fmt.Sprintf("Geometry version %s of this task has no draft mesh.", v), "Show the task's own version.")
 	}
 	st := base
-	st.Version, st.mesh = v, mesh
+	st.Version, st.mesh, st.sheet, st.hasMesh, st.Modes, st.Draft = v, mesh, sheet, mesh.URL != "", draftModes(mesh.URL == ""), true
 	st.Server = nil
 	if poster.URL != "" {
 		st.Server = []ViewAsset{{Mode: assets.ModePoster, asset: poster}}
@@ -134,13 +144,18 @@ func (s *Service) ViewTask(ctx context.Context, id string) (*ViewTask, error) {
 		st := ViewStage{Name: stg, Draft: stg == assets.StageGeometryDraft}
 		if a, ok := assets.MeshAsset(d.card, d.hist, stg); ok {
 			st.mesh, st.hasMesh = a, true
+			// A draft named as a GLB (a Bang-confirmed card's parts) is drawn as a model.
+			st.Draft = st.Draft && !assets.IsModelFile(a)
 			for _, m := range render3d.ModesFor(st.Draft, stg == assets.StageMaterial && textured) {
 				st.Modes = append(st.Modes, string(m))
 			}
-			if st.Draft {
+			if stg == assets.StageGeometryDraft {
 				st.Version = a.Version
 				t.DefaultVersion = a.Version
 			}
+		} else if a, ok := assets.Find(d.list, stg, assets.ModeTurntable); ok {
+			st.sheet, st.Modes, st.Version = a, draftModes(true), a.Version
+			t.DefaultVersion = a.Version
 		}
 		for _, m := range []string{assets.ModePoster, assets.ModeGeometryImage, assets.ModeMaterialImage} {
 			if a, ok := assets.Find(d.list, stg, m); ok {
@@ -152,7 +167,7 @@ func (s *Service) ViewTask(ctx context.Context, id string) (*ViewTask, error) {
 				st.Maps = append(st.Maps, ViewAsset{Mode: "texture_" + k, asset: a})
 			}
 		}
-		if st.hasMesh || len(st.Server) > 0 {
+		if st.HasMesh() || len(st.Server) > 0 {
 			t.Stages = append(t.Stages, st)
 		}
 	}
@@ -211,11 +226,48 @@ func (s *Service) ViewMesh(ctx context.Context, uuid string, st ViewStage) (*ren
 	if err != nil {
 		return nil, err
 	}
-	if st.Draft && !draco.IsDraco(src) {
-		return nil, fail(render.CodeConflict, "The geometry draft of this task is not a Draco mesh (an older preview format), so it cannot be drawn.",
-			"Show its poster in the image strip, or a later stage.")
+	draft, err := draftKind(st.mesh, src)
+	if err != nil {
+		return nil, err
 	}
-	return s.viewMesh(ctx, file, src, sum(src), st.Draft)
+	return s.viewMesh(ctx, file, src, sum(src), draft)
+}
+
+// ViewTurntable downloads (when needed) and reads the turntable sheet of a
+// Gen-1.5 draft stage.
+func (s *Service) ViewTurntable(ctx context.Context, uuid string, st ViewStage) (image.Image, error) {
+	if !st.Turntable() {
+		return nil, fail(render.CodeConflict, "The "+st.Name+" stage of this task has no turntable.", "Show another stage.")
+	}
+	file, err := s.cachedFile(ctx, uuid, st.sheet)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	img, err := imaging.Decode(bytes.NewReader(b))
+	if err != nil {
+		return nil, wrapf(err, "read the turntable sheet")
+	}
+	if err := turntable.Check(img); err != nil {
+		return nil, fail(render.CodeConflict, "The geometry draft picture of this task cannot be read as the server's turntable: "+err.Error()+".", "Show its poster in the image strip.")
+	}
+	return img, nil
+}
+
+// draftModes are the modes of a geometry draft stage: the turntable looks
+// for a sheet, else the draft render modes.
+func draftModes(sheet bool) []string {
+	if sheet {
+		return append([]string(nil), assets.TurntableModes...)
+	}
+	var out []string
+	for _, m := range render3d.ModesFor(true, false) {
+		out = append(out, string(m))
+	}
+	return out
 }
 
 // ViewMap downloads (when needed) and decodes one texture map of the stage

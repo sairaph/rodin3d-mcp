@@ -178,6 +178,7 @@ func scalarText(v any) string {
 type GeometryVersion struct {
 	PreviewCover   string `json:"preview_cover"`
 	PreviewDRC     string `json:"preview_drc"`
+	PreviewImage   string `json:"preview_image"` // Gen-1.5: the turntable sheet (render.jpg), no preview_drc
 	Settings       string `json:"settings"`
 	GenerationTime string `json:"generation_time"`
 	HasBang        bool   `json:"has_bang"`

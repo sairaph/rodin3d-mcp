@@ -21,6 +21,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/stage"
 	"github.com/sairaph/rodin3d-mcp/internal/store"
+	"github.com/sairaph/rodin3d-mcp/internal/turntable"
 )
 
 // Preview stages (get_preview's stage argument; material covers the
@@ -47,18 +48,75 @@ const (
 	ModeTextureShaded  = "texture_shaded"
 )
 
+// The geometry draft of a Gen-1.5 task is no mesh but the server's
+// turntable sheet (package turntable): its four looks are server image
+// modes of the geometry_draft stage, all served from the one sheet file
+// (Asset.Mode ModeTurntable).
+const (
+	ModeTurntable       = "turntable"
+	ModeTurntableDark   = "turntable_" + turntable.LookDark
+	ModeTurntableCopper = "turntable_" + turntable.LookCopper
+	ModeTurntableLight  = "turntable_" + turntable.LookLight
+	ModeTurntableNormal = "turntable_" + turntable.LookNormal
+)
+
+// TurntableModes are the server image modes of a turntable sheet.
+var TurntableModes = []string{ModeTurntableDark, ModeTurntableCopper, ModeTurntableLight, ModeTurntableNormal}
+
+// TurntableLook returns the look of a turntable mode.
+func TurntableLook(mode string) (string, bool) {
+	if !strings.HasPrefix(mode, "turntable_") {
+		return "", false
+	}
+	return strings.TrimPrefix(mode, "turntable_"), true
+}
+
 // Modes of server images, per stage.
 var Modes = map[string][]string{
-	StageGeometryDraft: {ModePoster},
+	StageGeometryDraft: {ModePoster, ModeTurntableDark, ModeTurntableCopper, ModeTurntableLight, ModeTurntableNormal},
 	StageGeometry:      {ModePoster, ModeGeometryImage},
 	StageMaterial:      {ModePoster, ModeGeometryImage, ModeMaterialImage, ModeTextureDiffuse, ModeTexturePBR, ModeTextureNormal, ModeTextureShaded},
 }
 
 // AllModes lists every server image mode in display order.
-var AllModes = []string{ModePoster, ModeGeometryImage, ModeMaterialImage, ModeTextureDiffuse, ModeTexturePBR, ModeTextureNormal, ModeTextureShaded}
+var AllModes = []string{ModePoster, ModeTurntableDark, ModeTurntableCopper, ModeTurntableLight, ModeTurntableNormal,
+	ModeGeometryImage, ModeMaterialImage, ModeTextureDiffuse, ModeTexturePBR, ModeTextureNormal, ModeTextureShaded}
 
 // IsTextureMap reports whether a server image mode is a texture map.
 func IsTextureMap(mode string) bool { return strings.HasPrefix(mode, "texture_") }
+
+// IsSheet reports whether a draft file address names a picture (the
+// Gen-1.5 turntable sheet, render.jpg) rather than a mesh (.drc, .glb).
+func IsSheet(u string) bool {
+	switch (Asset{URL: u}).Ext() {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		return true
+	}
+	return false
+}
+
+// IsModelFile reports whether an asset's address names a GLB or glTF.
+func IsModelFile(a Asset) bool {
+	e := a.Ext()
+	return e == ".glb" || e == ".gltf"
+}
+
+// draftFile is the address of the geometry draft's file for a card at
+// stage st: the card's preview_sdf, or on a later card the confirmed
+// version's draft from hist (its Draco preview_drc, or for Gen-1.5 its
+// turntable sheet preview_image). The web reads preview_sdf as the Draco
+// draft for generation_mode Brilliant (Gen-2.5) and as the turntable sheet
+// (sdf_url) for the Gen-1.5 modes (main.fmt.js:89490-89507, 90098); a
+// Bang-confirmed card holds the parts GLB there (bang_associated.glb, seen
+// on b80afb1c 2026-10-27).
+func draftFile(card *rodin.Card, hist History, st stage.Status, geoVersion string) string {
+	u := card.Preview["preview_sdf"]
+	if u == "" && st.Stage != stage.GeometryDraft {
+		v := hist.Geometry[geoVersion]
+		u = firstNonEmpty(v.PreviewDRC, v.PreviewImage)
+	}
+	return u
+}
 
 // Mesh files of a stage (Asset.Mode of MeshAsset): the geometry draft's
 // Draco file and the GLB of the confirmed geometry or the material.
@@ -127,6 +185,9 @@ func Index(card *rodin.Card, hist History) []Asset {
 			add(StageGeometryDraft, ModePoster, rodin.StepModelGenerate, geoVersion, v.PreviewCover)
 		}
 	}
+	if u := draftFile(card, hist, st, geoVersion); IsSheet(u) {
+		add(StageGeometryDraft, ModeTurntable, rodin.StepModelGenerate, geoVersion, u)
+	}
 	if st.Stage == stage.GeometryDraft {
 		return out
 	}
@@ -186,7 +247,8 @@ func (m material) pick(add func(stg, mode, step, version, u string), mode, fromC
 
 // MeshAsset returns the mesh file a stage is rendered from: for the geometry
 // draft its Draco file (the card's preview_sdf, or the confirmed version's
-// draft from hist on a later card); for the confirmed geometry and the
+// draft from hist on a later card; draftFile), none when that is a Gen-1.5
+// turntable sheet (Index lists it as ModeTurntable); for the confirmed geometry and the
 // material the card's GLB (model). A card past the geometry stage carries
 // only the material GLB, which holds the confirmed geometry with texture
 // coordinates, so the geometry stage of such a card is rendered from it.
@@ -196,9 +258,9 @@ func MeshAsset(card *rodin.Card, hist History, stg string) (Asset, bool) {
 	ok := func(a Asset) (Asset, bool) { return a, a.URL != "" }
 	switch stg {
 	case StageGeometryDraft:
-		u := card.Preview["preview_sdf"]
-		if u == "" && st.Stage != stage.GeometryDraft {
-			u = hist.Geometry[geoVersion].PreviewDRC
+		u := draftFile(card, hist, st, geoVersion)
+		if IsSheet(u) {
+			return Asset{}, false
 		}
 		return ok(Asset{Stage: stg, Mode: MeshDraft, Step: rodin.StepModelGenerate, Version: geoVersion, URL: u})
 	case StageGeometry:
@@ -245,13 +307,17 @@ func Inputs(card *rodin.Card, order func([]string)) (names []string, list []Asse
 	return names, list
 }
 
-// GeometryDraftAt returns the draft mesh and poster of geometry version v
-// from the history (empty addresses when the history lacks them).
-func GeometryDraftAt(hist History, v string) (mesh, poster Asset) {
+// GeometryDraftAt returns the draft mesh, turntable sheet (Gen-1.5, which
+// has no mesh) and poster of geometry version v from the history (empty
+// addresses when the history lacks them).
+func GeometryDraftAt(hist History, v string) (mesh, sheet, poster Asset) {
 	gv := hist.Geometry[v]
 	mesh = Asset{Stage: StageGeometryDraft, Mode: MeshDraft, Step: rodin.StepModelGenerate, Version: v, URL: gv.PreviewDRC}
+	if mesh.URL == "" && IsSheet(gv.PreviewImage) {
+		sheet = Asset{Stage: StageGeometryDraft, Mode: ModeTurntable, Step: rodin.StepModelGenerate, Version: v, URL: gv.PreviewImage}
+	}
 	poster = Asset{Stage: StageGeometryDraft, Mode: ModePoster, Step: rodin.StepModelGenerate, Version: v, URL: gv.PreviewCover}
-	return mesh, poster
+	return mesh, sheet, poster
 }
 
 // MaterialRef is the material history reference a card's material belongs
@@ -270,8 +336,12 @@ func MaterialRef(card *rodin.Card, hist History) string {
 	return ""
 }
 
-// Find returns the asset for stage and mode.
+// Find returns the asset for stage and mode; a turntable look is served
+// from the stage's turntable sheet.
 func Find(list []Asset, stg, mode string) (Asset, bool) {
+	if _, ok := TurntableLook(mode); ok {
+		mode = ModeTurntable
+	}
 	for _, a := range list {
 		if a.Stage == stg && a.Mode == mode {
 			return a, true

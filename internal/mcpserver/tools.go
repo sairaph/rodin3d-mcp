@@ -116,7 +116,7 @@ type waitInput struct {
 type previewInput struct {
 	TaskID string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
 	Stage  *string `json:"stage,omitempty" jsonschema:"which stage: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
-	Mode   *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, or a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded) or a local render of the stage mesh (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, tracer, depth, uv_checker)"`
+	Mode   *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded, or for a Gen-1.5 geometry draft, which has no mesh, a frame of the server's turntable: turntable_dark, turntable_copper, turntable_light, turntable_normal, picked by view) or a local render of the stage mesh (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, tracer, depth, uv_checker)"`
 	View   *string `json:"view,omitempty" jsonschema:"camera of a render (server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
 	Size   *int    `json:"size,omitempty" jsonschema:"edge of the PNG in pixels, 256-1024 (server images: the longer edge)"`
 	SaveTo *string `json:"save_to,omitempty" jsonschema:"absolute path of the PNG to write; default the previews folder of the data directory"`

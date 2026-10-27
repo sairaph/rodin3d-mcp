@@ -21,6 +21,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
 	"github.com/sairaph/rodin3d-mcp/internal/glb"
+	"github.com/sairaph/rodin3d-mcp/internal/imaging"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 )
 
@@ -120,10 +121,9 @@ func (s *Service) renderStage(ctx context.Context, uuid string, d *taskDetail, s
 	if err != nil {
 		return out, err
 	}
-	draft := ma.Mode == assets.MeshDraft
-	if draft && !draco.IsDraco(src) {
-		return out, fail(render.CodeConflict, "The geometry draft of this task is not a Draco mesh (an older preview format), so it cannot be rendered here.",
-			"Call get_preview with mode poster for the draft's server image; renders work from the confirmed geometry on.")
+	draft, err := draftKind(ma, src)
+	if err != nil {
+		return out, err
 	}
 	meshSum := sum(src)
 
@@ -205,6 +205,27 @@ func (s *Service) renderStage(ctx context.Context, uuid string, d *taskDetail, s
 	// rather than holding them in a long-running server.
 	debug.FreeOSMemory()
 	return out, nil
+}
+
+// draftKind checks the file of a stage mesh asset by its content: true for
+// a Draco geometry draft (decoded as the draft), false for a GLB (a model,
+// also the parts GLB a Bang-confirmed card names as its draft). A draft file
+// that is neither is refused with what it is.
+func draftKind(a assets.Asset, src []byte) (bool, error) {
+	switch {
+	case a.Mode == assets.MeshDraft && draco.IsDraco(src):
+		return true, nil
+	case bytes.HasPrefix(src, []byte("glTF")):
+		return false, nil
+	case a.Mode != assets.MeshDraft:
+		return false, nil // glb.Parse reports what is wrong with it
+	}
+	what := "neither a Draco mesh nor a GLB"
+	if k := imaging.Sniff(src); k != "" {
+		what = "a picture (" + k + "), not a mesh"
+	}
+	return false, fail(render.CodeConflict, "The geometry draft file of this task is "+what+", so it cannot be drawn.",
+		"Call get_preview with another stage or mode from available.")
 }
 
 // readRender returns a cached render when the file is a whole PNG.

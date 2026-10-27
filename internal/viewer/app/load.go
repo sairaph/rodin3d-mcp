@@ -123,6 +123,21 @@ func (a *App) loadPane(p *pane) {
 			})
 			return
 		}
+		if stage.Turntable() {
+			sheet, err := a.svc.ViewTurntable(a.ctx, uuid, stage)
+			if err != nil {
+				failed(err)
+				return
+			}
+			log.Printf("task %s %s: turntable sheet in %v", uuid[:8], stage.Name, time.Since(t0).Round(time.Millisecond))
+			a.post(func() {
+				if current() {
+					p.sheet, p.status = sheet, "ready"
+					a.dirty()
+				}
+			})
+			return
+		}
 		mesh, err := a.svc.ViewMesh(a.ctx, uuid, stage)
 		if err != nil {
 			failed(err)

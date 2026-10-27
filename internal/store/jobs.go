@@ -44,6 +44,9 @@ var ErrBusy = errors.New("a call of the same kind is running")
 // ErrBusy with the running call. SetJobs fills the claim after the reply;
 // DropJob removes it when the send failed.
 func (s *Store) ClaimJob(j Job, blocking []string, except int64) (int64, Job, error) {
+	if j.Detail == nil {
+		j.Detail = map[string]string{}
+	}
 	detail, err := json.Marshal(j.Detail)
 	if err != nil {
 		return 0, Job{}, err
@@ -93,9 +96,12 @@ func (s *Store) SetJobs(id int64, jobs []string, detail map[string]string) error
 	if err := tx.QueryRow(`SELECT detail FROM jobs WHERE id = ?`, id).Scan(&raw); err != nil {
 		return err
 	}
-	d := map[string]string{}
+	var d map[string]string
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		return err
+	}
+	if d == nil { // "null": a row written without detail
+		d = map[string]string{}
 	}
 	for k, v := range detail {
 		d[k] = v

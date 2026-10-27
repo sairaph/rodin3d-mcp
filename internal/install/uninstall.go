@@ -195,13 +195,19 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 	}
 	installer.PrintReloadHints(w, applied, byName)
 
+	if failures > 0 {
+		// This run already took the program off PATH, so the retry names
+		// the running program by its full path.
+		retry := "'" + lay.Self + "' uninstall"
+		if runtime.GOOS == "windows" {
+			retry = "& " + retry
+		}
+		fmt.Fprintf(w, "\n  Some of it could not be removed (above). Close the programs still using it, such as\n  AI clients that run %s, and run this again:\n    %s\n", domain.BinaryName, retry)
+	}
 	if deferred != nil {
 		fmt.Fprintf(w, "\n  Left behind: %s\n", deferred.Leftover.Path)
 		fmt.Fprintln(w, "  Windows cannot delete a running program. Once this command has ended, delete its folder:")
 		fmt.Fprintf(w, "    Remove-Item -Recurse -Force '%s'\n", deferred.Leftover.Top)
-	}
-	if failures > 0 {
-		fmt.Fprintf(w, "\n  Some of it could not be removed (above). Close the programs still using it, such as\n  AI clients that run %s, and run `%s uninstall` again.\n", domain.BinaryName, domain.BinaryName)
 	}
 	skip := ""
 	if deferred != nil {

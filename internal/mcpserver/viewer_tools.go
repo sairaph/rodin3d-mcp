@@ -214,7 +214,9 @@ func (s *Server) registerViewerTools() {
 	addTool(s, "control_viewer", "Change the viewer",
 		"Change what the open viewer shows: layout, stage, version, render mode, named view, orbit, zoom, pan, turntable, wireframe "+
 			"overlay, background, selection, the view tags, weights and order of a shown input set, a highlight, and a message banner for "+
-			"the user. Every field is checked before any is applied. Returns the new state (no screenshot: get_viewer_state takes one). "+
+			"the user. A Gen-1.5 geometry draft shows the server's turntable frames (modes turntable_*): view and orbit azimuth pick the "+
+			"nearest of 16 frames round the model (panes[].turntable_frame), and top, elevation, pan, wireframe overlay and background answer "+
+			"conflict. Every field is checked before any is applied. Returns the new state (no screenshot: get_viewer_state takes one). "+
 			"Use expected_revision from the last state so a change the user just made is not overwritten (conflict otherwise).",
 		viewerTool, ctl, s.controlViewer)
 
@@ -222,7 +224,7 @@ func (s *Server) registerViewerTools() {
 	withRange(st, service.ViewerShotMin, service.ViewerShotMax, "size")
 	withMin(st, 0, "since_revision")
 	addTool(s, "get_viewer_state", "Viewer state and screenshot",
-		"Read the open viewer: what it shows (content, stage, mode, view, camera, layout, panes, selection, input set with tags and "+
+		"Read the open viewer: what it shows (content, stage, mode, view, camera, layout, panes with the turntable frame a Gen-1.5 draft shows, selection, input set with tags and "+
 			"weights), the revision, the changes the user made in the window since since_revision, and a screenshot of the window exactly "+
 			"as the user sees it (quality full, or interactive when nothing full-quality came within 10 s).",
 		viewerReadTool, st, s.viewerState)

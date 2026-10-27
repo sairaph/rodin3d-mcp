@@ -270,6 +270,18 @@ type PaneState struct {
 	Error     string   `json:"error,omitempty" yaml:"error,omitempty"`
 	Note      string   `json:"note,omitempty" yaml:"note,omitempty"` // a change the load made to what was asked (a mode the model lacks)
 	Triangles int      `json:"triangles,omitempty" yaml:"triangles,omitempty"`
+	// TurntableFrame is what a pane of a Gen-1.5 geometry draft shows: the
+	// server's turntable frame nearest the camera's azimuth.
+	TurntableFrame *TurntableFrame `json:"turntable_frame,omitempty" yaml:"turntable_frame,omitempty"`
+}
+
+// TurntableFrame is the server frame a turntable pane draws: frame 0-15 of
+// the 16 round the model, and the azimuth it was taken from (0 front, 90
+// right). The frames are pictures: the camera's elevation and pan, the
+// wireframe overlay and the background are not drawn on them.
+type TurntableFrame struct {
+	Frame      int     `json:"frame" yaml:"frame"`
+	AzimuthDeg float64 `json:"azimuth_deg" yaml:"azimuth_deg"`
 }
 
 // SelectedState is the current selection.

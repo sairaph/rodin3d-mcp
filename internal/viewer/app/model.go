@@ -18,6 +18,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
+	"github.com/sairaph/rodin3d-mcp/internal/turntable"
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
 )
 
@@ -388,6 +389,26 @@ func (a *App) conflict(msg, hint string, fields map[string]any) viewer.StateRepl
 	return a.refusal(&viewer.Error{Code: render.CodeConflict, Message: msg, Hint: hint, Fields: fields})
 }
 
+// turntablePanes reports whether panes show Gen-1.5 drafts: the server's
+// turntable frames, pictures taken round the model's side (a compare of
+// such a pane with a mesh stage is refused, so they are all or none).
+func turntablePanes(panes []*pane) bool {
+	for _, p := range panes {
+		if !p.stage.Turntable() {
+			return false
+		}
+	}
+	return len(panes) > 0
+}
+
+// noTurntable refuses a camera or drawing setting a turntable pane cannot
+// show, in get_preview's words (the frame shown is the pane's
+// turntable_frame).
+func (a *App) noTurntable(what string) viewer.StateReply {
+	return a.conflict(fmt.Sprintf("%s is not available for a turntable look: %s; its frames are the server's pictures, so elevation, pan, the wireframe overlay and the background are not drawn on them.", what, turntable.ErrNoView),
+		"Turn it with view front, right, back, left, three_quarter or web, or orbit azimuth_deg (the nearest of 16 frames is shown), and zoom; the state's panes[].turntable_frame names the frame shown.", nil)
+}
+
 func (a *App) invalid(msg, hint string) viewer.StateReply {
 	return a.refusal(&viewer.Error{Code: render.CodeInvalidInput, Message: msg, Hint: hint})
 }
@@ -452,6 +473,9 @@ func (a *App) applyShow(p *prepared, params viewer.ShowParams) viewer.StateReply
 		c, ok := namedCam(params.View)
 		if !ok {
 			return a.invalid(fmt.Sprintf("Unknown view %q.", params.View), "Use one of: "+strings.Join(viewer.Views, ", ")+".")
+		}
+		if params.View == string(render3d.ViewTop) && turntablePanes(panes) {
+			return a.noTurntable("View top")
 		}
 		cam = &c
 	}
@@ -599,6 +623,25 @@ func (a *App) applyControl(c viewer.Control) viewer.StateReply {
 		modes = st.Modes
 		if !slices.Contains(modes, mode) {
 			mode = defaultMode(modes)
+		}
+	}
+	// A Gen-1.5 draft's panes show the server's turntable frames.
+	sheet := turntablePanes(a.panes)
+	if newStage != nil {
+		sheet = newStage.Turntable()
+	}
+	if sheet {
+		switch {
+		case c.View != nil && *c.View == string(render3d.ViewTop):
+			return a.noTurntable("View top")
+		case c.Orbit != nil && c.Orbit.ElevationDeg != nil && *c.Orbit.ElevationDeg != 0:
+			return a.noTurntable("orbit elevation_deg")
+		case c.Pan != nil:
+			return a.noTurntable("pan")
+		case c.WireframeOverlay != nil:
+			return a.noTurntable("wireframe_overlay")
+		case c.Background != nil:
+			return a.noTurntable("background")
 		}
 	}
 	if c.Mode != nil {
@@ -1007,6 +1050,10 @@ func (a *App) snapshot() viewer.State {
 		}
 		if p.mesh != nil {
 			ps.Triangles = len(p.mesh.Idx) / 3
+		}
+		if p.stage.Turntable() {
+			k := turntable.FrameAt(a.cam.r3d().Theta)
+			ps.TurntableFrame = &viewer.TurntableFrame{Frame: k, AzimuthDeg: wrapAz(float64(k) * 360 / turntable.Frames)}
 		}
 		st.Panes = append(st.Panes, ps)
 	}

@@ -7,7 +7,9 @@
 // colorful row 1 odd, so frame k of a look is tile 2k (+1) of its row.
 // Frame 0 faces the front; frame k is k x 22.5 degrees round towards the
 // model's right (+X): frame 4 shows the right side, 8 the back, 12 the
-// left (read from the tiles).
+// left (read from the tiles). Every look turns the same way: frames 0, 2, 4
+// and 8 of all four looks show the same side (live, c6e419ac, 2026-10-27),
+// as the carousel moves the four looks by the same tile step together.
 package turntable
 
 import (

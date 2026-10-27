@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/sairaph/rodin3d-mcp/internal/domain"
 )
 
 // Values of a permission key.
@@ -118,6 +120,47 @@ func (p Permissions) Get(key string) (value string, ok bool) {
 func (p Permissions) Allowed(key string) bool {
 	v, ok := p.Get(key)
 	return ok && v == Allow
+}
+
+// Set changes key to value (Allow or Deny).
+func (p *Permissions) Set(key, value string) error {
+	f := p.field(key)
+	if f == nil {
+		return fmt.Errorf("no permission key %q", key)
+	}
+	if value != Allow && value != Deny {
+		return fmt.Errorf("[permission] %s = %q; use \"allow\" or \"deny\"", key, value)
+	}
+	*f = value
+	return nil
+}
+
+// Encode is the file Save writes: every key in Keys order, each with the
+// tools it covers as a comment.
+func Encode(p Permissions) []byte {
+	var b bytes.Buffer
+	b.WriteString("# rodin3d-mcp write permissions: \"allow\" or \"deny\" for each operation that\n")
+	b.WriteString("# spends credits or changes a task on Hyper3D. Reads need no permission.\n")
+	b.WriteString("# Every call reads this file again, so an edit applies at once.\n\n")
+	b.WriteString("[permission]\n")
+	width := 0
+	for _, k := range Keys {
+		width = max(width, len(k.Name))
+	}
+	for _, k := range Keys {
+		v, _ := p.Get(k.Name)
+		if v != Allow {
+			v = Deny
+		}
+		fmt.Fprintf(&b, "%-*s = %-7s # %s\n", width, k.Name, `"`+v+`"`, k.Tools)
+	}
+	return b.Bytes()
+}
+
+// Save writes p to path as the whole file (Encode), atomically and readable
+// only by the user. Anything else the file held is replaced.
+func Save(path string, p Permissions) error {
+	return domain.WriteFileAtomic(path, Encode(p), 0o600)
 }
 
 // ErrMalformed marks a config file that exists but cannot be used. Load

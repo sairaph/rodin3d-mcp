@@ -44,6 +44,38 @@ func TestAllowAndDefaults(t *testing.T) {
 	}
 }
 
+// TestSaveRoundTrip writes each key allowed alone, then every key denied, and
+// reads the file back: Load must return exactly what Save was given.
+func TestSaveRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "config.toml")
+	cases := []Permissions{Default().Permission}
+	for _, k := range Keys {
+		p := Default().Permission
+		if err := p.Set(k.Name, Allow); err != nil {
+			t.Fatal(err)
+		}
+		cases = append(cases, p)
+	}
+	for _, want := range cases {
+		if err := Save(path, want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatalf("load what Save wrote: %v\n%s", err, Encode(want))
+		}
+		if got.Permission != want {
+			t.Fatalf("got %+v, want %+v", got.Permission, want)
+		}
+	}
+	if err := (&Permissions{}).Set("no_such_key", Allow); err == nil {
+		t.Error("Set accepted an unknown key")
+	}
+	if err := (&Permissions{}).Set("generate", "yes"); err == nil {
+		t.Error("Set accepted a value other than allow or deny")
+	}
+}
+
 func TestMalformedFilesFallBackToDeny(t *testing.T) {
 	for name, body := range map[string]string{
 		"syntax":      "[permission\ngenerate = allow",

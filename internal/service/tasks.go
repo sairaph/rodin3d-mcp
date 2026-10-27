@@ -221,20 +221,17 @@ func (s *Service) ListTasks(ctx context.Context, in ListInput) (Result, error) {
 	q := strings.ToLower(strings.TrimSpace(in.Query))
 	var rows []listRow
 	for _, t := range tasks {
-		ts := stage.Of(t.Step, t.UserState, t.PendingJobs)
-		if in.Stage != "" && ts.Stage != in.Stage {
+		r := taskRow(t)
+		if in.Stage != "" && r.Stage != in.Stage {
 			continue
 		}
-		if in.State != "" && ts.State != in.State {
+		if in.State != "" && r.State != in.State {
 			continue
 		}
 		if q != "" && !strings.Contains(strings.ToLower(t.Prompt), q) && !strings.HasPrefix(t.UUID, q) {
 			continue
 		}
-		rows = append(rows, listRow{
-			Prompt: clip(t.Prompt, 120), ID: t.UUID, Stage: ts.Stage, State: ts.State,
-			Tier: strings.TrimSpace(t.Mode + " " + t.Tier), Views: strings.Join(t.Views, ","), Created: t.Created,
-		})
+		rows = append(rows, listRow(r))
 	}
 	page := max(in.Page, 1)
 	window, pages, err := budget.Paginate(rows, page, listTokenBudget, func(r []listRow) (string, error) {

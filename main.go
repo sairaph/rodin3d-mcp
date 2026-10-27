@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,24 +14,19 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/sairaph/mcp-wizard/app"
-	"github.com/sairaph/mcp-wizard/app/detail"
-	"github.com/sairaph/mcp-wizard/app/menu"
-	"github.com/sairaph/mcp-wizard/async"
 	"github.com/sairaph/mcp-wizard/cli"
 	"github.com/sairaph/mcp-wizard/command"
 	"github.com/sairaph/mcp-wizard/doctor"
-	"github.com/sairaph/mcp-wizard/flow"
 	"github.com/sairaph/mcp-wizard/harness"
-	"github.com/sairaph/mcp-wizard/installer"
 	"github.com/sairaph/mcp-wizard/tui"
 	"github.com/sairaph/mcp-wizard/update"
 
+	"github.com/sairaph/rodin3d-mcp/internal/app"
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/commands"
 	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
+	"github.com/sairaph/rodin3d-mcp/internal/install"
 	"github.com/sairaph/rodin3d-mcp/internal/mcpserver"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/store"
@@ -58,20 +52,25 @@ func commandEnv() commands.Env {
 	return commands.Env{Service: newService, Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin, Open: openFile}
 }
 
+func installEnv() install.Env {
+	return install.Env{Service: newService, Stdout: os.Stdout, Stderr: os.Stderr}
+}
+
 func init() {
 	commands.Register(oneShotCommands, commandEnv())
 }
 
 var usageSpecs = []cli.Spec{
 	{Name: "mcp", Description: "Run the MCP server over stdio (default when not in a terminal)"},
-	{Name: "install", Description: "Register the MCP server with the AI clients on this machine"},
-	{Name: "uninstall", Description: "Remove the AI client registrations"},
+	{Name: "install", Description: "Set up: register with the AI clients, sign in, set the permissions"},
+	{Name: "uninstall", Description: "Remove the AI client registrations and stop the syncer"},
 	{Name: "add", Description: "Register the server in this project's AI client configs"},
 	{Name: "login", Description: "Sign in to Hyper3D (login [no-browser] [\"<final address>\"]: quote the address, it holds &)"},
 	{Name: "daemon", Description: "Run the background syncer (daemon --stop stops it)"},
 	{Name: "viewer", Description: "Run the viewer window (open-viewer or the open_viewer tool starts it)"},
 	{Name: "doctor", Description: "Diagnose the installation"},
 	{Name: "update", Description: "Update to the latest release"},
+	{Name: "licenses", Description: "Print the licenses of the third-party code in this binary"},
 	{Name: "version", Description: "Print the version"},
 }
 
@@ -123,20 +122,19 @@ func main() {
 	case "mcp":
 		os.Exit(runMCPServer(ctx, cmd))
 	case "install", "configure":
-		if cmd.Scope == string(harness.ScopeProject) {
-			os.Exit(runAdd(ctx, cmd))
-		}
-		os.Exit(runInstall(ctx, cmd))
+		os.Exit(install.Install(ctx, installEnv(), cmd))
 	case "uninstall":
-		os.Exit(runUninstall(ctx, cmd))
+		os.Exit(install.Uninstall(ctx, installEnv(), cmd))
 	case "add":
-		os.Exit(runAdd(ctx, cmd))
+		os.Exit(install.Add(ctx, installEnv(), cmd))
 	case "daemon":
 		os.Exit(runDaemon(ctx, cmd.Args))
 	case "doctor":
 		os.Exit(runDoctor(ctx))
 	case "update":
 		os.Exit(runUpdate(ctx, cmd))
+	case "licenses":
+		fmt.Print(thirdPartyNotices)
 	case "help":
 		printUsage(os.Stdout)
 	case "version":
@@ -171,7 +169,7 @@ func printUsage(w *os.File) {
 		fmt.Fprintf(w, "  %s %s\n", domain.BinaryName, h.Usage)
 	}
 	fmt.Fprintln(w, "\nInstall, add and uninstall flags:")
-	fmt.Fprintln(w, "  --yes          non-interactive")
+	fmt.Fprintln(w, "  --yes          non-interactive: register only")
 	fmt.Fprintln(w, "  --dry-run      show what would change without writing")
 	fmt.Fprintln(w, "  --all          register with every detected client")
 	fmt.Fprintln(w, "  --clients      comma-separated client ids")
@@ -198,246 +196,6 @@ func runDaemon(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
-}
-
-// --- Shared install helpers ---
-
-// AppState is shared across install wizard steps.
-type AppState struct {
-	flow.BaseState
-	Harness installer.HarnessState
-	Results installer.ResultsState
-}
-
-func harnessState(s *AppState) *installer.HarnessState { return &s.Harness }
-func resultsState(s *AppState) *installer.ResultsState { return &s.Results }
-
-func serverName(cmd cli.Command) string {
-	if cmd.ServerName != "" {
-		return cmd.ServerName
-	}
-	return domain.ServerName
-}
-
-func newDetector(name string) (*harness.Detector, error) {
-	exe, err := harness.ResolveExecutable()
-	if err != nil {
-		return nil, err
-	}
-	return harness.New(harness.ServerSpec{
-		Name:    name,
-		Command: exe,
-		Args:    []string{"mcp"},
-		Env:     domain.DefaultEnv(),
-	})
-}
-
-// selectIDs picks the harnesses to act on. --clients wins, then --all, and by
-// default every selectable client that is not configured yet. The returned
-// reason explains an empty selection.
-func selectIDs(harnesses []harness.Harness, cmd cli.Command) (ids []harness.ID, reason string) {
-	if len(cmd.Clients) > 0 {
-		var unknown []string
-		for _, want := range cmd.Clients {
-			found := false
-			for _, h := range harnesses {
-				if strings.EqualFold(string(h.ID), want) && h.Selectable() {
-					ids = append(ids, h.ID)
-					found = true
-				}
-			}
-			if !found {
-				unknown = append(unknown, want)
-			}
-		}
-		if len(unknown) > 0 {
-			return nil, "no detected client matches --clients " + strings.Join(unknown, ",")
-		}
-		return ids, ""
-	}
-	candidates := 0
-	for _, h := range harnesses {
-		if !h.Selectable() || !h.Relevant() {
-			continue
-		}
-		candidates++
-		if cmd.All || !h.Configured {
-			ids = append(ids, h.ID)
-		}
-	}
-	if len(ids) == 0 && candidates > 0 {
-		return nil, "every detected client is already configured (use --all to re-register)"
-	}
-	return ids, ""
-}
-
-func exitCodeFor(results []harness.Result) int {
-	for _, r := range results {
-		if r.State == harness.ApplyFailed {
-			return 1
-		}
-	}
-	return 0
-}
-
-func byID(harnesses []harness.Harness) map[harness.ID]harness.Harness {
-	m := make(map[harness.ID]harness.Harness, len(harnesses))
-	for _, h := range harnesses {
-		m[h.ID] = h
-	}
-	return m
-}
-
-// --- Install / add ---
-
-func runInstall(ctx context.Context, cmd cli.Command) int {
-	detector, err := newDetector(serverName(cmd))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if tui.IsInteractive() && !cmd.Yes {
-		return runWizard(ctx, detector, harness.Scope{}, cmd, domain.BinaryName+" setup")
-	}
-	return runUnattended(ctx, detector, harness.Scope{}, cmd, harness.Present)
-}
-
-func projectDir(cmd cli.Command) (string, error) {
-	dir := cmd.Dir
-	if dir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		dir = cwd
-	}
-	return filepath.Abs(dir)
-}
-
-func runAdd(ctx context.Context, cmd cli.Command) int {
-	dir, err := projectDir(cmd)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	detector, err := newDetector(serverName(cmd))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	scope := harness.ProjectScopeDir(dir)
-	if tui.IsInteractive() && !cmd.Yes {
-		return runWizard(ctx, detector, scope, cmd, domain.BinaryName+" project setup")
-	}
-	return runUnattended(ctx, detector, scope, cmd, harness.Present)
-}
-
-// runWizard drives the interactive install: pick clients, register. Sign-in
-// is the login command (the installer's sign-in step comes with the app).
-func runWizard(ctx context.Context, detector *harness.Detector, scope harness.Scope, cmd cli.Command, title string) int {
-	state := &AppState{}
-	steps := []flow.Step[AppState]{
-		installer.HarnessStep(ctx, detector, harnessState, installer.HarnessStepOptions{AllDetected: true, Scope: scope}),
-		installer.ApplyStep(ctx, detector, harnessState, resultsState, installer.ApplyStepOptions{Scope: scope, DryRun: cmd.DryRun}),
-	}
-	f := flow.New(steps, state)
-	code := tui.Run(ctx, f, tui.Options{Title: title})
-	if state.Failure != nil {
-		fmt.Fprintln(os.Stderr, state.Failure)
-	}
-	if code == 0 && !cmd.DryRun {
-		printLoginHint()
-	}
-	return code
-}
-
-func printLoginHint() {
-	svc := newService()
-	defer svc.Close()
-	if c, err := svc.Credentials(context.Background()); err == nil && c.State() == auth.StateSignedIn {
-		return
-	}
-	fmt.Printf("\n  Sign in to Hyper3D with:\n    %s login\n", domain.BinaryName)
-}
-
-func runUnattended(ctx context.Context, detector *harness.Detector, scope harness.Scope, cmd cli.Command, desired harness.DesiredState) int {
-	enabling := desired == harness.Present
-	harnesses := detector.DetectIn(ctx, scope)
-
-	var ids []harness.ID
-	if enabling {
-		var reason string
-		ids, reason = selectIDs(harnesses, cmd)
-		if reason != "" {
-			fmt.Fprintf(os.Stderr, "  %s\n", reason)
-			if len(cmd.Clients) > 0 {
-				return 2
-			}
-			return 0
-		}
-	} else {
-		for _, h := range harnesses {
-			if h.Configured {
-				ids = append(ids, h.ID)
-			}
-		}
-	}
-	if len(ids) == 0 {
-		if enabling {
-			installer.PrintNoClients(os.Stdout, domain.BinaryName, false)
-		} else {
-			fmt.Println("  No clients are configured.")
-		}
-		return 0
-	}
-	if cmd.DryRun {
-		return printPlan(ctx, detector, scope, ids, desired)
-	}
-	policy := harness.ConflictReplace
-	if !enabling {
-		policy = harness.ConflictError
-	}
-	results := detector.ApplyIn(ctx, scope, ids, desired, policy)
-	installer.PrintResultsWithScope(os.Stdout, results, scope, enabling, false)
-	installer.PrintReloadHints(os.Stdout, results, byID(harnesses))
-	if enabling {
-		printLoginHint()
-	}
-	return exitCodeFor(results)
-}
-
-func printPlan(ctx context.Context, detector *harness.Detector, scope harness.Scope, ids []harness.ID, desired harness.DesiredState) int {
-	policy := harness.ConflictReplace
-	if desired == harness.Absent {
-		policy = harness.ConflictError
-	}
-	changes, err := detector.PlanResultsIn(ctx, scope, ids, desired, policy)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	installer.PrintChanges(os.Stdout, changes, scope)
-	return 0
-}
-
-// --- Uninstall ---
-
-func runUninstall(ctx context.Context, cmd cli.Command) int {
-	detector, err := newDetector(serverName(cmd))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	scope := harness.Scope{}
-	if cmd.Scope == string(harness.ScopeProject) {
-		dir, err := projectDir(cmd)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		scope = harness.ProjectScopeDir(dir)
-	}
-	return runUnattended(ctx, detector, scope, cmd, harness.Absent)
 }
 
 // --- Doctor ---
@@ -635,7 +393,7 @@ type clientsCheck struct{}
 func (clientsCheck) Name() string { return "AI clients" }
 
 func (clientsCheck) Run(ctx context.Context) doctor.Result {
-	detector, err := newDetector(domain.ServerName)
+	detector, err := install.NewDetector(domain.ServerName)
 	if err != nil {
 		return doctor.Result{Name: "AI clients", Status: doctor.Fail, Detail: err.Error()}
 	}
@@ -687,108 +445,19 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 
 // --- App ---
 
-// The interactive app opens when the binary is run bare in a terminal. In
-// this phase it offers the doctor and the viewer window; the full app comes
-// with phase P4.
-
-const (
-	stepMenu app.Step = iota
-	stepDoctor
-)
-
-type appState struct {
-	app.AppModel
-	ctx    context.Context
-	menu   *menu.Model
-	detail *detail.Model
-}
-
+// runApp is the terminal app (internal/app), opened when the binary runs
+// bare in a terminal.
 func runApp(ctx context.Context) int {
-	s := &appState{ctx: ctx}
-	s.menu = menu.New(domain.BinaryName+" "+version, func() []menu.Item {
-		return []menu.Item{
-			{Label: "Run doctor", Action: "doctor"},
-			{Label: "Open viewer", Action: "viewer"},
-			{Label: "Quit", Action: "quit"},
-		}
+	svc := newService()
+	defer svc.Close()
+	return app.Run(ctx, app.Options{
+		Version: version,
+		Service: svc,
+		Open:    openFile,
+		Doctor: func(ctx context.Context, w io.Writer) {
+			newDoctor(svc).Run(ctx, w)
+		},
 	})
-	return app.Run(ctx, s, app.Options{Title: domain.BinaryName, Version: version})
-}
-
-func (m *appState) Init() tea.Cmd { return m.menu.Init() }
-
-func (m *appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if handled, cmd := m.HandleGlobalKeys(msg); handled {
-		return m, cmd
-	}
-	switch msg := msg.(type) {
-	case app.ActionMsg:
-		switch msg.Source {
-		case "menu":
-			action, _ := msg.Data.(string)
-			if msg.Value == "quit" || action == "quit" {
-				m.Quit = true
-				return m, tea.Quit
-			}
-			if action == "viewer" {
-				m.Step = stepDoctor
-				m.Status = "Opening the viewer..."
-				m.detail = detail.New("Viewer", m.Status)
-				return m, tea.Batch(m.detail.Init(), async.Load(func() (string, error) {
-					svc := newService()
-					defer svc.Close()
-					res, err := svc.OpenViewer(m.ctx, service.ViewerOpenInput{})
-					if err != nil {
-						e := service.Classify(err)
-						return e.Message + "\n" + e.Hint, nil
-					}
-					return res.Body, nil
-				}))
-			}
-			if action == "doctor" {
-				m.Step = stepDoctor
-				m.Status = "Running checks..."
-				m.detail = detail.New("Doctor", m.Status)
-				return m, tea.Batch(m.detail.Init(), async.Load(func() (string, error) {
-					var buf bytes.Buffer
-					svc := newService()
-					defer svc.Close()
-					newDoctor(svc).Run(m.ctx, &buf)
-					return buf.String(), nil
-				}))
-			}
-		case "detail":
-			if msg.Value == "back" {
-				m.Step = stepMenu
-				return m, nil
-			}
-		}
-		return m, nil
-	case async.Result[string]:
-		m.Status = ""
-		if msg.Err != nil {
-			m.detail.SetContent("Doctor failed: " + msg.Err.Error())
-		} else {
-			m.detail.SetContent(msg.Value)
-		}
-		return m, nil
-	}
-	switch m.Step {
-	case stepMenu:
-		return m, m.menu.Update(msg)
-	case stepDoctor:
-		if m.detail != nil {
-			return m, m.detail.Update(msg)
-		}
-	}
-	return m, nil
-}
-
-func (m *appState) View() string {
-	if m.Step == stepDoctor && m.detail != nil {
-		return m.detail.View()
-	}
-	return m.menu.View()
 }
 
 // --- MCP Server ---

@@ -61,7 +61,9 @@ client configs only; `--dry-run` shows what would change.
 Restart your AI client after the setup so it loads the server.
 
 `rodin3d-mcp update` updates to the latest release and `rodin3d-mcp doctor`
-checks the installation.
+checks the installation. After updating from 0.1.2 or older with
+`rodin3d-mcp update`, run `rodin3d-mcp install --yes` once (or the one-line
+installer again) to add the [guide skill](#guide-skill).
 
 ## Uninstall
 
@@ -208,8 +210,11 @@ what to do for each error. It is the `rodin3d` skill, in topics:
   to it. `get_guide` with no arguments lists the topics.
 - Only a copy whose `SKILL.md` carries the `generator: rodin3d-mcp` marker is
   ever replaced or removed: a `rodin3d` skill without it (one you wrote, or a
-  copy whose marker line you removed to keep your edits) stays as it is. `rodin3d-mcp update` rewrites the copies it wrote with the
-  new version's guide, and `uninstall` removes them.
+  copy whose marker line you removed to keep your edits) stays as it is.
+- `rodin3d-mcp update` rewrites the copies it wrote with the new version's
+  guide, and `uninstall` removes them. After updating from 0.1.2 or older
+  with `rodin3d-mcp update`, run `rodin3d-mcp install --yes` once (or the
+  one-line installer again): that version's update writes no copy.
 
 ## Viewer
 

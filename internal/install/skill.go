@@ -129,14 +129,27 @@ func ownSkill(dir string) (ours, exists bool) {
 // writeSkillFolder replaces dir with the embedded guide.
 func writeSkillFolder(dir string) error { return writeSkillFrom(guide.FS(), dir) }
 
+// The file operations of writing and removing a copy, replaced by tests to
+// make one of them fail.
+var (
+	renamePath = os.Rename
+	removeTree = os.RemoveAll
+	removePath = os.Remove
+)
+
 // writeSkillFrom replaces dir with the files of src. They are written to a
-// sibling folder first, so a failure midway (disk full, a file locked by an
-// editor) removes only that folder and leaves the previous copy as it was.
+// sibling folder (dir.new) first; the previous copy is then renamed aside
+// (dir.old), the new one renamed in, and the old one removed. A failure at
+// any step (disk full, a file locked by an editor, which on Windows also
+// blocks the rename) leaves either the previous copy or the new one whole
+// at dir: never a folder of ours without its SKILL.md, which would read as
+// somebody else's skill and stay forever.
 func writeSkillFrom(src fs.FS, dir string) error {
-	tmp := dir + ".new"
-	if err := os.RemoveAll(tmp); err != nil {
+	tmp, old := dir+".new", dir+".old"
+	if err := removeTree(tmp); err != nil {
 		return err
 	}
+	clearAside(old)
 	err := fs.WalkDir(src, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -151,15 +164,77 @@ func writeSkillFrom(src fs.FS, dir string) error {
 		}
 		return os.WriteFile(target, data, 0o644)
 	})
-	if err == nil {
-		if err = os.RemoveAll(dir); err == nil {
-			err = os.Rename(tmp, dir)
+	if err != nil {
+		removeTree(tmp)
+		return err
+	}
+	_, statErr := os.Stat(dir)
+	hadCopy := statErr == nil
+	if hadCopy {
+		if err := renamePath(dir, old); err != nil {
+			removeTree(tmp)
+			return err
 		}
 	}
-	if err != nil {
-		os.RemoveAll(tmp)
+	if err := renamePath(tmp, dir); err != nil {
+		if hadCopy {
+			renamePath(old, dir)
+		}
+		removeTree(tmp)
+		return err
 	}
-	return err
+	// The new copy is in place; an old one that cannot go now is cleared
+	// by the next write or removal.
+	clearAside(old)
+	return nil
+}
+
+// clearAside removes a copy renamed aside (dir.old) by an earlier write. Its
+// SKILL.md goes first, so a client never lists a half-removed folder as a
+// second skill; a folder there that holds somebody else's SKILL.md stays.
+func clearAside(old string) {
+	ours, exists := ownSkill(old)
+	if !exists {
+		return
+	}
+	skill := filepath.Join(old, "SKILL.md")
+	if _, err := os.Stat(skill); err == nil && !ours {
+		return
+	}
+	if ours && removePath(skill) != nil {
+		return
+	}
+	removeTree(old)
+}
+
+// removeSkillFolder removes a copy rodin3d-mcp wrote with its SKILL.md
+// last, so a file that cannot be removed (locked on Windows) leaves a copy
+// that is still recognised as ours and is removed on the next try.
+func removeSkillFolder(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == "SKILL.md" {
+			continue
+		}
+		if err := removeTree(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	if err := removePath(filepath.Join(dir, "SKILL.md")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := removePath(dir); err != nil {
+		return err
+	}
+	clearAside(dir + ".old")
+	removeTree(dir + ".new")
+	return nil
 }
 
 // skill states of a skillRow.
@@ -340,7 +415,7 @@ func removeOwnSkills(w io.Writer, targets []string, dryRun bool) int {
 			fmt.Fprintf(w, "  [ok]   would remove the guide skill %s\n", target)
 			continue
 		}
-		if err := os.RemoveAll(target); err != nil {
+		if err := removeSkillFolder(target); err != nil {
 			fmt.Fprintf(w, "  [fail] %s: %v\n", target, err)
 			code = 1
 			continue

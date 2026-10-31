@@ -24,12 +24,17 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
 )
 
+// userPath is the user PATH uninstall plans and edits (systemUserPath; tests
+// replace it so they never touch the real one).
+var userPath = systemUserPath
+
 // Uninstall removes everything this project put on the computer, in this
 // order: sign out of Hyper3D, stop the syncer and the viewer, remove our
 // entry from every AI client config and the guide skill copies we wrote
-// (skill.go), then the files (planLeftovers), the running binary last. It lists all of it first and asks in the terminal;
-// --yes skips the question, --dry-run only lists. With --scope project it
-// removes that project's registrations only.
+// (skill.go), then the files (planLeftovers), the running binary last. It
+// lists all of it first and asks in the terminal; --yes skips the question,
+// --dry-run only lists. With --scope project it removes that project's
+// registrations and guide skill copies only.
 func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 	if cmd.Scope == string(harness.ScopeProject) {
 		return uninstallProject(ctx, env, cmd)
@@ -46,7 +51,7 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 
 	paths := svc.Paths()
 	self, _ := harness.ResolveExecutable()
-	store := systemUserPath()
+	store := userPath()
 	lay := defaultLayout(paths.Root, self, store)
 	name := serverName(cmd)
 
@@ -181,7 +186,7 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 			row(w, "Guide skill", s+": no longer the copy "+domain.BinaryName+" wrote; left as it is")
 			continue
 		}
-		if err := os.RemoveAll(s); err != nil {
+		if err := removeSkillFolder(s); err != nil {
 			failures++
 			row(env.Stderr, "Guide skill", s+" could not be removed: "+err.Error())
 			continue

@@ -417,3 +417,134 @@ func TestTestMainNeutralisesTheGuideFolderEnvironment(t *testing.T) {
 		t.Errorf("CONTINUE_GLOBAL_DIR = %q under test: it would reach the real machine", got)
 	}
 }
+
+// failOn replaces the file operation op with fail for the rest of the test.
+func failOn[F any](t *testing.T, op *F, fail F) {
+	t.Helper()
+	saved := *op
+	*op = fail
+	t.Cleanup(func() { *op = saved })
+}
+
+var errLocked = errors.New("the file is used by another process")
+
+// writeOurs writes an old copy of ours, with one more topic, at dir.
+func writeOurs(t *testing.T, dir string) string {
+	t.Helper()
+	old := "---\nname: rodin3d\nmetadata:\n  " + guide.Generator + "\n---\nold\n"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"SKILL.md": old, "gone.md": "x"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return old
+}
+
+func assertOurs(t *testing.T, dir, wantSkill string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || string(got) != wantSkill {
+		t.Fatalf("%s/SKILL.md = %q (%v), want %q", dir, got, err, wantSkill)
+	}
+	if ours, _ := ownSkill(dir); !ours {
+		t.Fatalf("%s is no longer recognised as ours", dir)
+	}
+}
+
+func TestAFailedRenameLeavesThePreviousCopyWhole(t *testing.T) {
+	for _, step := range []string{"aside", "in"} {
+		t.Run(step, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "rodin3d")
+			old := writeOurs(t, dir)
+			failOn(t, &renamePath, func(from, to string) error {
+				if (step == "aside" && strings.HasSuffix(to, ".old")) || (step == "in" && strings.HasSuffix(from, ".new")) {
+					return errLocked
+				}
+				return os.Rename(from, to)
+			})
+			if err := writeSkillFolder(dir); !errors.Is(err, errLocked) {
+				t.Fatalf("err = %v, want the rename's", err)
+			}
+			assertOurs(t, dir, old)
+			for _, side := range []string{".new", ".old"} {
+				if _, err := os.Stat(dir + side); !os.IsNotExist(err) {
+					t.Errorf("%s was left behind", dir+side)
+				}
+			}
+		})
+	}
+}
+
+func TestAnOldCopyThatCannotGoIsClearedByTheNextWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rodin3d")
+	writeOurs(t, dir)
+	restore := removeTree
+	failOn(t, &removeTree, func(p string) error {
+		if strings.HasSuffix(p, ".old") {
+			return errLocked
+		}
+		return restore(p)
+	})
+	if err := writeSkillFolder(dir); err != nil {
+		t.Fatalf("the new copy is in place, so the write succeeded: %v", err)
+	}
+	assertOurs(t, dir, guide.SkillMarkdown())
+	if _, err := os.Stat(filepath.Join(dir, "gone.md")); err == nil {
+		t.Error("a file of the previous copy is in the new one")
+	}
+	// The copy aside lost its SKILL.md first: no client lists it as a skill.
+	if _, err := os.Stat(filepath.Join(dir+".old", "SKILL.md")); !os.IsNotExist(err) {
+		t.Errorf("the copy aside still has its SKILL.md (%v)", err)
+	}
+	removeTree = restore
+	if err := writeSkillFolder(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir + ".old"); !os.IsNotExist(err) {
+		t.Error("the next write did not clear the copy aside")
+	}
+}
+
+func TestAForeignFolderAsideIsLeftAlone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rodin3d")
+	writeOurs(t, dir)
+	aside := filepath.Join(dir+".old", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(aside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(aside, []byte(foreignSkill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clearAside(dir + ".old")
+	if got, _ := os.ReadFile(aside); string(got) != foreignSkill {
+		t.Error("a foreign folder named like a copy aside was removed")
+	}
+}
+
+func TestALockedFileKeepsTheCopyOursUntilTheNextRemoval(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rodin3d")
+	old := writeOurs(t, dir)
+	restore := removeTree
+	failOn(t, &removeTree, func(p string) error {
+		if filepath.Base(p) == "gone.md" {
+			return errLocked
+		}
+		return restore(p)
+	})
+	var out bytes.Buffer
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 1 || !strings.Contains(out.String(), "[fail]") {
+		t.Fatalf("code %d:\n%s", code, out.String())
+	}
+	assertOurs(t, dir, old)
+	removeTree = restore
+	out.Reset()
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 0 {
+		t.Fatalf("second removal: code %d:\n%s", code, out.String())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the copy is still there after the second removal (%v)", err)
+	}
+}

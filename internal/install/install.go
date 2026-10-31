@@ -199,6 +199,13 @@ func runWizard(ctx context.Context, env Env, detector *harness.Detector, scope h
 	steps = append(steps, installer.ApplyStep(ctx, detector, harnessState, resultsState, installer.ApplyStepOptions{Scope: scope, DryRun: cmd.DryRun}))
 	f := flow.New(steps, state)
 	code := tui.Run(ctx, f, tui.Options{Title: title})
+	return finishWizard(env, svc, state, scope, cmd, code)
+}
+
+// finishWizard is what the wizard leaves in the terminal once its screens
+// are gone, and its exit code: the guide skill for the clients it
+// registered, then the next steps or why nothing was registered.
+func finishWizard(env Env, svc *service.Service, state *State, scope harness.Scope, cmd cli.Command, code int) int {
 	if state.Failure != nil {
 		fmt.Fprintln(env.Stderr, state.Failure)
 	}

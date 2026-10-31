@@ -114,16 +114,29 @@ func allSkillFolders(scope harness.Scope, home string) []string {
 func skillHome() (string, error) { return os.UserHomeDir() }
 
 // ownSkill reports whether dir holds a skill rodin3d-mcp wrote, and whether
-// dir exists at all.
+// dir exists at all. An empty folder counts as ours: it is what a removal
+// that could not delete the folder itself (a shell's working directory, on
+// Windows) leaves, and it holds nothing of anybody's.
 func ownSkill(dir string) (ours, exists bool) {
 	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	if err == nil {
 		return guide.IsOurs(string(data)), true
 	}
-	if _, statErr := os.Stat(dir); statErr == nil {
-		return false, true
+	if _, statErr := os.Lstat(dir); statErr != nil {
+		return false, false
 	}
-	return false, false
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+		return true, true
+	}
+	return false, true
+}
+
+// isLink reports whether path is a symbolic link or, on Windows, a junction
+// (which Go reports as irregular): removing one must remove only the link,
+// never what it points to, such as the user's own copy in a dotfiles folder.
+func isLink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
 }
 
 // writeSkillFolder replaces dir with the embedded guide.
@@ -168,7 +181,9 @@ func writeSkillFrom(src fs.FS, dir string) error {
 		removeTree(tmp)
 		return err
 	}
-	_, statErr := os.Stat(dir)
+	// Lstat: a link is renamed aside like a folder (the link, not its
+	// target), even one whose target is gone.
+	_, statErr := os.Lstat(dir)
 	hadCopy := statErr == nil
 	if hadCopy {
 		if err := renamePath(dir, old); err != nil {
@@ -191,7 +206,8 @@ func writeSkillFrom(src fs.FS, dir string) error {
 
 // clearAside removes a copy renamed aside (dir.old) by an earlier write. Its
 // SKILL.md goes first, so a client never lists a half-removed folder as a
-// second skill; a folder there that holds somebody else's SKILL.md stays.
+// second skill; a folder there that holds somebody else's SKILL.md stays. A
+// link there (a linked copy that a write renamed aside) loses only the link.
 func clearAside(old string) {
 	ours, exists := ownSkill(old)
 	if !exists {
@@ -199,6 +215,10 @@ func clearAside(old string) {
 	}
 	skill := filepath.Join(old, "SKILL.md")
 	if _, err := os.Stat(skill); err == nil && !ours {
+		return
+	}
+	if isLink(old) {
+		removePath(old)
 		return
 	}
 	if ours && removePath(skill) != nil {
@@ -209,8 +229,18 @@ func clearAside(old string) {
 
 // removeSkillFolder removes a copy rodin3d-mcp wrote with its SKILL.md
 // last, so a file that cannot be removed (locked on Windows) leaves a copy
-// that is still recognised as ours and is removed on the next try.
+// that is still recognised as ours and is removed on the next try. A link
+// (symbolic, or a junction) is removed itself; what it points to is never
+// entered.
 func removeSkillFolder(dir string) error {
+	if isLink(dir) {
+		if err := removePath(dir); err != nil {
+			return err
+		}
+		clearAside(dir + ".old")
+		removeTree(dir + ".new")
+		return nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

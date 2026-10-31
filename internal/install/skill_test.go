@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -546,5 +548,136 @@ func TestALockedFileKeepsTheCopyOursUntilTheNextRemoval(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("the copy is still there after the second removal (%v)", err)
+	}
+}
+
+// makeLink makes link point to the folder target as kind (symlink, or on
+// Windows junction), and skips the test where this system does not let it.
+func makeLink(t *testing.T, kind, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	switch kind {
+	case "symlink":
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("cannot create a symbolic link here: %v", err)
+		}
+	case "junction":
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Skipf("cannot create a junction here: %v %s", err, out)
+		}
+	}
+	if !isLink(link) {
+		t.Fatalf("%s is not seen as a link", link)
+	}
+}
+
+func linkKinds() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"symlink", "junction"}
+	}
+	return []string{"symlink"}
+}
+
+// A copy kept in the user's own folder (dotfiles) and linked into a skills
+// folder: removing or replacing it touches the link only.
+func TestALinkedCopyLosesOnlyTheLink(t *testing.T) {
+	for _, kind := range linkKinds() {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "dotfiles", "rodin3d")
+			old := writeOurs(t, target)
+			intact := func(step string) {
+				t.Helper()
+				assertOurs(t, target, old)
+				if _, err := os.Stat(filepath.Join(target, "gone.md")); err != nil {
+					t.Errorf("%s: a file in the link's target was removed: %v", step, err)
+				}
+			}
+			link := filepath.Join(root, "skills", "rodin3d")
+
+			makeLink(t, kind, target, link)
+			var out bytes.Buffer
+			if code := removeOwnSkills(&out, []string{link}, false); code != 0 {
+				t.Fatalf("removal: code %d\n%s", code, out.String())
+			}
+			if _, err := os.Lstat(link); !os.IsNotExist(err) {
+				t.Errorf("the link is still there (%v)", err)
+			}
+			intact("removal")
+
+			makeLink(t, kind, target, link)
+			if err := writeSkillFolder(link); err != nil {
+				t.Fatal(err)
+			}
+			if isLink(link) {
+				t.Error("the write left the link in place of a copy")
+			}
+			assertOurs(t, link, guide.SkillMarkdown())
+			if _, err := os.Lstat(link + ".old"); !os.IsNotExist(err) {
+				t.Errorf("the link renamed aside is still there (%v)", err)
+			}
+			intact("write")
+
+			aside := filepath.Join(root, "other", "rodin3d.old")
+			makeLink(t, kind, target, aside)
+			clearAside(aside)
+			if _, err := os.Lstat(aside); !os.IsNotExist(err) {
+				t.Errorf("the link aside is still there (%v)", err)
+			}
+			intact("clearing aside")
+		})
+	}
+}
+
+// A removal that cannot delete the emptied folder itself leaves an empty
+// folder, which stays ours: install rewrites it and the next removal goes.
+func TestAnEmptyFolderLeftByARemovalStaysOurs(t *testing.T) {
+	project := t.TempDir()
+	scope := harness.ProjectScopeDir(project)
+	dir := filepath.Dir(skillPath(project, folderClaude))
+	var out bytes.Buffer
+	installSkills(&out, scope, []harness.ID{"claude-code"}, false, false)
+
+	restore := removePath
+	failOn(t, &removePath, func(p string) error {
+		if p == dir {
+			return errLocked
+		}
+		return restore(p)
+	})
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 1 {
+		t.Fatalf("code %d, want 1", code)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("want the emptied folder left: %v %v", entries, err)
+	}
+	if ours, exists := ownSkill(dir); !ours || !exists {
+		t.Fatalf("ownSkill(empty folder) = %v, %v, want ours", ours, exists)
+	}
+	removePath = restore
+
+	out.Reset()
+	plan := planSkills(scope, []harness.ID{"claude-code"}, false)
+	if len(plan.Rows) != 1 || plan.Rows[0].State != skillWritten || !isOurs(t, dir) {
+		t.Fatalf("install over the empty folder: %+v", plan.Rows)
+	}
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 0 {
+		t.Fatalf("removal: code %d\n%s", code, out.String())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the folder is still there (%v)", err)
+	}
+
+	// In the home, refresh and uninstall find it too.
+	home := testHome(t)
+	empty := filepath.Dir(skillPath(home, folderAgents))
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Join(home, ".agents")) })
+	if got := ownUserSkills(home); len(got) != 1 || got[0] != empty {
+		t.Errorf("own user skills = %v, want %s", got, empty)
 	}
 }

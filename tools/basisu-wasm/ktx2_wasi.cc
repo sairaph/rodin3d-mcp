@@ -1,16 +1,20 @@
 // ktx2_wasi.cc - a small C ABI over the basis_universal KTX2 transcoder for
-// wasm32-wasi. The host (Go, wazero) copies a KTX2 file into linear memory,
-// calls kt_decode, reads the fixed-layout result, then calls kt_release.
-// Level 0 of layer 0, face 0 is transcoded to RGBA8 (ETC1S/BasisLZ and
-// UASTC, zstd supercompressed or not).
+// wasm32-wasi. The host (Go, wazero) keeps one instance: per file it
+// allocates input memory with kt_alloc, copies the KTX2 file in, calls
+// kt_decode, reads the fixed-layout result, then frees both with kt_release
+// and kt_free. Level 0 of layer 0, face 0 is transcoded to RGBA8
+// (ETC1S/BasisLZ and UASTC, zstd supercompressed or not).
+//
+// kt_alloc and kt_decode return 0 when memory runs out.
 //
 // Result layout (all little-endian uint32, offsets in bytes):
 //   0 status        0 = ok, 1 = not a KTX2 file the transcoder reads,
-//                   2 = transcode error, 3 = image too large
+//                   2 = transcode error, 3 = image too large or out of memory
 //   4 width
 //   8 height
 //  12 rgba_ptr      uint8[width*height*4], rows top to bottom (0 when not ok)
-//  16 error_ptr     NUL-terminated message (0 when ok)
+//  16 error_ptr     NUL-terminated message (0 when ok, or when the message
+//                   itself could not be allocated)
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -35,8 +39,10 @@ Result* fail(Result* r, uint32_t status, const char* msg) {
   r->status = status;
   size_t n = strlen(msg);
   char* m = static_cast<char*>(malloc(n + 1));
-  memcpy(m, msg, n + 1);
-  r->error_ptr = ptr32(m);
+  if (m) {
+    memcpy(m, msg, n + 1);
+    r->error_ptr = ptr32(m);
+  }
   return r;
 }
 
@@ -53,6 +59,7 @@ __attribute__((export_name("kt_free"))) void kt_free(void* p) { free(p); }
 __attribute__((export_name("kt_decode"))) Result* kt_decode(const uint8_t* buf,
                                                            uint32_t len) {
   Result* r = static_cast<Result*>(calloc(1, sizeof(Result)));
+  if (!r) return nullptr;
   basist::basisu_transcoder_init();
   basist::ktx2_transcoder t;
   if (!t.init(buf, len)) return fail(r, 1, "not a KTX2 file the transcoder reads");

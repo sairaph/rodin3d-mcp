@@ -58,6 +58,7 @@ var ownSections = []struct {
 	{"The KTX2 transcoder module internal/basisu/ktx2_transcoder.wasm", []string{
 		"internal/basisu/NOTICE",
 		"internal/basisu/LICENSE-basis_universal",
+		"internal/basisu/NOTICE-basis_universal",
 		"internal/basisu/LICENSE-zstd",
 	}},
 }

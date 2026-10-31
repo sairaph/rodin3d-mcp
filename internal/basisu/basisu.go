@@ -35,13 +35,21 @@ type Image struct {
 	Pix  []uint8
 }
 
-// Decoder holds the compiled module. Decode instantiates a fresh module per
-// call and closes it after, so a trap or a large transcode leaves nothing
-// behind; calls are serialised.
+// keepMemory is the linear memory up to which the instance is kept for the
+// next file. Wasm memory never shrinks, so after a larger transcode (a
+// picture above about 2048 x 2048) the instance is closed and its memory
+// goes back.
+const keepMemory = 64 << 20
+
+// Decoder holds the compiled module and one instance of it, kept between
+// files (instantiating costs a few tenths of a second). The instance is
+// closed after an error or a trap, and when its memory grew past
+// keepMemory; the next file instantiates a new one. Calls are serialised.
 type Decoder struct {
 	rt       wazero.Runtime
 	compiled wazero.CompiledModule
 	mu       sync.Mutex
+	mod      api.Module // nil: none yet, or closed
 }
 
 // New compiles the embedded transcoder. A non-empty cacheDir keeps
@@ -66,7 +74,7 @@ func New(ctx context.Context, cacheDir string) (*Decoder, error) {
 	return &Decoder{rt: rt, compiled: cm}, nil
 }
 
-// Close releases the runtime.
+// Close releases the runtime and its instance.
 func (d *Decoder) Close(ctx context.Context) error { return d.rt.Close(ctx) }
 
 // Decode transcodes level 0 of a KTX2 file to RGBA8. A done ctx stops a
@@ -77,12 +85,24 @@ func (d *Decoder) Decode(ctx context.Context, buf []byte) (*Image, error) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	mod, err := d.rt.InstantiateModule(ctx, d.compiled,
-		wazero.NewModuleConfig().WithName("").WithStartFunctions("_initialize"))
-	if err != nil {
-		return nil, fmt.Errorf("basisu: instantiate: %w", err)
+	if d.mod == nil {
+		mod, err := d.rt.InstantiateModule(ctx, d.compiled,
+			wazero.NewModuleConfig().WithName("").WithStartFunctions("_initialize"))
+		if err != nil {
+			return nil, fmt.Errorf("basisu: instantiate: %w", err)
+		}
+		d.mod = mod
 	}
-	defer mod.Close(ctx)
+	img, err := decode(ctx, d.mod, buf)
+	if err != nil || d.mod.Memory().Size() > keepMemory {
+		d.mod.Close(ctx)
+		d.mod = nil
+	}
+	return img, err
+}
+
+// decode transcodes buf in instance mod and frees what it allocated there.
+func decode(ctx context.Context, mod api.Module, buf []byte) (*Image, error) {
 	mem := mod.Memory()
 	call := func(name string, args ...uint64) (uint32, error) {
 		f := mod.ExportedFunction(name)
@@ -92,6 +112,9 @@ func (d *Decoder) Decode(ctx context.Context, buf []byte) (*Image, error) {
 		r, err := f.Call(ctx, args...)
 		if err != nil {
 			return 0, fmt.Errorf("basisu: %s: %w", name, err)
+		}
+		if len(r) == 0 {
+			return 0, nil
 		}
 		return uint32(r[0]), nil
 	}
@@ -109,6 +132,24 @@ func (d *Decoder) Decode(ctx context.Context, buf []byte) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rp == 0 {
+		return nil, errors.New("basisu: out of memory")
+	}
+	img, err := result(mem, rp)
+	if _, ferr := call("kt_release", uint64(rp)); ferr != nil && err == nil {
+		err = ferr
+	}
+	if _, ferr := call("kt_free", uint64(in)); ferr != nil && err == nil {
+		err = ferr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+// result reads the result table at rp (layout in tools/basisu-wasm/ktx2_wasi.cc).
+func result(mem api.Memory, rp uint32) (*Image, error) {
 	hdr, ok := mem.Read(rp, 20)
 	if !ok {
 		return nil, errors.New("basisu: result out of range")

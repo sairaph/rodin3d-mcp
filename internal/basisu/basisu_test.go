@@ -87,3 +87,41 @@ func TestDecodeMalformed(t *testing.T) {
 		t.Fatalf("after the errors: %v", err)
 	}
 }
+
+// TestInstanceKept: one instance serves file after file (instantiating
+// costs a few tenths of a second each); an error drops it and the next file
+// gets a new one.
+func TestInstanceKept(t *testing.T) {
+	d := newDecoder(t)
+	ctx := context.Background()
+	b, err := os.ReadFile("testdata/quadrants_etc1s.ktx2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Decode(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	first := d.mod
+	size := first.Memory().Size()
+	for i := 0; i < 20; i++ {
+		if _, err := d.Decode(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d.mod != first {
+		t.Fatal("the instance was not kept")
+	}
+	// Each decode frees what it allocated, so memory does not grow.
+	if got := first.Memory().Size(); got != size {
+		t.Errorf("memory grew from %d to %d bytes over 20 files", size, got)
+	}
+	if _, err := d.Decode(ctx, b[:40]); err == nil {
+		t.Fatal("a cut file: no error")
+	}
+	if d.mod != nil {
+		t.Error("the instance was kept after an error")
+	}
+	if _, err := d.Decode(ctx, b); err != nil || d.mod == nil {
+		t.Fatalf("after the error: %v", err)
+	}
+}

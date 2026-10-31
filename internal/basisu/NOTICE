@@ -10,11 +10,12 @@ tools/basisu-wasm/ktx2_wasi.cc by tools/basisu-wasm/build-basisu-wasm.sh,
 which pins and checksums every input.
 
 basis_universal is licensed under the Apache License, Version 2.0. Its
-license file is LICENSE-basis_universal in this directory, copied unchanged
-from the v2.50 source tree; basis_universal ships no NOTICE file. Zstandard
-is offered under the BSD license or the GPLv2, at the user's option; the
-BSD license is chosen here. Its license file is LICENSE-zstd in this
-directory, copied unchanged from zstd/LICENSE of the v2.50 source tree.
+license file is LICENSE-basis_universal and its NOTICE file is
+NOTICE-basis_universal, both in this directory, copied unchanged from the
+v2.50 source tree. Zstandard is offered under the BSD license or the GPLv2,
+at the user's option; the BSD license is chosen here. Its license file is
+LICENSE-zstd in this directory, copied unchanged from zstd/LICENSE of the
+v2.50 source tree.
 
 The module also links parts of the wasi-sdk 34 sysroot, the same wasi-sdk
 as internal/draco's module (wasi-libc at commit

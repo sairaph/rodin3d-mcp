@@ -26,7 +26,7 @@ BASISU_VER=2_50
 BASISU_TAR=basis_universal-${BASISU_VER}.tar.gz
 BASISU_URL=https://github.com/BinomialLLC/basis_universal/archive/refs/tags/v${BASISU_VER}.tar.gz
 BASISU_SHA=216e49e1f4213d4bfa4afaa07527e16bac28533dddd444197d3aa19230ac130c
-WASM_SHA=49dc2587db3cd432f6483491fc92ae11bfe6537aedbbc3b76a51a30ee95bb07d
+WASM_SHA=02fa04f690acdda839f378bf346d43bea1f2891f05010bb6cf6f4eb9ad505e8c
 
 mkdir -p "$WORK" "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -39,10 +39,10 @@ fetch() { # url file sha
 fetch "$WASI_URL" "$WASI_TAR" "$WASI_SHA"
 fetch "$BASISU_URL" "$BASISU_TAR" "$BASISU_SHA"
 [ -d wasi-sdk-${WASI_VER}.0-x86_64-linux ] || tar xzf "$WASI_TAR"
-# Only the transcoder, the bundled zstd and the licence are needed.
+# Only the transcoder, the bundled zstd, the licence and the NOTICE are needed.
 [ -d basis_universal-${BASISU_VER} ] || tar xzf "$BASISU_TAR" \
   basis_universal-${BASISU_VER}/transcoder basis_universal-${BASISU_VER}/zstd \
-  basis_universal-${BASISU_VER}/LICENSE
+  basis_universal-${BASISU_VER}/LICENSE basis_universal-${BASISU_VER}/NOTICE
 SDK=$WORK/wasi-sdk-${WASI_VER}.0-x86_64-linux
 SRC=$WORK/basis_universal-${BASISU_VER}
 

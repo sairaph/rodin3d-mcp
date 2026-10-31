@@ -12,11 +12,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/basisu"
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
@@ -42,9 +44,54 @@ type Model struct {
 	// decoded (Load without textures, WithoutTextures): they draw with their
 	// factors only until WithTextures.
 	Pending bool
+	// File is the file as Load read it; the maps' pictures are read from it
+	// again only while it is unchanged.
+	File File
 
-	path  string
 	parts []glb.Part
+}
+
+// ErrChanged is returned when a model file changed on disk after Load read
+// it, so its pictures would no longer match the model.
+var ErrChanged = errors.New("changed on disk since it was read; show it again")
+
+// File is a model file as it was read: its path, size and modification
+// time.
+type File struct {
+	Path string
+	size int64
+	mod  time.Time
+}
+
+// readFile reads the file at path with its size and modification time.
+func readFile(path string) ([]byte, File, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, File{}, err
+	}
+	defer fh.Close()
+	fi, err := fh.Stat()
+	if err != nil {
+		return nil, File{}, err
+	}
+	data, err := io.ReadAll(fh)
+	if err != nil {
+		return nil, File{}, err
+	}
+	return data, File{Path: path, size: fi.Size(), mod: fi.ModTime()}, nil
+}
+
+// read reads f again; ErrChanged when its size or modification time is
+// not the one it had.
+func (f File) read() ([]byte, error) {
+	data, now, err := readFile(f.Path)
+	if err != nil {
+		return nil, err
+	}
+	if now.size != f.size || !now.mod.Equal(f.mod) || int64(len(data)) != f.size {
+		return nil, fmt.Errorf("%s %w", filepath.Base(f.Path), ErrChanged)
+	}
+	return data, nil
 }
 
 // TextureInfo is a picture of a model file's materials: its name in the
@@ -78,14 +125,14 @@ type Decoders struct {
 // have their factors only and Pending says whether maps wait (the modes
 // that sample no maps need none).
 func Load(ctx context.Context, path string, dec Decoders, textures bool) (*Model, error) {
-	data, err := os.ReadFile(path)
+	data, file, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var m *Model
 	switch ext := strings.ToLower(filepath.Ext(path)); ext {
 	case ".glb", ".gltf":
-		m, err = loadGLTF(ctx, data, path, dec, textures)
+		m, err = loadGLTF(ctx, data, file, dec, textures)
 	case ".obj":
 		var mesh *render3d.Mesh
 		mesh, err = parseOBJ(data)

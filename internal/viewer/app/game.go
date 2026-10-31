@@ -79,7 +79,7 @@ type App struct {
 	// one of its textures (Service.ViewModelTextures, ViewModelPicture; tests
 	// replace them).
 	modelTextures func(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error)
-	modelPicture  func(ctx context.Context, path string, t int) (*render3d.Texture, error)
+	modelPicture  func(ctx context.Context, file modelfile.File, t int) (*render3d.Texture, error)
 
 	// Screen.
 	sw, sh       int

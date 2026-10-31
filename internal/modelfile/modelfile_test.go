@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/basisu"
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
@@ -368,7 +370,7 @@ func TestTexturesOnDemand(t *testing.T) {
 			t.Errorf("texture %d named %q, want %q", i, m.Textures[i].Name, want)
 		}
 	}
-	pic, err := Picture(ctx, path, lazy, m.Textures[0].Texture)
+	pic, err := Picture(ctx, m.File, lazy, m.Textures[0].Texture)
 	if err != nil || pic.W != 16 {
 		t.Errorf("Picture: %v", err)
 	}
@@ -380,5 +382,49 @@ func TestTexturesOnDemand(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"first/base_color", "first/metallic_roughness"}) {
 		t.Errorf("multi-material names %v", names)
+	}
+}
+
+// TestFileChanged: a file rewritten on disk after Load (another export to
+// the same path; or the same bytes written again later) is not read for
+// textures: WithTextures and Picture answer ErrChanged instead of painting
+// the new pictures on the old geometry.
+func TestFileChanged(t *testing.T) {
+	ctx := context.Background()
+	read := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for name, change := range map[string]func(path string){
+		"another file": func(path string) {
+			if err := os.WriteFile(path, read("cube_multi.glb"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"same bytes, later": func(path string) {
+			later := time.Now().Add(time.Minute)
+			if err := os.Chtimes(path, later, later); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		path := filepath.Join(t.TempDir(), "out.glb")
+		if err := os.WriteFile(path, read("cube_png.glb"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m, err := Load(ctx, path, decoders(t), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		change(path)
+		if _, err := m.WithTextures(ctx, decoders(t)); !errors.Is(err, ErrChanged) {
+			t.Errorf("%s: WithTextures: %v", name, err)
+		}
+		if _, err := Picture(ctx, m.File, decoders(t), m.Textures[0].Texture); !errors.Is(err, ErrChanged) {
+			t.Errorf("%s: Picture: %v", name, err)
+		}
 	}
 }

@@ -299,15 +299,16 @@ func (s *Service) ViewModel(ctx context.Context, path string, textures bool) (*m
 	return modelfile.Load(ctx, path, s.decoders(), textures)
 }
 
-// ViewModelTextures returns m with its material maps decoded.
+// ViewModelTextures returns m with its material maps decoded;
+// modelfile.ErrChanged (a conflict) when the file changed since it was read.
 func (s *Service) ViewModelTextures(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error) {
 	return m.WithTextures(ctx, s.decoders())
 }
 
-// ViewModelPicture decodes glTF texture t of the model file at path, for
-// the textures panel.
-func (s *Service) ViewModelPicture(ctx context.Context, path string, t int) (*render3d.Texture, error) {
-	return modelfile.Picture(ctx, path, s.decoders(), t)
+// ViewModelPicture decodes glTF texture t of a model file (Model.File),
+// for the textures panel; modelfile.ErrChanged when the file changed since.
+func (s *Service) ViewModelPicture(ctx context.Context, file modelfile.File, t int) (*render3d.Texture, error) {
+	return modelfile.Picture(ctx, file, s.decoders(), t)
 }
 
 // ModelModes lists the render modes of a local model: the confirmed-geometry

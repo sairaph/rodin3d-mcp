@@ -121,13 +121,14 @@ func FuzzDecode(f *testing.F) {
 }
 
 // TestShortPayloadAllocatesNothing: a 64-byte payload claiming half a
-// billion elements is refused before the output is allocated.
+// billion elements, in a known mode or an unknown one, is refused before
+// the output is allocated.
 func TestShortPayloadAllocatesNothing(t *testing.T) {
 	src := make([]byte, 64)
 	for _, tc := range []struct {
 		mode string
 		head byte
-	}{{"ATTRIBUTES", 0xa1}, {"TRIANGLES", 0xe1}, {"INDICES", 0xd1}} {
+	}{{"ATTRIBUTES", 0xa1}, {"TRIANGLES", 0xe1}, {"INDICES", 0xd1}, {"LINES", 0xa1}, {"", 0xa1}} {
 		src[0] = tc.head
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)

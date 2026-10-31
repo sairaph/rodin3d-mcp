@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -32,9 +34,9 @@ func TestModelFileMaps(t *testing.T) {
 		decodes.Add(1)
 		return m.WithTextures(ctx, modelfile.Decoders{})
 	}
-	a.modelPicture = func(ctx context.Context, path string, tex int) (*render3d.Texture, error) {
+	a.modelPicture = func(ctx context.Context, file modelfile.File, tex int) (*render3d.Texture, error) {
 		pictures.Add(1)
-		return modelfile.Picture(ctx, path, modelfile.Decoders{}, tex)
+		return modelfile.Picture(ctx, file, modelfile.Decoders{}, tex)
 	}
 	textured := func() bool { return p.mesh.Mats[0].Base != nil && p.simple.Mats[0].Base != nil }
 
@@ -63,11 +65,49 @@ func TestModelFileMaps(t *testing.T) {
 		t.Fatalf("pbr again: textured %v, %d decodes", textured(), decodes.Load())
 	}
 
-	thumbs := a.modelMapThumbs(file, m.Textures)
+	thumbs := a.modelMapThumbs(m.File, m.Textures)
 	if len(thumbs) != 2 || thumbs[0].name != "first/base_color" || pictures.Load() != 0 {
 		t.Fatalf("thumbs %d, first %q, %d pictures before showing", len(thumbs), thumbs[0].name, pictures.Load())
 	}
 	if img, err := thumbs[1].src(); err != nil || img.Bounds().Dx() != 16 || pictures.Load() != 1 {
 		t.Errorf("shown thumb: %v, %d pictures", err, pictures.Load())
+	}
+}
+
+// TestModelFileChanged: when the file was rewritten on disk after the pane
+// read it, a textured mode does not paint the new pictures on the old
+// model: the pane fails with a message to show the file again.
+func TestModelFileChanged(t *testing.T) {
+	ctx := context.Background()
+	src, _ := filepath.Abs(filepath.Join("..", "..", "modelfile", "testdata", "cube_png.glb"))
+	other, _ := filepath.Abs(filepath.Join("..", "..", "modelfile", "testdata", "cube_multi.glb"))
+	file := filepath.Join(t.TempDir(), "out.glb")
+	copyFile := func(from string) {
+		b, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyFile(src)
+	m, err := modelfile.Load(ctx, file, modelfile.Decoders{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := mapsApp(newFakeMaps(), "classic")
+	p := &pane{kind: viewer.KindModelFile, file: file, model: m, mesh: m.Mesh, simple: m.Mesh, frame: render3d.FrameOf(m.Mesh),
+		modes: []string{"pbr", "classic"}, status: "ready", div: 2}
+	a.panes, a.kind = []*pane{p}, viewer.KindModelFile
+	a.modelTextures = func(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error) {
+		return m.WithTextures(ctx, modelfile.Decoders{})
+	}
+	copyFile(other)
+	a.setMode("pbr")
+	tick(a, p)
+	runPost(t, a)
+	if p.status != "error" || !strings.Contains(p.err, "out.glb changed on disk since it was read; show it again") || p.mesh.Mats[0].Base != nil {
+		t.Fatalf("status %q, error %q", p.status, p.err)
 	}
 }

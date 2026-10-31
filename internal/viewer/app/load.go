@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"log"
@@ -161,7 +162,7 @@ func (a *App) loadPane(p *pane) {
 				}
 				p.note = modelNote(p)
 				if len(m.Textures) > 0 && len(a.textures) == 0 {
-					a.textures = a.modelMapThumbs(file, m.Textures)
+					a.textures = a.modelMapThumbs(m.File, m.Textures)
 				}
 				a.dirty()
 				a.trimSoon()
@@ -406,6 +407,9 @@ func (a *App) loadPaneMaps(p *pane, kinds []string) {
 				}
 				p.mapsWanted = false
 				switch {
+				case errors.Is(err, modelfile.ErrChanged):
+					// The file changed on disk: the model shown is no longer it.
+					p.status, p.err = "error", service.Classify(err).Message
 				case err != nil:
 					if a.mapsTry == try {
 						p.mapsFailed = map[string]string{modelMaps: service.Classify(err).Message}
@@ -562,7 +566,7 @@ func (a *App) taskMaps(vt *service.ViewTask, st service.ViewStage, names []strin
 // modelMapThumbs lists a model file's textures in the textures panel
 // (modelfile.TextureInfo names them); each is decoded from the file when it
 // is shown (loadTexture), as a task's maps are.
-func (a *App) modelMapThumbs(file string, textures []modelfile.TextureInfo) []*thumb {
+func (a *App) modelMapThumbs(file modelfile.File, textures []modelfile.TextureInfo) []*thumb {
 	var out []*thumb
 	for _, ti := range textures {
 		out = append(out, &thumb{kind: "map", name: ti.Name, src: func() (image.Image, error) {

@@ -41,6 +41,8 @@ func Decode(count, size int, src []byte, mode, filter string) ([]byte, error) {
 		need = 1 + count/3 + 16 // a code byte per triangle, the code table
 	case "INDICES":
 		need = 1 + count + 4 // a byte per index at least, the padding
+	default:
+		return nil, fmt.Errorf("meshopt: unknown mode %q", mode)
 	}
 	if len(src) < need {
 		return nil, ErrMalformed
@@ -56,8 +58,6 @@ func Decode(count, size int, src []byte, mode, filter string) ([]byte, error) {
 		err = DecodeIndexBuffer(dst, count, size, src)
 	case "INDICES":
 		err = DecodeIndexSequence(dst, count, size, src)
-	default:
-		return nil, fmt.Errorf("meshopt: unknown mode %q", mode)
 	}
 	if err != nil {
 		return nil, err

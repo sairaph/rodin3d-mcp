@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,17 +23,18 @@ func parseGLTF(data []byte, path string) (*glb.File, error) {
 	return glb.Parse(data)
 }
 
-// reparse reads the glTF file at path again (for its textures).
-func reparse(path string) (*glb.File, error) {
-	data, err := os.ReadFile(path)
+// reparse reads the glTF file again (for its textures); ErrChanged when it
+// is no longer the file Load read.
+func reparse(file File) (*glb.File, error) {
+	data, err := file.read()
 	if err != nil {
 		return nil, err
 	}
-	return parseGLTF(data, path)
+	return parseGLTF(data, file.Path)
 }
 
-func loadGLTF(ctx context.Context, data []byte, path string, dec Decoders, textures bool) (*Model, error) {
-	f, err := parseGLTF(data, path)
+func loadGLTF(ctx context.Context, data []byte, file File, dec Decoders, textures bool) (*Model, error) {
+	f, err := parseGLTF(data, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func loadGLTF(ctx context.Context, data []byte, path string, dec Decoders, textu
 	if err != nil {
 		return nil, err
 	}
-	m := &Model{Mesh: &render3d.Mesh{Pos: gm.Pos, Nrm: gm.Nrm, UV: gm.UV, Idx: gm.Idx}, path: path, parts: gm.Parts}
+	m := &Model{Mesh: &render3d.Mesh{Pos: gm.Pos, Nrm: gm.Nrm, UV: gm.UV, Idx: gm.Idx}, File: file, parts: gm.Parts}
 	set, err := build(ctx, f, gm.Parts, m.Mesh.UV != nil, dec, textures)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func (m *Model) WithTextures(ctx context.Context, dec Decoders) (*Model, error) 
 	if !m.Pending {
 		return m, nil
 	}
-	f, err := reparse(m.path)
+	f, err := reparse(m.File)
 	if err != nil {
 		return nil, err
 	}
@@ -81,9 +81,9 @@ func (m *Model) WithTextures(ctx context.Context, dec Decoders) (*Model, error) 
 		return nil, err
 	}
 	if len(set.mats) != len(m.Mesh.Mats) {
-		return nil, fmt.Errorf("%s changed since it was read; show it again", filepath.Base(m.path))
+		return nil, fmt.Errorf("%s %w", filepath.Base(m.File.Path), ErrChanged)
 	}
-	return &Model{Mesh: withMats(m.Mesh, set.mats), Notes: set.notes, Textures: set.textures, path: m.path, parts: m.parts}, nil
+	return &Model{Mesh: withMats(m.Mesh, set.mats), Notes: set.notes, Textures: set.textures, File: m.File, parts: m.parts}, nil
 }
 
 // WithoutTextures returns m with its material maps released (their factors
@@ -99,7 +99,7 @@ func (m *Model) WithoutTextures() *Model {
 		c.Base, c.MetalRough, c.Normal, c.Occlusion, c.Emission = nil, nil, nil, nil, nil
 		bare[i] = &c
 	}
-	return &Model{Mesh: withMats(m.Mesh, bare), Notes: m.Notes, Textures: m.Textures, Pending: true, path: m.path, parts: m.parts}
+	return &Model{Mesh: withMats(m.Mesh, bare), Notes: m.Notes, Textures: m.Textures, Pending: true, File: m.File, parts: m.parts}
 }
 
 // withMats is a copy of mesh (sharing its geometry) with materials mats,
@@ -110,10 +110,11 @@ func withMats(mesh *render3d.Mesh, mats []*render3d.Material) *render3d.Mesh {
 	return &c
 }
 
-// Picture decodes the picture of glTF texture t of the file at path, for
-// the textures panel (used as stored, no colour space).
-func Picture(ctx context.Context, path string, dec Decoders, t int) (*render3d.Texture, error) {
-	f, err := reparse(path)
+// Picture decodes the picture of glTF texture t of file (a Model's File),
+// for the textures panel (used as stored, no colour space); ErrChanged when
+// the file changed since it was read.
+func Picture(ctx context.Context, file File, dec Decoders, t int) (*render3d.Texture, error) {
+	f, err := reparse(file)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +319,7 @@ func build(ctx context.Context, f *glb.File, parts []glb.Part, hasUV bool, dec D
 	byIndex := map[int]int{} // glTF material (-1: the default) -> set.mats
 	for _, part := range parts {
 		if part.Material >= len(f.Doc.Materials) {
-			return set, errors.New("the file changed since it was read; show it again")
+			return set, fmt.Errorf("the file %w", ErrChanged)
 		}
 		k, ok := byIndex[part.Material]
 		if !ok {

@@ -13,6 +13,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/price"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 	"github.com/sairaph/rodin3d-mcp/internal/store"
@@ -108,6 +109,8 @@ func Classify(err error) render.Error {
 		return render.Error{Code: render.CodeNotFound, Message: "No task with that id.", Hint: hintListTasks}
 	case errors.Is(err, context.Canceled):
 		return render.Error{Code: render.CodeUnavailable, Message: "The call was cancelled before it finished.", Hint: "Send it again to retry."}
+	case errors.Is(err, modelfile.ErrChanged):
+		return render.Error{Code: render.CodeConflict, Message: err.Error() + ".", Hint: "Show the file again to see the version on disk."}
 	case errors.Is(err, config.ErrMalformed):
 		return render.Error{Code: render.CodeInvalidInput, Message: err.Error(), Hint: "Fix config.toml (every value is \"allow\" or \"deny\"; only \"deny\" denies) or delete it to allow every write."}
 	}

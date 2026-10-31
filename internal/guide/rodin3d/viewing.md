@@ -10,6 +10,7 @@ Use it to show a stage to the user; it needs no window. Pass task_id, stage (cur
 - A gen-1.5 geometry draft has no mesh. Use turntable_dark, turntable_copper, turntable_light or turntable_normal: frames of the server's turntable, 16 round the model, picked by view (no top).
 - The first render of a stage decodes its mesh (a few seconds, once); a repeated call is instant.
 - A mode the stage does not have answers conflict with the available stage and mode pairs; get_task lists them as previews.
+- model_file instead of task_id renders a local glb, gltf, obj or stl file (render modes only, no stage). A glTF file with materials adds pbr (its default), shaded, toon and tracer, drawn with its own textures, Draco, meshopt, WebP and KTX2 too; the reply lists its modes and what it is drawn without.
 
 ```json
 {"task_id": "<task id>", "stage": "geometry", "mode": "wireframe", "view": "grid"}

@@ -30,6 +30,7 @@ import (
 	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/config"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 )
 
@@ -125,12 +126,19 @@ func Register(reg *command.Registry, env Env) {
 			}
 			return s.WaitTask(ctx, a.arg(0), time.Duration(secs)*time.Second)
 		})})
-	reg.Register(command.Handler{Name: "preview", Description: "Save a server image or a local render of a task stage as PNG", Usage: "preview <id> [mode] [view] [file.png] [stage=..] [size=N] [json]",
+	reg.Register(command.Handler{Name: "preview", Description: "Save a server image or a local render of a task stage, or a render of a model file, as PNG", Usage: "preview <id|model file> [mode] [view] [file.png] [stage=..] [size=N] [json]",
 		Run: func(ctx context.Context, raw []string) int {
 			svc := env.Service()
 			defer svc.Close()
 			a := parse(raw)
 			in := service.PreviewInput{TaskID: a.arg(0), Stage: a.opts["stage"], Mode: a.opts["mode"], View: a.opts["view"]}
+			if slices.Contains(modelfile.Extensions, strings.ToLower(filepath.Ext(in.TaskID))) {
+				abs, err := filepath.Abs(in.TaskID)
+				if err != nil {
+					return env.print(service.Result{}, err, a.json)
+				}
+				in.TaskID, in.ModelFile = "", abs
+			}
 			for _, p := range a.pos[min(1, len(a.pos)):] {
 				switch {
 				case slices.Contains(service.PreviewModes(), p):

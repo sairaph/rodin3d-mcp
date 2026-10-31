@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sairaph/mcp-wizard/render"
 
@@ -27,14 +28,16 @@ const (
 	PreviewDefault = 512
 )
 
-// PreviewInput is the input of get_preview.
+// PreviewInput is the input of get_preview: a task's stage, or a local
+// model file (ModelFile instead of TaskID and Stage, render modes only).
 type PreviewInput struct {
-	TaskID string
-	Stage  string // current | geometry_draft | geometry | material
-	Mode   string // a server image mode (assets.AllModes) or a render mode (render3d.AllModes)
-	View   string // renders only: a render3d view; "" is three_quarter
-	Size   int
-	SaveTo string
+	TaskID    string
+	ModelFile string // absolute path of a glb, gltf, obj or stl file
+	Stage     string // current | geometry_draft | geometry | material
+	Mode      string // a server image mode (assets.AllModes) or a render mode (render3d.AllModes)
+	View      string // renders only: a render3d view; "" is three_quarter
+	Size      int
+	SaveTo    string
 }
 
 // PreviewModes lists every get_preview mode: the server images, then the
@@ -83,7 +86,7 @@ var serverShows = map[string]string{
 }
 
 type previewInfo struct {
-	Stage  string `yaml:"stage"`
+	Stage  string `yaml:"stage,omitempty"`
 	Mode   string `yaml:"mode"`
 	View   string `yaml:"view,omitempty"`
 	Source string `yaml:"source"`
@@ -196,12 +199,12 @@ func turntablePNG(data []byte, look string, view render3d.View, size int) ([]byt
 }
 
 // Preview is get_preview: a server image of a stage, or a local render of
-// the stage's mesh in a web viewer mode from a view, as a PNG saved to a file
-// and returned as image content.
+// the stage's mesh (or of a local model file) in a web viewer mode from a
+// view, as a PNG saved to a file and returned as image content.
 func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) {
-	uuid, err := s.resolveTask(in.TaskID)
-	if err != nil {
-		return Result{}, err
+	if in.ModelFile != "" && (in.TaskID != "" || in.Stage != "" && in.Stage != "current") {
+		return Result{}, fail(render.CodeInvalidInput, "Give task_id (with stage) or model_file, not both.",
+			"Call get_preview with task_id for a task, or with model_file alone for a local model file.")
 	}
 	size := in.Size
 	if size == 0 {
@@ -211,11 +214,11 @@ func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) 
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("size %d is outside %d-%d.", size, PreviewMin, PreviewMax), "Call get_preview with size between 256 and 1024, or without size for 512.")
 	}
 	mode := in.Mode
-	if mode == "" {
+	if mode == "" && in.ModelFile == "" {
 		mode = assets.ModePoster
 	}
 	server := slices.Contains(assets.AllModes, mode)
-	if !server && !render3d.Mode(mode).Known() {
+	if mode != "" && !server && !render3d.Mode(mode).Known() {
 		return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("Unknown mode %q.", mode),
 			"Call get_preview with one of the modes: "+strings.Join(PreviewModes(), ", ")+".")
 	}
@@ -229,6 +232,17 @@ func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) 
 	}
 	if in.SaveTo != "" && !filepath.IsAbs(in.SaveTo) {
 		return Result{}, fail(render.CodeInvalidInput, "save_to must be an absolute path.", "Call get_preview with an absolute save_to path ending in .png, or without save_to.")
+	}
+	if in.ModelFile != "" {
+		if server {
+			return Result{}, fail(render.CodeInvalidInput, fmt.Sprintf("Mode %s is a server image of a task; a model file has local renders only.", mode),
+				"Call get_preview with model_file and a render mode, such as pbr or classic, or without mode.")
+		}
+		return s.previewModelFile(ctx, in.ModelFile, mode, view, size, in.SaveTo)
+	}
+	uuid, err := s.resolveTask(in.TaskID)
+	if err != nil {
+		return Result{}, err
 	}
 	stg := in.Stage
 	if stg == "" {
@@ -344,4 +358,47 @@ func (s *Service) Preview(ctx context.Context, in PreviewInput) (Result, error) 
 	body := lead + " Saved to " + out + "." + extra
 	body += "\n\nNext: get_preview with another stage, mode or view from available (server images: poster, turntable_*, geometry_image, material_image, texture_*; the other modes are local renders of the stage mesh); get_task for the settings."
 	return Result{Front: front, Body: body, Images: []Image{{PNG: png, What: stg + " " + mode}}}, nil
+}
+
+type previewModelFront struct {
+	Preview   previewInfo `yaml:"preview"`
+	ModelFile string      `yaml:"model_file"`
+	Triangles int         `yaml:"triangles"`
+	Materials int         `yaml:"materials"`
+	Notes     []string    `yaml:"drawn_without,omitempty"`
+	Modes     []string    `yaml:"available"`
+}
+
+// previewModelFile is get_preview of a local model file: a render in one of
+// the modes the viewer offers for it, pbr by default when it has materials.
+func (s *Service) previewModelFile(ctx context.Context, path, mode string, view render3d.View, size int, saveTo string) (Result, error) {
+	if err := CheckModelFile(path); err != nil {
+		return Result{}, err
+	}
+	t0 := time.Now()
+	png, m, rm, err := s.renderModel(ctx, path, mode, view, size)
+	if err != nil {
+		return Result{}, err
+	}
+	took := time.Since(t0)
+	base := filepath.Base(path)
+	out := saveTo
+	if out == "" {
+		out = filepath.Join(s.paths.Previews, fmt.Sprintf("%s-%s-%s-%d.png", strings.TrimSuffix(base, filepath.Ext(base)), rm, view, size))
+	}
+	if err := domain.WriteFileAtomic(out, png, 0o644); err != nil {
+		return Result{}, wrapf(err, "write %s", out)
+	}
+	info := previewInfo{Mode: string(rm), View: string(view), Source: "render", Shows: rm.Describe(), File: out, Width: size, Height: size}
+	front := previewModelFront{Preview: info, ModelFile: path, Triangles: len(m.Mesh.Idx) / 3, Materials: len(m.Mesh.Mats), Notes: m.Notes, Modes: ModelModes(m)}
+	body := fmt.Sprintf("A local render of %s in mode %s: %s; view %s, %dx%d. Saved to %s. Read and rendered in %.1f s.",
+		base, rm, rm.Describe(), view, size, size, out, took.Seconds())
+	if len(m.Notes) > 0 {
+		body += " Drawn without " + strings.Join(m.Notes, "; ") + "."
+	}
+	if view == render3d.ViewGrid {
+		body += " The grid shows front (top left), right (top right), back (bottom left) and three_quarter (bottom right)."
+	}
+	body += "\n\nNext: get_preview with the same model_file and another mode or view from available; show_in_viewer with content model_file to turn it in 3D."
+	return Result{Front: front, Body: body, Images: []Image{{PNG: png, What: base + " " + string(rm)}}}, nil
 }

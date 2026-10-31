@@ -13,8 +13,9 @@ the plan and credits you already have.
 - **More Rodin tools:** Agentic builds, splitting a draft into parts, rigging
   and animation presets, and texturing a model file of your own.
 - **Previews as images:** the server's renders of each stage and local renders
-  of the stage's mesh in every viewer mode of the web app (normal, classic,
-  glossy, copper, metal, AO, wireframe, PBR, shaded, toon, depth, ...).
+  of the stage's mesh, or of a model file of your own, in every viewer mode of
+  the web app (normal, classic, glossy, copper, metal, AO, wireframe, PBR,
+  shaded, toon, depth, ...).
 - **A viewer window** the agent opens when you ask to see something: the
   model, its stages, the input images with their view tags, the texture maps.
   You and the agent both move and change the view.
@@ -164,7 +165,7 @@ price never changes behind the agent's back.
 | `get_generation_options` | Every setting with its values and plan gates, and recipes from your history |
 | `quote_cost` | The price of an operation before it runs |
 | `list_tasks`, `get_task`, `wait_task` | Your generations, one task's settings, inputs, files and next actions, waiting for a running step |
-| `get_preview` | A picture of a task stage: a server image or a local render in any viewer mode and view |
+| `get_preview` | A picture of a task stage (a server image or a local render in any viewer mode and view) or a render of a local model file |
 | `generate_model` | A geometry draft from 1-5 images with view tags and weights, Gen-2.5 or Gen-1.5 |
 | `redo_geometry`, `confirm_geometry`, `select_candidate` | Redo, confirm or pick the geometry draft |
 | `generate_texture`, `redo_material`, `confirm_material` | Texture the confirmed geometry, redo or confirm the material |
@@ -222,6 +223,9 @@ The viewer is a window of rodin3d-mcp itself, not a web page. The agent opens
 it with `open_viewer` when you ask to see something, and can show a task at
 any stage, two tasks side by side, a task's input images with their view tags
 and weights, its texture maps, or a local model file (GLB, glTF, OBJ, STL).
+A glTF file is drawn with its own materials and textures, Draco or meshopt
+compressed and with WebP or KTX2 (Basis Universal) textures too, so you can
+check a model you exported and optimized.
 You orbit, pan and zoom with the mouse, switch modes and stages, retag and
 reorder input images; the agent reads what you see (with a screenshot) and
 changes the view too. The window stays open until you close it.
@@ -242,6 +246,7 @@ rodin3d-mcp account
 rodin3d-mcp tasks chair
 rodin3d-mcp task <id>
 rodin3d-mcp preview <id> pbr three_quarter out.png
+rodin3d-mcp preview ./chair.glb pbr front chair.png
 rodin3d-mcp quote generate_model tier=medium
 rodin3d-mcp generate front.png:F back.png:B tier=medium expected=<quoted credits>
 rodin3d-mcp download <id> ./models
@@ -272,8 +277,9 @@ all six targets from one machine. `go.mod` replaces one module with a local
 directory (`third_party/hideconsole`), which is why `go install ...@latest`
 does not work; build from a clone or install a release.
 
-The Draco mesh decoder runs as an embedded WebAssembly module;
-`tools/draco-wasm` rebuilds it reproducibly from pinned sources.
+The Draco mesh decoder and the KTX2 texture transcoder run as embedded
+WebAssembly modules; `tools/draco-wasm` and `tools/basisu-wasm` rebuild them
+reproducibly from pinned sources. Meshopt geometry is decoded in Go.
 
 ## Licenses
 
@@ -281,10 +287,12 @@ rodin3d-mcp is MIT-licensed (see `LICENSE`).
 
 `THIRD_PARTY_NOTICES.txt` (shipped with every release, and printed by
 `rodin3d-mcp licenses`) holds the licenses of the third-party code in the
-binary: the Go standard library, every linked Go module, and the Draco
-decoder module (Google Draco, wasi-libc and the LLVM C++ runtimes;
-`internal/draco/NOTICE` says which parts). `go run ./tools/notices`
-regenerates it.
+binary: the Go standard library, every linked Go module, the Draco decoder
+module (Google Draco, wasi-libc and the LLVM C++ runtimes;
+`internal/draco/NOTICE` says which parts), the meshoptimizer decoder port
+(`internal/meshopt`) and the KTX2 transcoder module (Basis Universal and
+Zstandard; `internal/basisu/NOTICE`). `go run ./tools/notices` regenerates
+it.
 
 Rodin and Hyper3D are trademarks of their owners. This project is not
 affiliated with or endorsed by Hyper3D.

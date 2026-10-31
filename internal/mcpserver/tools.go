@@ -115,12 +115,13 @@ type waitInput struct {
 }
 
 type previewInput struct {
-	TaskID string  `json:"task_id" jsonschema:"the task id (an id prefix of 8 or more characters works too)"`
-	Stage  *string `json:"stage,omitempty" jsonschema:"which stage: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
-	Mode   *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded, or for a Gen-1.5 geometry draft, which has no mesh, a frame of the server's turntable: turntable_dark, turntable_copper, turntable_light, turntable_normal, picked by view) or a local render of the stage mesh (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, tracer, depth, uv_checker)"`
-	View   *string `json:"view,omitempty" jsonschema:"camera of a render, and for a turntable_* look the frame nearest its turn round the model (no top; the other server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
-	Size   *int    `json:"size,omitempty" jsonschema:"edge of the PNG in pixels, 256-1024 (server images: the longer edge)"`
-	SaveTo *string `json:"save_to,omitempty" jsonschema:"absolute path of the PNG to write; default the previews folder of the data directory"`
+	TaskID    string  `json:"task_id,omitempty" jsonschema:"the task id (an id prefix of 8 or more characters works too); give it or model_file"`
+	ModelFile *string `json:"model_file,omitempty" jsonschema:"instead of task_id: absolute path of a local glb, gltf, obj or stl file to render (render modes only, no stage)"`
+	Stage     *string `json:"stage,omitempty" jsonschema:"which stage: current (the task's own stage), geometry_draft, geometry (confirmed) or material"`
+	Mode      *string `json:"mode,omitempty" jsonschema:"a server image (poster, geometry_image, material_image, a texture map texture_diffuse, texture_pbr, texture_normal, texture_shaded, or for a Gen-1.5 geometry draft, which has no mesh, a frame of the server's turntable: turntable_dark, turntable_copper, turntable_light, turntable_normal, picked by view) or a local render of the stage mesh or model file (normal, raw, classic, glossy, copper, metal, ao, wireframe, geometry, pbr, shaded, toon, tracer, depth, uv_checker); default poster for a task, pbr for a model file that has it, else classic"`
+	View      *string `json:"view,omitempty" jsonschema:"camera of a render, and for a turntable_* look the frame nearest its turn round the model (no top; the other server images have their own): three_quarter (front-right, from above), front (+Z), back, left (-X), right (+X), top, web (the web viewer's start camera), or grid (front, right, back and three_quarter in one picture)"`
+	Size      *int    `json:"size,omitempty" jsonschema:"edge of the PNG in pixels, 256-1024 (server images: the longer edge)"`
+	SaveTo    *string `json:"save_to,omitempty" jsonschema:"absolute path of the PNG to write; default the previews folder of the data directory"`
 }
 
 type downloadInput struct {
@@ -224,7 +225,7 @@ func (s *Server) registerTools() {
 			"job answers at once. After a time-out, call wait_task again.",
 		readTool, wait, s.waitTask)
 
-	prev := nonNull(inputSchema[previewInput](map[string]string{"stage": `"current"`, "mode": `"poster"`, "view": `"three_quarter"`, "size": "512"}))
+	prev := nonNull(inputSchema[previewInput](map[string]string{"stage": `"current"`, "view": `"three_quarter"`, "size": "512"}))
 	withEnum(prev, "stage", "current", assets.StageGeometryDraft, assets.StageGeometry, assets.StageMaterial)
 	withEnum(prev, "mode", service.PreviewModes()...)
 	withEnum(prev, "view", service.PreviewViews()...)
@@ -238,7 +239,10 @@ func (s *Server) registerTools() {
 			"at the material stage. view picks the camera of a render; grid shows four views at once. The first render of a stage decodes "+
 			"its mesh (a few seconds, once); renders are kept, so a repeated call is instant. Earlier stages of a later task work too "+
 			"(stage geometry_draft shows the draft that was confirmed). The image is attached and saved to save_to or the previews "+
-			"folder. A mode the stage does not have answers conflict with the available stage and mode pairs; get_task lists them as previews.",
+			"folder. A mode the stage does not have answers conflict with the available stage and mode pairs; get_task lists them as previews. "+
+			"With model_file instead of task_id it renders a local glb, gltf, obj or stl file in the modes the viewer offers for it: the "+
+			"untextured ones, plus pbr (the default), shaded, toon and tracer for a glTF file with materials, drawn with its own textures and "+
+			"factors (Draco, meshopt, WebP and KTX2 files too); the reply lists its modes and what of the file is drawn without.",
 		readTool, prev, s.getPreview)
 
 	addTool(s, "download_model", "Download model files",
@@ -313,7 +317,8 @@ func (s *Server) waitTask(ctx context.Context, _ *mcp.CallToolRequest, in waitIn
 
 func (s *Server) getPreview(ctx context.Context, _ *mcp.CallToolRequest, in previewInput) (*mcp.CallToolResult, any, error) {
 	return imageReply(s.svc.Preview(ctx, service.PreviewInput{
-		TaskID: in.TaskID, Stage: optString(in.Stage), Mode: optString(in.Mode), View: optString(in.View), Size: optInt(in.Size, service.PreviewDefault), SaveTo: optString(in.SaveTo),
+		TaskID: in.TaskID, ModelFile: optString(in.ModelFile), Stage: optString(in.Stage), Mode: optString(in.Mode), View: optString(in.View),
+		Size: optInt(in.Size, service.PreviewDefault), SaveTo: optString(in.SaveTo),
 	})), nil, nil
 }
 

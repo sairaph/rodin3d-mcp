@@ -3,10 +3,15 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
@@ -277,19 +282,39 @@ func (s *Service) saveResultFile(ctx context.Context, uuid, signedURL, target st
 // renderModelFile draws a local model file (glb, gltf, obj, stl) in mode
 // from view as a size x size PNG, in the render slot get_preview uses.
 func (s *Service) renderModelFile(ctx context.Context, path string, mode render3d.Mode, view render3d.View, size int) ([]byte, error) {
+	png, _, _, err := s.renderModel(ctx, path, string(mode), view, size)
+	return png, err
+}
+
+// renderModel is renderModelFile in one of the modes the viewer offers for
+// the file (ModelModes); "" is pbr when the file has it, else classic. It
+// returns the model and the mode drawn too.
+func (s *Service) renderModel(ctx context.Context, path, mode string, view render3d.View, size int) ([]byte, *modelfile.Model, render3d.Mode, error) {
 	release, err := s.r3d.acquire(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	defer release()
 	m, err := modelfile.Load(ctx, path, s.decoders())
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
-	img, _, err := render3d.Render(m.Mesh, nil, render3d.Options{Mode: mode, View: view, Size: size, Cancel: ctx.Done()})
+	modes := ModelModes(m)
+	if mode == "" {
+		mode = string(render3d.ModeClassic)
+		if slices.Contains(modes, string(render3d.ModePBR)) {
+			mode = string(render3d.ModePBR)
+		}
+	}
+	if !slices.Contains(modes, mode) {
+		return nil, nil, "", failFields(render.CodeConflict, fmt.Sprintf("%s has no %s render (a glTF file with materials has pbr, shaded, toon and tracer; a file without texture coordinates has no copper or uv_checker).", filepath.Base(path), mode),
+			"Call get_preview with one of its modes: "+strings.Join(modes, ", ")+".", map[string]any{"available": modes})
+	}
+	img, _, err := render3d.Render(m.Mesh, nil, render3d.Options{Mode: render3d.Mode(mode), View: view, Size: size, Cancel: ctx.Done()})
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	defer debug.FreeOSMemory()
-	return encodeRender(img)
+	png, err := encodeRender(img)
+	return png, m, render3d.Mode(mode), err
 }

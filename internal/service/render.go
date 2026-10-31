@@ -18,10 +18,12 @@ import (
 	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/assets"
+	"github.com/sairaph/rodin3d-mcp/internal/basisu"
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
 	"github.com/sairaph/rodin3d-mcp/internal/glb"
 	"github.com/sairaph/rodin3d-mcp/internal/imaging"
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 )
 
@@ -35,9 +37,10 @@ const renderVersion = "6"
 const meshVersion = "1"
 
 // renderState is what get_preview keeps between renders in one process: the
-// Draco decoder (compiled once), the last stage mesh and texture set (so a
-// second mode of the same stage reads nothing), and a one-slot semaphore, as
-// a render already uses every core and its buffers are large.
+// Draco decoder and the KTX2 transcoder (each compiled once), the last stage
+// mesh and texture set (so a second mode of the same stage reads nothing),
+// and a one-slot semaphore, as a render already uses every core and its
+// buffers are large.
 type renderState struct {
 	semOnce sync.Once
 	sem     chan struct{}
@@ -45,6 +48,10 @@ type renderState struct {
 	decOnce sync.Once
 	dec     *draco.Decoder
 	decErr  error
+
+	ktxOnce sync.Once
+	ktx     *basisu.Decoder
+	ktxErr  error
 
 	mu      sync.Mutex
 	meshKey string
@@ -71,6 +78,20 @@ func (s *Service) decoder() (*draco.Decoder, error) {
 		r.dec, r.decErr = draco.New(context.Background(), filepath.Join(s.paths.Cache, "wazero"))
 	})
 	return r.dec, r.decErr
+}
+
+// ktx2 compiles the embedded KTX2 transcoder on first use, as decoder.
+func (s *Service) ktx2() (*basisu.Decoder, error) {
+	r := &s.r3d
+	r.ktxOnce.Do(func() {
+		r.ktx, r.ktxErr = basisu.New(context.Background(), filepath.Join(s.paths.Cache, "wazero"))
+	})
+	return r.ktx, r.ktxErr
+}
+
+// decoders are the decoders a model file may need.
+func (s *Service) decoders() modelfile.Decoders {
+	return modelfile.Decoders{Draco: s.decoder, KTX2: s.ktx2}
 }
 
 // renderResult is one local render.

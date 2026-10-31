@@ -1,8 +1,9 @@
 // Package glb reads glTF 2.0 files: binary GLBs and .gltf files with one
-// buffer; plain and KHR_draco_mesh_compression triangle primitives, node
-// transforms, embedded or external images and the textures of a single
-// material. It reads what Rodin GLBs use; other glTF features (sparse
-// accessors, several buffers, morph targets, skins) are not read.
+// buffer; plain, KHR_draco_mesh_compression and EXT_meshopt_compression
+// triangle primitives (KHR_mesh_quantization attributes too), node
+// transforms, embedded or external images, and the materials, textures and
+// samplers that point at them. Other glTF features (sparse accessors,
+// several buffers, morph targets, skins) are not read.
 package glb
 
 import (
@@ -16,9 +17,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sairaph/rodin3d-mcp/internal/draco"
+	"github.com/sairaph/rodin3d-mcp/internal/meshopt"
 )
 
 // Doc is the subset of the glTF JSON the reader uses.
@@ -26,8 +30,9 @@ type Doc struct {
 	Asset struct {
 		Generator string `json:"generator"`
 	} `json:"asset"`
-	ExtensionsUsed []string `json:"extensionsUsed"`
-	Scenes         []struct {
+	ExtensionsUsed     []string `json:"extensionsUsed"`
+	ExtensionsRequired []string `json:"extensionsRequired"`
+	Scenes             []struct {
 		Nodes []int `json:"nodes"`
 	} `json:"scenes"`
 	Scene  *int   `json:"scene"`
@@ -45,13 +50,8 @@ type Doc struct {
 		Min           []float64 `json:"min"`
 		Max           []float64 `json:"max"`
 	} `json:"accessors"`
-	BufferViews []struct {
-		Buffer     int `json:"buffer"`
-		ByteOffset int `json:"byteOffset"`
-		ByteLength int `json:"byteLength"`
-		ByteStride int `json:"byteStride"`
-	} `json:"bufferViews"`
-	Images []struct {
+	BufferViews []BufferView `json:"bufferViews"`
+	Images      []struct {
 		BufferView *int   `json:"bufferView"`
 		MimeType   string `json:"mimeType"`
 		URI        string `json:"uri"`
@@ -59,23 +59,203 @@ type Doc struct {
 	Buffers []struct {
 		URI        string `json:"uri"`
 		ByteLength int    `json:"byteLength"`
+		Extensions struct {
+			Meshopt *struct {
+				Fallback bool `json:"fallback"`
+			} `json:"EXT_meshopt_compression"`
+		} `json:"extensions"`
 	} `json:"buffers"`
-	Textures []struct {
-		Source *int `json:"source"`
-	} `json:"textures"`
-	Materials []struct {
-		PBR struct {
-			BaseColorTexture         *TextureRef `json:"baseColorTexture"`
-			MetallicRoughnessTexture *TextureRef `json:"metallicRoughnessTexture"`
-		} `json:"pbrMetallicRoughness"`
-		NormalTexture *TextureRef `json:"normalTexture"`
-	} `json:"materials"`
+	Textures  []Texture  `json:"textures"`
+	Samplers  []Sampler  `json:"samplers"`
+	Materials []Material `json:"materials"`
 }
 
-// TextureRef points at a texture of the file.
+// BufferView is a range of a buffer; with EXT_meshopt_compression its data
+// is the decoding of a range of another buffer.
+type BufferView struct {
+	Buffer     int `json:"buffer"`
+	ByteOffset int `json:"byteOffset"`
+	ByteLength int `json:"byteLength"`
+	ByteStride int `json:"byteStride"`
+	Extensions struct {
+		Meshopt *struct {
+			Buffer     int    `json:"buffer"`
+			ByteOffset int    `json:"byteOffset"`
+			ByteLength int    `json:"byteLength"`
+			ByteStride int    `json:"byteStride"`
+			Count      int    `json:"count"`
+			Mode       string `json:"mode"`
+			Filter     string `json:"filter"`
+		} `json:"EXT_meshopt_compression"`
+	} `json:"extensions"`
+}
+
+// Texture is an image and a sampler. The image is Source or that of an
+// extension (Sources lists them in the order to try).
+type Texture struct {
+	Source     *int `json:"source"`
+	Sampler    *int `json:"sampler"`
+	Extensions struct {
+		Basisu *struct {
+			Source *int `json:"source"`
+		} `json:"KHR_texture_basisu"`
+		WebP *struct {
+			Source *int `json:"source"`
+		} `json:"EXT_texture_webp"`
+		AVIF *struct {
+			Source *int `json:"source"`
+		} `json:"EXT_texture_avif"`
+	} `json:"extensions"`
+}
+
+// Sources lists the images of the texture in the order the reader tries
+// them: KHR_texture_basisu's, EXT_texture_webp's, then the plain source
+// (a fallback in a format every viewer reads). EXT_texture_avif images are
+// not read.
+func (t Texture) Sources() []int {
+	var out []int
+	for _, s := range []*int{srcOf(t.Extensions.Basisu), srcOf(t.Extensions.WebP), t.Source} {
+		if s != nil && !slices.Contains(out, *s) {
+			out = append(out, *s)
+		}
+	}
+	return out
+}
+
+func srcOf(e *struct {
+	Source *int `json:"source"`
+}) *int {
+	if e == nil {
+		return nil
+	}
+	return e.Source
+}
+
+// Sampler wrap modes (glTF wrapS and wrapT); absent is Repeat.
+const (
+	WrapRepeat         = 10497
+	WrapClampToEdge    = 33071
+	WrapMirroredRepeat = 33648
+)
+
+// Sampler is a texture sampler; only the wrap modes are read (filtering is
+// always bilinear).
+type Sampler struct {
+	WrapS int `json:"wrapS"`
+	WrapT int `json:"wrapT"`
+}
+
+// Material is a glTF metallic-roughness material. Absent factors take the
+// glTF defaults (Factors).
+type Material struct {
+	Name string `json:"name"`
+	PBR  struct {
+		BaseColorFactor          []float64   `json:"baseColorFactor"`
+		MetallicFactor           *float64    `json:"metallicFactor"`
+		RoughnessFactor          *float64    `json:"roughnessFactor"`
+		BaseColorTexture         *TextureRef `json:"baseColorTexture"`
+		MetallicRoughnessTexture *TextureRef `json:"metallicRoughnessTexture"`
+	} `json:"pbrMetallicRoughness"`
+	NormalTexture    *TextureRef                `json:"normalTexture"`
+	OcclusionTexture *TextureRef                `json:"occlusionTexture"`
+	EmissiveTexture  *TextureRef                `json:"emissiveTexture"`
+	EmissiveFactor   []float64                  `json:"emissiveFactor"`
+	AlphaMode        string                     `json:"alphaMode"`
+	Extensions       map[string]json.RawMessage `json:"extensions"`
+}
+
+// Factors returns the material's factors with the glTF defaults filled in:
+// base colour (linear RGBA), metalness, roughness and emissive colour
+// (linear RGB, times KHR_materials_emissive_strength).
+func (m Material) Factors() (base [4]float64, metal, rough float64, emissive [3]float64) {
+	base = [4]float64{1, 1, 1, 1}
+	if len(m.PBR.BaseColorFactor) == 4 {
+		copy(base[:], m.PBR.BaseColorFactor)
+	}
+	metal, rough = 1, 1
+	if m.PBR.MetallicFactor != nil {
+		metal = *m.PBR.MetallicFactor
+	}
+	if m.PBR.RoughnessFactor != nil {
+		rough = *m.PBR.RoughnessFactor
+	}
+	if len(m.EmissiveFactor) == 3 {
+		copy(emissive[:], m.EmissiveFactor)
+	}
+	if raw, ok := m.Extensions["KHR_materials_emissive_strength"]; ok {
+		var s struct {
+			EmissiveStrength *float64 `json:"emissiveStrength"`
+		}
+		if json.Unmarshal(raw, &s) == nil && s.EmissiveStrength != nil {
+			for i := range emissive {
+				emissive[i] *= *s.EmissiveStrength
+			}
+		}
+	}
+	return base, metal, rough, emissive
+}
+
+// Unlit reports whether the material is KHR_materials_unlit.
+func (m Material) Unlit() bool {
+	_, ok := m.Extensions["KHR_materials_unlit"]
+	return ok
+}
+
+// TextureRef points at a texture of the file. Scale is a normal texture's,
+// Strength an occlusion texture's (both default 1).
 type TextureRef struct {
-	Index    int `json:"index"`
-	TexCoord int `json:"texCoord"`
+	Index      int      `json:"index"`
+	TexCoord   int      `json:"texCoord"`
+	Scale      *float64 `json:"scale"`
+	Strength   *float64 `json:"strength"`
+	Extensions struct {
+		Transform *TextureTransform `json:"KHR_texture_transform"`
+	} `json:"extensions"`
+}
+
+// TextureTransform is KHR_texture_transform: texture coordinates are
+// scaled, then rotated (radians), then offset. TexCoord, when set,
+// replaces the reference's.
+type TextureTransform struct {
+	Offset   []float64 `json:"offset"`
+	Rotation float64   `json:"rotation"`
+	Scale    []float64 `json:"scale"`
+	TexCoord *int      `json:"texCoord"`
+}
+
+// UVSet is the texture coordinate set the reference samples.
+func (r *TextureRef) UVSet() int {
+	if t := r.Extensions.Transform; t != nil && t.TexCoord != nil {
+		return *t.TexCoord
+	}
+	return r.TexCoord
+}
+
+// geometryExtensions are the extensions that change how geometry is
+// stored, which the reader reads.
+var geometryExtensions = []string{"KHR_draco_mesh_compression", "EXT_meshopt_compression", "KHR_mesh_quantization"}
+
+// looksOnly reports whether an extension changes only how a model looks
+// (materials, textures, lights, metadata), so the geometry is right
+// without it.
+func looksOnly(ext string) bool {
+	for _, p := range []string{"KHR_materials_", "KHR_texture_", "EXT_texture_", "KHR_lights_", "EXT_lights_", "KHR_xmp"} {
+		if strings.HasPrefix(ext, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckRequired returns an error when the file requires an extension that
+// changes its geometry and that the reader does not read.
+func (f *File) CheckRequired() error {
+	for _, e := range f.Doc.ExtensionsRequired {
+		if !slices.Contains(geometryExtensions, e) && !looksOnly(e) {
+			return fmt.Errorf("glb: the file requires %s, which this reader does not read", e)
+		}
+	}
+	return nil
 }
 
 // Node is a scene node.
@@ -108,6 +288,9 @@ type File struct {
 	Doc Doc
 	Bin []byte
 	Dir string // folder of a .gltf, for its external images; empty for a GLB
+
+	mu      sync.Mutex
+	decoded map[int][]byte // EXT_meshopt_compression buffer views, decoded once
 }
 
 // Parse splits a GLB into its JSON and BIN chunks.
@@ -142,18 +325,26 @@ func Parse(b []byte) (*File, error) {
 
 // ParseGLTF reads a .gltf JSON file whose folder is dir, loading its one
 // buffer (a file next to it or a data: address) as the binary chunk. Files
-// with several buffers are not read.
+// with several buffers are not read; EXT_meshopt_compression fallback
+// buffers (placeholders without data) do not count.
 func ParseGLTF(data []byte, dir string) (*File, error) {
 	f := &File{Dir: dir}
 	if err := json.Unmarshal(data, &f.Doc); err != nil {
 		return nil, fmt.Errorf("gltf: json: %w", err)
 	}
-	switch len(f.Doc.Buffers) {
-	case 0:
+	n := 0
+	for _, b := range f.Doc.Buffers {
+		if b.Extensions.Meshopt == nil || !b.Extensions.Meshopt.Fallback {
+			n++
+		}
+	}
+	switch {
+	case len(f.Doc.Buffers) == 0:
 		return f, nil
-	case 1:
-	default:
-		return nil, fmt.Errorf("gltf: %d buffers; only files with one buffer are read", len(f.Doc.Buffers))
+	case n > 1:
+		return nil, fmt.Errorf("gltf: %d buffers; only files with one buffer are read", n)
+	case f.Doc.Buffers[0].URI == "":
+		return nil, errors.New("gltf: the first buffer has no data")
 	}
 	bin, err := f.uriBytes(f.Doc.Buffers[0].URI)
 	if err != nil {
@@ -201,52 +392,48 @@ func (f *File) ImageData(i int) ([]byte, error) {
 	return f.uriBytes(im.URI)
 }
 
-// MaterialImages returns the images of the base colour, metallic-roughness
-// and normal textures (-1 when absent) of the material that every triangle
-// primitive of the file uses; ok is false when primitives use different
-// materials or none.
-func (f *File) MaterialImages() (base, metalRough, normal int, ok bool) {
-	mat := -2
-	for _, m := range f.Doc.Meshes {
-		for _, p := range m.Primitives {
-			if p.Mode != nil && *p.Mode != 4 {
-				continue
-			}
-			pm := -1
-			if p.Material != nil {
-				pm = *p.Material
-			}
-			if mat != -2 && pm != mat {
-				return -1, -1, -1, false
-			}
-			mat = pm
-		}
-	}
-	if mat < 0 || mat >= len(f.Doc.Materials) {
-		return -1, -1, -1, false
-	}
-	img := func(r *TextureRef) int {
-		if r == nil || r.TexCoord != 0 || r.Index < 0 || r.Index >= len(f.Doc.Textures) || f.Doc.Textures[r.Index].Source == nil {
-			return -1
-		}
-		return *f.Doc.Textures[r.Index].Source
-	}
-	m := f.Doc.Materials[mat]
-	return img(m.PBR.BaseColorTexture), img(m.PBR.MetallicRoughnessTexture), img(m.NormalTexture), true
-}
-
+// view returns the data of buffer view i; an EXT_meshopt_compression view
+// is decoded on first use and kept.
 func (f *File) view(i int) ([]byte, error) {
 	if i < 0 || i >= len(f.Doc.BufferViews) {
 		return nil, fmt.Errorf("glb: bufferView %d missing", i)
 	}
 	v := f.Doc.BufferViews[i]
-	if v.Buffer != 0 {
-		return nil, fmt.Errorf("glb: bufferView %d is in buffer %d; only one buffer is read", i, v.Buffer)
+	if mo := v.Extensions.Meshopt; mo != nil {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if b, ok := f.decoded[i]; ok {
+			return b, nil
+		}
+		src, err := f.binRange(i, mo.Buffer, mo.ByteOffset, mo.ByteLength)
+		if err != nil {
+			return nil, err
+		}
+		if mo.Count < 0 || mo.ByteStride <= 0 || mo.Count > math.MaxInt32/mo.ByteStride || mo.Count*mo.ByteStride != v.ByteLength {
+			return nil, fmt.Errorf("glb: bufferView %d holds %d bytes, its EXT_meshopt_compression %d of %d", i, v.ByteLength, mo.Count, mo.ByteStride)
+		}
+		b, err := meshopt.Decode(mo.Count, mo.ByteStride, src, mo.Mode, mo.Filter)
+		if err != nil {
+			return nil, fmt.Errorf("glb: bufferView %d: %w", i, err)
+		}
+		if f.decoded == nil {
+			f.decoded = map[int][]byte{}
+		}
+		f.decoded[i] = b
+		return b, nil
 	}
-	if v.ByteOffset < 0 || v.ByteLength < 0 || v.ByteOffset+v.ByteLength > len(f.Bin) {
+	return f.binRange(i, v.Buffer, v.ByteOffset, v.ByteLength)
+}
+
+// binRange is a range of the binary chunk (buffer 0), for buffer view i.
+func (f *File) binRange(i, buffer, off, n int) ([]byte, error) {
+	if buffer != 0 {
+		return nil, fmt.Errorf("glb: bufferView %d is in buffer %d; only one buffer is read", i, buffer)
+	}
+	if off < 0 || n < 0 || off > len(f.Bin) || n > len(f.Bin)-off {
 		return nil, fmt.Errorf("glb: bufferView %d out of range", i)
 	}
-	return f.Bin[v.ByteOffset : v.ByteOffset+v.ByteLength], nil
+	return f.Bin[off : off+n], nil
 }
 
 // Image returns the bytes of an embedded image.
@@ -259,13 +446,23 @@ func (f *File) Image(i int) ([]byte, string, error) {
 }
 
 // Mesh is the merged triangle geometry of a scene, in world space. Normals and
-// UVs are nil when any primitive lacks them.
+// UVs are nil when any primitive lacks them. Parts give each primitive's
+// triangles and material, in order.
 type Mesh struct {
 	Pos   [][3]float32
 	Nrm   [][3]float32
 	UV    [][2]float32
 	Idx   []uint32
+	Parts []Part
 	Check []PrimCheck
+}
+
+// Part is the triangles [First, First+Count) of a mesh, from one primitive.
+// Material is its index in Doc.Materials, -1 for none (glTF's default
+// material).
+type Part struct {
+	Material     int
+	First, Count int
 }
 
 // PrimCheck compares a decoded primitive with its glTF accessors.
@@ -420,13 +617,18 @@ func (f *File) MeshNodeNames() []string {
 // LoadMesh flattens the default scene into one world-space mesh. Draco
 // primitives are decoded with dec (nil: a Draco primitive is an error), and a
 // decoded primitive whose point or face count differs from its accessors is
-// an error too.
+// an error too. A file that requires a geometry extension the reader does
+// not read is an error (CheckRequired).
 func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) {
+	if err := f.CheckRequired(); err != nil {
+		return nil, err
+	}
 	m := &Mesh{}
 	allN, allUV := true, true
 	type prim struct {
 		pos, nrm, uv []float32
 		idx          []uint32
+		material     int
 	}
 	var prims []prim
 	var mats [][16]float64
@@ -445,7 +647,10 @@ func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) 
 				if p.Mode != nil && *p.Mode != 4 {
 					continue // only triangle lists
 				}
-				var pr prim
+				pr := prim{material: -1}
+				if p.Material != nil && *p.Material >= 0 && *p.Material < len(f.Doc.Materials) {
+					pr.material = *p.Material
+				}
 				chk := PrimCheck{}
 				if pi, ok := p.Attributes["POSITION"]; ok && pi < len(f.Doc.Accessors) {
 					chk.AccessorPoints = f.Doc.Accessors[pi].Count
@@ -563,6 +768,7 @@ func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) 
 		}
 	}
 	for k, pr := range prims {
+		m.Parts = append(m.Parts, Part{Material: pr.material, First: len(m.Idx) / 3, Count: len(pr.idx) / 3})
 		base := uint32(len(m.Pos))
 		w := mats[k]
 		nm := normalMatrix(w)

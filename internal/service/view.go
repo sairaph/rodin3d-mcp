@@ -296,15 +296,17 @@ func (s *Service) viewMap(ctx context.Context, uuid string, a ViewAsset, kind st
 
 // ViewModel reads a local model file.
 func (s *Service) ViewModel(ctx context.Context, path string) (*modelfile.Model, error) {
-	return modelfile.Load(ctx, path, s.decoder)
+	return modelfile.Load(ctx, path, s.decoders())
 }
 
 // ModelModes lists the render modes of a local model: the confirmed-geometry
 // set, without the modes that need texture coordinates when it has none,
-// and with pbr, shaded and toon in front when it has a textured material.
+// and with pbr, shaded, toon and tracer in front when it has materials (a
+// glTF file whose primitives name any; their textures need texture
+// coordinates, their factors do not).
 func ModelModes(m *modelfile.Model) []string {
 	var out []string
-	for _, mode := range render3d.ModesFor(false, m.Maps != nil) {
+	for _, mode := range render3d.ModesFor(false, len(m.Mesh.Mats) > 0) {
 		if m.Mesh.UV == nil && (mode == render3d.ModeCopper || mode == render3d.ModeUVChecker) {
 			continue
 		}

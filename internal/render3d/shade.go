@@ -6,17 +6,17 @@ import (
 )
 
 type shadeCtx struct {
-	m      *Mesh
-	maps   *Maps
-	def    modeDef
-	cam    *camera
-	center vec3
-	ss     int
-	W, H   int // sample buffer size (output size times ss)
-	N      float64
-	flat   bool
-	nModel int
-	cancel func() bool // true once the render is no longer wanted
+	m       *Mesh
+	mapsMat *Material // the task's maps as a material, for a mesh without materials
+	def     modeDef
+	cam     *camera
+	center  vec3
+	ss      int
+	W, H    int // sample buffer size (output size times ss)
+	N       float64
+	flat    bool
+	nModel  int
+	cancel  func() bool // true once the render is no longer wanted
 
 	bgOverride *vec3 // display colour replacing the mode's background; nil: none
 
@@ -176,16 +176,11 @@ func (s *shadeCtx) shade(f *frag) (vec3, float64) {
 	case matChecker:
 		return s.checker(f), 1
 	case matBasic:
-		t := s.maps.Shaded
-		if t == nil {
-			t = s.maps.Diffuse
-		}
-		c := t.Sample(f.uv[0], f.uv[1])
-		return vec3{float64(c[0]), float64(c[1]), float64(c[2])}.hadamard(d.color), 1
+		return s.m.matOf(f.tri, s.mapsMat).unlitAt(f.uv, f.hasUV).hadamard(d.color), 1
 	case matToon:
-		c := s.maps.Diffuse.Sample(f.uv[0], f.uv[1])
-		diff := vec3{float64(c[0]), float64(c[1]), float64(c[2])}.hadamard(d.color)
-		return s.toon(f, diff), 1
+		mt := s.m.matOf(f.tri, s.mapsMat)
+		diff := mt.baseAt(f.uv, f.hasUV).hadamard(d.color)
+		return s.toon(f, diff).add(mt.emissiveAt(f.uv, f.hasUV)), 1
 	case matPhong:
 		return s.phong(f, d.color), 1
 	}
@@ -193,22 +188,27 @@ func (s *shadeCtx) shade(f *frag) (vec3, float64) {
 	diff := d.color
 	metal, rough := d.metal, d.rough
 	N := f.N
+	ao := 1.0
+	var emit vec3
 	if d.useMaps {
-		c := s.maps.Diffuse.Sample(f.uv[0], f.uv[1])
-		diff = diff.hadamard(vec3{float64(c[0]), float64(c[1]), float64(c[2])})
-		if s.maps.PBR != nil {
-			p := s.maps.PBR.Sample(f.uv[0], f.uv[1])
-			rough *= float64(p[1])
-			metal *= float64(p[2])
+		mt := s.m.matOf(f.tri, s.mapsMat)
+		if mt.Unlit {
+			return mt.baseAt(f.uv, f.hasUV), 1
 		}
-		if s.maps.Normal != nil && f.hasUV {
-			N = s.normalMap(f, N)
+		diff = diff.hadamard(mt.baseAt(f.uv, f.hasUV))
+		mm, mr := mt.metalRoughAt(f.uv, f.hasUV)
+		metal *= mm
+		rough *= mr
+		if mt.Normal != nil && f.hasUV {
+			N = normalMap(f, N, mt.Normal, mt.NormalScale)
 		}
+		ao = mt.occlusionAt(f.uv, f.hasUV)
+		emit = mt.emissiveAt(f.uv, f.hasUV)
 	}
 	if d.copper {
 		diff, rough, N = s.copper(f, diff, N)
 	}
-	c := s.standard(f, N, diff, metal, rough)
+	c := s.standard(f, N, diff, metal, rough, ao).add(emit)
 	if d.newGray && !d.direct {
 		c = vec3{0.8 * math.Sqrt(math.Max(c[0], 0)), 0.8 * math.Sqrt(math.Max(c[1], 0)), 0.8 * math.Sqrt(math.Max(c[2], 0))}
 	}
@@ -221,11 +221,13 @@ func (s *shadeCtx) shade(f *frag) (vec3, float64) {
 // web's pbr material takes MikkTSpace tangents with the sign negated
 // (three.js's glTF rule) and normalScale (1, 1), so its frame is T = +grad u,
 // B = -grad v. Here T and B come from the screen derivatives as three.js's
-// getTangentFrame builds them.
-func (s *shadeCtx) normalMap(f *frag, N vec3) vec3 {
+// getTangentFrame builds them, from the texture coordinates the map r
+// samples (after its transform). The map's x and y are scaled by scale
+// (glTF normalTexture.scale, three.js normalScale).
+func normalMap(f *frag, N vec3, r *TexRef, scale float64) vec3 {
 	q0, q1 := f.dPdx, f.dPdy
-	st0 := [2]float64{f.dUVdx[0], f.dUVdx[1]}
-	st1 := [2]float64{f.dUVdy[0], f.dUVdy[1]}
+	st0 := r.duv(f.dUVdx)
+	st1 := r.duv(f.dUVdy)
 	q1perp := q1.cross(N)
 	q0perp := N.cross(q0)
 	T := q1perp.mul(st0[0]).add(q0perp.mul(st1[0]))
@@ -241,8 +243,8 @@ func (s *shadeCtx) normalMap(f *frag, N vec3) vec3 {
 	// faceDirection does.
 	sc := f.face / math.Sqrt(det)
 	T, B = T.mul(-sc), B.mul(sc)
-	c := s.maps.Normal.Sample(f.uv[0], f.uv[1])
-	mn := vec3{float64(c[0])*2 - 1, float64(c[1])*2 - 1, float64(c[2])*2 - 1}
+	c := r.sample(f.uv)
+	mn := vec3{(float64(c[0])*2 - 1) * scale, (float64(c[1])*2 - 1) * scale, float64(c[2])*2 - 1}
 	return T.mul(mn[0]).add(B.mul(mn[1])).add(N.mul(mn[2])).norm()
 }
 
@@ -318,7 +320,11 @@ func brdfGGX(L, V, N vec3, f0 vec3, rough float64) vec3 {
 	return F.mul(Vis * D)
 }
 
-func (s *shadeCtx) standard(f *frag, N vec3, base vec3, metal, rough float64) vec3 {
+// standard is MeshStandardMaterial's light at the fragment. ao (1: none)
+// is the ambient occlusion of an aoMap: it scales the environment's and the
+// ambient light's diffuse part, and the environment's specular part by
+// three.js's computeSpecularOcclusion.
+func (s *shadeCtx) standard(f *frag, N vec3, base vec3, metal, rough, ao float64) vec3 {
 	V := f.V
 	rough = math.Max(rough, 0.0525)
 	dc := base.mul(1 - metal)
@@ -370,6 +376,12 @@ func (s *shadeCtx) standard(f *frag, N vec3, base vec3, metal, rough float64) ve
 		diffK := dc.mul(1 - math.Max(total[0], math.Max(total[1], total[2])))
 		is = is.add(rad.hadamard(FssEss)).add(multi.hadamard(cw))
 		id = id.add(diffK.hadamard(cw))
+		if ao < 1 {
+			is = is.mul(sat(math.Pow(dotNV+ao, math.Exp2(-16*rough-1)) - 1 + ao))
+		}
+	}
+	if ao < 1 {
+		id = id.mul(ao)
 	}
 	return dd.add(ds).add(id).add(is)
 }
@@ -442,7 +454,7 @@ func (s *shadeCtx) checker(f *frag) vec3 {
 // shadow (groundAlpha), alpha blended.
 func (s *shadeCtx) shadeGround(f *frag) (vec3, float64) {
 	dx, dz := f.P[0]-s.center[0], f.P[2]-s.center[2]
-	return s.standard(f, f.N, vec3{}, 0, 0.5), groundAlpha(math.Sqrt(dx*dx + dz*dz))
+	return s.standard(f, f.N, vec3{}, 0, 0.5, 1), groundAlpha(math.Sqrt(dx*dx + dz*dz))
 }
 
 // finish composites over the background, applies the output transform and

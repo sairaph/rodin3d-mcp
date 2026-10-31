@@ -17,6 +17,11 @@ type Mesh struct {
 	Nrm [][3]float32 // nil: flat shading only
 	UV  [][2]float32 // nil: no texture coordinates
 	Idx []uint32
+	// Mats are a model file's materials, TriMat each triangle's index into
+	// them (nil: all use Mats[0]). A mesh with materials is drawn with them
+	// in the textured modes; one without draws a task's Maps there.
+	Mats   []*Material
+	TriMat []uint16
 
 	accel *bvh // the path tracer's hierarchy, built on first trace (bvhMu)
 }

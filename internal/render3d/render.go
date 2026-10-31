@@ -299,10 +299,14 @@ func prepare(m *Mesh, maps *Maps, o *Options) (modeDef, Frame, Camera, error) {
 	} else if o.Size < 16 || o.Size > 2048 {
 		return def, Frame{}, Camera{}, fmt.Errorf("render3d: size %d out of range", o.Size)
 	}
-	if (def.useMaps || def.copper || def.needUV) && m.UV == nil {
+	// A mesh with materials draws them in the textured modes (their maps
+	// only where it has texture coordinates); one without needs a task's
+	// maps and texture coordinates.
+	mats := len(m.Mats) > 0
+	if (def.useMaps && !mats || def.copper || def.needUV) && m.UV == nil {
 		return def, Frame{}, Camera{}, &InputError{Mode: o.Mode, Reason: "needs texture coordinates, and this mesh has none"}
 	}
-	if def.useMaps {
+	if def.useMaps && !mats {
 		need := maps != nil && maps.Diffuse != nil
 		if o.Mode == ModeShaded {
 			need = maps != nil && (maps.Shaded != nil || maps.Diffuse != nil)
@@ -380,7 +384,7 @@ func render(m *Mesh, maps *Maps, def modeDef, o Options, frame Frame, c Camera) 
 	}
 	dist := cam.eye.sub(cam.target).length()
 
-	s := &shadeCtx{m: m, maps: maps, def: def, cam: &cam, center: center, ss: ss, W: W, H: H, N: N,
+	s := &shadeCtx{m: m, mapsMat: mapsMaterial(maps), def: def, cam: &cam, center: center, ss: ss, W: W, H: H, N: N,
 		flat: def.forceFlat || (def.flatIfDraft && o.Draft) || m.Nrm == nil, nModel: len(m.Idx) / 3,
 		cancel: o.canceled}
 	if o.Interactive {

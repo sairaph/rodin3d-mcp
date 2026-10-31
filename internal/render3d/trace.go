@@ -18,9 +18,10 @@ import (
 // exposure 1. Here the same scene is traced on the CPU: the procedural
 // interior environment (one of the web's four Tracer environments; the
 // web's default is city) at intensity 1, the PBR material the pbr mode
-// draws (diffuse, normal, roughness and metalness maps), two bounces with
-// the environment sampled at every bounce (next-event estimation) and
-// multiple importance sampling against the BRDF.
+// draws (diffuse, normal, roughness and metalness maps; a model file's own
+// materials, whose emission adds light where a path meets them), two
+// bounces with the environment sampled at every bounce (next-event
+// estimation) and multiple importance sampling against the BRDF.
 
 const (
 	// tracerBounces is MuTracer's final.bounces: the camera ray's hit and
@@ -40,13 +41,13 @@ const (
 // sample index, so a picture of n samples is the same however it was
 // split into Add calls.
 type Trace struct {
-	m    *Mesh
-	maps *Maps
-	acc  *bvh
-	cam  camera
-	w, h int
-	n    int
-	eps  float64
+	m       *Mesh
+	mapsMat *Material // the maps as a material, for a mesh without materials
+	acc     *bvh
+	cam     camera
+	w, h    int
+	n       int
+	eps     float64
 
 	env, bgEnv *envMap
 	samp       *envSampler
@@ -84,7 +85,7 @@ func newTrace(m *Mesh, maps *Maps, def modeDef, o Options, frame Frame, c Camera
 	if !ok {
 		return nil, errors.New("render3d: the mesh has no extent")
 	}
-	t := &Trace{m: m, maps: maps, cam: cam, w: w, h: h, eps: 1e-4 * frame.Size(), cancel: o.canceled,
+	t := &Trace{m: m, mapsMat: mapsMaterial(maps), cam: cam, w: w, h: h, eps: 1e-4 * frame.Size(), cancel: o.canceled,
 		env: environment(def.env), bgEnv: environment(def.bgEnv),
 		sum: make([]float32, w*h*3), miss: make([]float32, w*h*3), hits: make([]float32, w*h)}
 	t.samp = t.env.sampler()
@@ -196,6 +197,8 @@ type surface struct {
 	P, Ng, N, V vec3
 	dc, f0      vec3 // diffuse colour (base x (1 - metalness)) and F0
 	rough       float64
+	emit        vec3 // emitted light (an unlit material's base colour)
+	unlit       bool // the path ends here
 }
 
 // path traces one sample through pixel x, y: the radiance of a path that
@@ -226,6 +229,10 @@ func (t *Trace) path(x, y int, rg *rng) (l vec3, hitModel bool, bg vec3) {
 			break
 		}
 		s := t.surface(h, r.d)
+		l = l.add(tp.hadamard(s.emit))
+		if s.unlit {
+			break
+		}
 		// The environment, sampled directly.
 		if L, pdfL, le := t.samp.sample(rg); pdfL > 0 {
 			nl := s.N.dot(L)
@@ -282,27 +289,27 @@ func (t *Trace) surface(h hit, d vec3) surface {
 	if s.N.dot(s.V) <= 0 {
 		s.N = s.Ng
 	}
-	base, metal, rough := vec3{1, 1, 1}, 1.0, 1.0 // the pbr mode's material
-	if m.UV != nil && t.maps != nil {
+	mt := m.matOf(int(h.tri), t.mapsMat)
+	var uv [2]float64
+	hasUV := m.UV != nil
+	if hasUV {
 		uv0, uv1, uv2 := m.UV[i0], m.UV[i1], m.UV[i2]
-		u := b0*float64(uv0[0]) + b1*float64(uv1[0]) + b2*float64(uv2[0])
-		v := b0*float64(uv0[1]) + b1*float64(uv1[1]) + b2*float64(uv2[1])
-		if t.maps.Diffuse != nil {
-			c := t.maps.Diffuse.Sample(u, v)
-			base = vec3{float64(c[0]), float64(c[1]), float64(c[2])}
-		}
-		if t.maps.PBR != nil {
-			p := t.maps.PBR.Sample(u, v)
-			rough, metal = float64(p[1]), float64(p[2])
-		}
-		if t.maps.Normal != nil {
-			du1, dv1 := float64(uv1[0]-uv0[0]), float64(uv1[1]-uv0[1])
-			du2, dv2 := float64(uv2[0]-uv0[0]), float64(uv2[1]-uv0[1])
-			if n, ok := normalMapFrame(e1, e2, du1, dv1, du2, dv2, s.N, t.maps.Normal.Sample(u, v)); ok && n.dot(s.V) > 0 {
+		uv = [2]float64{b0*float64(uv0[0]) + b1*float64(uv1[0]) + b2*float64(uv2[0]), b0*float64(uv0[1]) + b1*float64(uv1[1]) + b2*float64(uv2[1])}
+		if mt.Normal != nil && !mt.Unlit {
+			d1 := mt.Normal.duv([2]float64{float64(uv1[0] - uv0[0]), float64(uv1[1] - uv0[1])})
+			d2 := mt.Normal.duv([2]float64{float64(uv2[0] - uv0[0]), float64(uv2[1] - uv0[1])})
+			if n, ok := normalMapFrame(e1, e2, d1[0], d1[1], d2[0], d2[1], s.N, mt.Normal.sample(uv), mt.NormalScale); ok && n.dot(s.V) > 0 {
 				s.N = n
 			}
 		}
 	}
+	base := mt.baseAt(uv, hasUV)
+	if mt.Unlit {
+		s.emit, s.unlit = base, true
+		return s
+	}
+	metal, rough := mt.metalRoughAt(uv, hasUV)
+	s.emit = mt.emissiveAt(uv, hasUV)
 	s.rough = math.Max(rough, 0.0525)
 	s.dc = base.mul(1 - metal)
 	s.f0 = mix3(vec3{0.04, 0.04, 0.04}, base, metal)
@@ -315,8 +322,9 @@ func (t *Trace) surface(h hit, d vec3) surface {
 // the image): a and b give the surface gradients of u and v in the plane of
 // the shading normal N (which faces the viewer), scaled together so the
 // longer is unit length. Their sign follows N.(e1 x e2), so a face seen from
-// behind turns the frame as three.js's faceDirection does.
-func normalMapFrame(e1, e2 vec3, du1, dv1, du2, dv2 float64, N vec3, c [4]float32) (vec3, bool) {
+// behind turns the frame as three.js's faceDirection does. The map's x and
+// y are scaled by scale (glTF normalTexture.scale).
+func normalMapFrame(e1, e2 vec3, du1, dv1, du2, dv2 float64, N vec3, c [4]float32, scale float64) (vec3, bool) {
 	a, b := e2.cross(N), N.cross(e1)
 	T := a.mul(du1).add(b.mul(du2))
 	B := a.mul(-dv1).add(b.mul(-dv2))
@@ -325,7 +333,7 @@ func normalMapFrame(e1, e2 vec3, du1, dv1, du2, dv2 float64, N vec3, c [4]float3
 		return N, false
 	}
 	sc := 1 / math.Sqrt(det)
-	mn := vec3{float64(c[0])*2 - 1, float64(c[1])*2 - 1, float64(c[2])*2 - 1}
+	mn := vec3{(float64(c[0])*2 - 1) * scale, (float64(c[1])*2 - 1) * scale, float64(c[2])*2 - 1}
 	return T.mul(sc * mn[0]).add(B.mul(sc * mn[1])).add(N.mul(mn[2])).norm(), true
 }
 

@@ -2,8 +2,10 @@
 // files of all third-party code compiled into the rodin3d-mcp binary, for
 // every release target. That is the Go standard library and runtime, each
 // Go module the build links (with the license files of vendored code inside
-// them), and the code of the embedded Draco decoder module (Draco, wasi-libc
-// and the LLVM runtimes, from internal/draco).
+// them), the code of the embedded Draco decoder module (Draco, wasi-libc
+// and the LLVM runtimes, from internal/draco), the meshoptimizer decoder
+// port (internal/meshopt) and the embedded KTX2 transcoder module
+// (basis_universal and zstd, from internal/basisu).
 //
 // Run from the repository root:
 //
@@ -41,9 +43,27 @@ var targets = [][2]string{
 // licenseFile matches the names of license and notice files.
 var licenseFile = regexp.MustCompile(`(?i)^(licen[cs]e|copying|notice|patents|unlicense)([-._].*)?$`)
 
-// wasmFiles are the notice and license files of the Draco decoder module,
-// in the order they are printed.
-var wasmFiles = []string{
+// ownSections are the notice and license files of the third-party code in
+// this repository, by section, in the order they are printed.
+var ownSections = []struct {
+	title string
+	files []string
+}{
+	{"The Draco decoder module internal/draco/draco_decoder.wasm", dracoFiles},
+	{"The meshoptimizer decoder port internal/meshopt", []string{
+		"internal/meshopt/NOTICE",
+		"internal/meshopt/LICENSE-meshoptimizer",
+	}},
+	// Its wasi-libc and LLVM parts are those of the Draco module's section.
+	{"The KTX2 transcoder module internal/basisu/ktx2_transcoder.wasm", []string{
+		"internal/basisu/NOTICE",
+		"internal/basisu/LICENSE-basis_universal",
+		"internal/basisu/LICENSE-zstd",
+	}},
+}
+
+// dracoFiles are the notice and license files of the Draco decoder module.
+var dracoFiles = []string{
 	"internal/draco/NOTICE",
 	"internal/draco/LICENSE-draco",
 	"internal/draco/licenses/wasi-libc/LICENSE",
@@ -147,10 +167,12 @@ func build() (string, error) {
 		}
 	}
 
-	section(&b, "The Draco decoder module internal/draco/draco_decoder.wasm")
-	for _, f := range wasmFiles {
-		if err := file(&b, filepath.FromSlash(f), f); err != nil {
-			return "", err
+	for _, s := range ownSections {
+		section(&b, s.title)
+		for _, f := range s.files {
+			if err := file(&b, filepath.FromSlash(f), f); err != nil {
+				return "", err
+			}
 		}
 	}
 	return b.String(), nil

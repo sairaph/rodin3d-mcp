@@ -12,9 +12,10 @@ import (
 	_ "golang.org/x/image/webp" // card textures may be webp
 )
 
-// Texture is an 8-bit RGBA image sampled bilinearly with repeat wrapping.
-// SRGB textures are decoded to linear on sampling (three.js colorSpace srgb);
-// others are used as stored (NoColorSpace).
+// Texture is an 8-bit RGBA image sampled bilinearly, with repeat wrapping
+// unless a material's sampler says otherwise (SampleWrap). SRGB textures
+// are decoded to linear on sampling (three.js colorSpace srgb); others are
+// used as stored (NoColorSpace). Textures that share Pix share an image.
 type Texture struct {
 	W, H int
 	Pix  []uint8
@@ -75,6 +76,15 @@ func encodeSRGB(c float64) float64 {
 // maxTexturePixels bounds a decoded texture (8192 x 8192, 256 MiB as RGBA).
 const maxTexturePixels = 8192 * 8192
 
+// CheckTextureSize returns an error when a w x h texture is empty or
+// larger than a texture may be decoded.
+func CheckTextureSize(w, h int) error {
+	if w <= 0 || h <= 0 || w > maxTexturePixels/h {
+		return fmt.Errorf("render3d: texture of %dx%d pixels is too large", w, h)
+	}
+	return nil
+}
+
 // DecodeTexture decodes a PNG, JPEG or WebP image. srgb marks colour data
 // (sampled as linear after the sRGB decode); other maps are used as stored.
 func DecodeTexture(b []byte, srgb bool) (*Texture, error) {
@@ -82,8 +92,8 @@ func DecodeTexture(b []byte, srgb bool) (*Texture, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > maxTexturePixels {
-		return nil, fmt.Errorf("render3d: texture of %dx%d pixels is too large", cfg.Width, cfg.Height)
+	if err := CheckTextureSize(cfg.Width, cfg.Height); err != nil {
+		return nil, err
 	}
 	img, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
@@ -97,7 +107,10 @@ func DecodeTexture(b []byte, srgb bool) (*Texture, error) {
 
 // Sample returns linear RGBA at uv (glTF convention: v down from the top, the
 // way three.js loads glTF textures with flipY false).
-func (t *Texture) Sample(u, v float64) [4]float32 {
+func (t *Texture) Sample(u, v float64) [4]float32 { return t.SampleWrap(u, v, WrapRepeat, WrapRepeat) }
+
+// SampleWrap is Sample with the wrap modes of u and v.
+func (t *Texture) SampleWrap(u, v float64, wu, wv Wrap) [4]float32 {
 	lut := &linLUT
 	if t.SRGB {
 		lut = &srgbLUT
@@ -106,8 +119,8 @@ func (t *Texture) Sample(u, v float64) [4]float32 {
 	y := v*float64(t.H) - 0.5
 	fx, fy := math.Floor(x), math.Floor(y)
 	ax, ay := float32(x-fx), float32(y-fy)
-	x0, y0 := wrap(int(fx), t.W), wrap(int(fy), t.H)
-	x1, y1 := wrap(int(fx)+1, t.W), wrap(int(fy)+1, t.H)
+	x0, y0 := wrapIndex(int(fx), t.W, wu), wrapIndex(int(fy), t.H, wv)
+	x1, y1 := wrapIndex(int(fx)+1, t.W, wu), wrapIndex(int(fy)+1, t.H, wv)
 	var out [4]float32
 	o00, o10 := (y0*t.W+x0)*4, (y0*t.W+x1)*4
 	o01, o11 := (y1*t.W+x0)*4, (y1*t.W+x1)*4
@@ -129,6 +142,20 @@ func wrap(i, n int) int {
 		i += n
 	}
 	return i
+}
+
+// wrapIndex maps texel index i into [0, n) by wrap mode w.
+func wrapIndex(i, n int, w Wrap) int {
+	switch w {
+	case WrapClamp:
+		return clampI(i, 0, n-1)
+	case WrapMirror:
+		if i = wrap(i, 2*n); i >= n {
+			i = 2*n - 1 - i
+		}
+		return i
+	}
+	return wrap(i, n)
 }
 
 func clampI(v, lo, hi int) int {

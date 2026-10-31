@@ -91,9 +91,9 @@ func (m Mode) Describe() string {
 	case ModeGeometry:
 		return "flat-shaded grey metal (web Geometry)"
 	case ModePBR:
-		return "the PBR textures: diffuse, normal, roughness and metalness maps (web PBR)"
+		return "the PBR material: diffuse, normal, roughness and metalness maps, and a model file's occlusion and emission (web PBR)"
 	case ModeShaded:
-		return "the shaded texture, unlit (web Shaded)"
+		return "the shaded texture, unlit; for a model file, its base colour, or its emission when it has no base colour texture (web Shaded)"
 	case ModeToon:
 		return "toon shading with outlines (web Toon)"
 	case ModeTracer:

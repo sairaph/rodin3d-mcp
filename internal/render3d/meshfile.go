@@ -21,7 +21,7 @@ const (
 )
 
 // EncodeMesh writes m in the mesh file format, so a stage mesh is decoded
-// once and read back in milliseconds.
+// once and read back in milliseconds. Materials are not written.
 func EncodeMesh(m *Mesh, draft bool) []byte {
 	var flags uint32
 	if m.Nrm != nil {
@@ -118,8 +118,27 @@ func DecodeMesh(b []byte) (*Mesh, bool, error) {
 }
 
 // Validate checks that m is a renderable triangle list: whole triangles,
-// indices in range, attribute arrays as long as the positions.
+// indices in range, attribute arrays as long as the positions, a material
+// index per triangle naming one of its materials.
 func (m *Mesh) Validate() error {
+	if m.TriMat != nil && (len(m.TriMat) != len(m.Idx)/3 || len(m.Mats) == 0) {
+		return errors.New("render3d: the mesh's material indices do not match its triangles")
+	}
+	for _, k := range m.TriMat {
+		if int(k) >= len(m.Mats) {
+			return errors.New("render3d: a material index is out of range")
+		}
+	}
+	for _, mt := range m.Mats {
+		if mt == nil {
+			return errors.New("render3d: the mesh has a nil material")
+		}
+		for _, r := range []*TexRef{mt.Base, mt.MetalRough, mt.Normal, mt.Occlusion, mt.Emission} {
+			if r != nil && (r.Tex == nil || r.Tex.W <= 0 || r.Tex.H <= 0 || len(r.Tex.Pix) < r.Tex.W*r.Tex.H*4) {
+				return errors.New("render3d: a material map has no picture")
+			}
+		}
+	}
 	if len(m.Pos) == 0 || len(m.Idx) < 3 || len(m.Idx)%3 != 0 {
 		return errors.New("render3d: the mesh has no triangles")
 	}

@@ -9,8 +9,9 @@ import (
 // while the camera moves: the vertices are clustered on a uniform grid over
 // the mesh's box, each cluster becomes one vertex (the mean position, the
 // normalised mean normal, the first vertex's texture coordinates), and
-// triangles whose corners fall into fewer than three clusters are dropped.
-// The grid is sized by up to eight trial clusterings. A mesh at or under
+// triangles whose corners fall into fewer than three clusters are dropped;
+// the others keep their material. The grid is sized by up to eight trial
+// clusterings. A mesh at or under
 // target is returned as it is. Seams of the texture layout are not kept, so
 // textured modes show smeared colours along them; the full-quality frame
 // uses m.
@@ -63,6 +64,9 @@ func Simplify(m *Mesh, target int) *Mesh {
 	// cluster sizes the index slice for half the source's triangles; the
 	// copy is kept as long as the mesh is shown, so it keeps only what it uses.
 	best.Idx = slices.Clone(best.Idx)
+	if best.TriMat != nil {
+		best.TriMat = slices.Clone(best.TriMat)
+	}
 	return best
 }
 
@@ -128,12 +132,19 @@ func cluster(m *Mesh, mn vec3, ext float64, res int) *Mesh {
 		out.UV = uv
 	}
 	out.Idx = make([]uint32, 0, len(m.Idx)/2)
+	out.Mats = m.Mats
+	if m.TriMat != nil {
+		out.TriMat = make([]uint16, 0, len(m.TriMat)/2)
+	}
 	for t := 0; t+2 < len(m.Idx); t += 3 {
 		a, b, c := of[m.Idx[t]], of[m.Idx[t+1]], of[m.Idx[t+2]]
 		if a == b || b == c || a == c {
 			continue
 		}
 		out.Idx = append(out.Idx, uint32(a), uint32(b), uint32(c))
+		if m.TriMat != nil {
+			out.TriMat = append(out.TriMat, m.TriMat[t/3])
+		}
 	}
 	return out
 }

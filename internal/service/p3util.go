@@ -282,11 +282,11 @@ func (s *Service) renderModelFile(ctx context.Context, path string, mode render3
 		return nil, err
 	}
 	defer release()
-	m, err := modelfile.Load(ctx, path, s.decoder)
+	m, err := modelfile.Load(ctx, path, s.decoders())
 	if err != nil {
 		return nil, err
 	}
-	img, _, err := render3d.Render(m.Mesh, m.Maps, render3d.Options{Mode: mode, View: view, Size: size, Cancel: ctx.Done()})
+	img, _, err := render3d.Render(m.Mesh, nil, render3d.Options{Mode: mode, View: view, Size: size, Cancel: ctx.Done()})
 	if err != nil {
 		return nil, err
 	}

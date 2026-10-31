@@ -40,8 +40,8 @@ func TestNormalMapOrientation(t *testing.T) {
 			const px = 0.01
 			f := frag{face: face, uv: [2]float64{0.5, 0.5}, dPdx: right.mul(px), dPdy: up.mul(-px),
 				dUVdx: [2]float64{px, 0}, dUVdy: [2]float64{0, px}}
-			s := &shadeCtx{maps: &Maps{Normal: texel(tc.mn)}}
-			if got := s.normalMap(&f, N); got.dot(want) <= 0.5 {
+			r := &TexRef{Tex: texel(tc.mn)}
+			if got := normalMap(&f, N, r, 1); got.dot(want) <= 0.5 {
 				t.Errorf("raster %s, face %v: normal %v, want it towards %v", tc.name, face, got, want)
 			}
 			// Tracer: from the triangle's edges. A face seen from behind has
@@ -53,7 +53,7 @@ func TestNormalMapOrientation(t *testing.T) {
 			}
 			e1, e2 := p1.sub(p0), p2.sub(p0)
 			c := texel(tc.mn).Sample(0.5, 0.5)
-			got, ok := normalMapFrame(e1, e2, uv1[0]-uv0[0], uv1[1]-uv0[1], uv2[0]-uv0[0], uv2[1]-uv0[1], N, c)
+			got, ok := normalMapFrame(e1, e2, uv1[0]-uv0[0], uv1[1]-uv0[1], uv2[0]-uv0[0], uv2[1]-uv0[1], N, c, 1)
 			if !ok || got.dot(want) <= 0.5 {
 				t.Errorf("tracer %s, face %v: normal %v, want it towards %v", tc.name, face, got, want)
 			}

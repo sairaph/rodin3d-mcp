@@ -135,17 +135,21 @@ func (a *App) loadPane(p *pane) {
 				if !current() {
 					return
 				}
-				p.mesh, p.simple, p.maps, p.frame, p.modes, p.status = m.Mesh, simple, m.Maps, render3d.FrameOf(m.Mesh), modes, "ready"
+				p.mesh, p.simple, p.frame, p.modes, p.status = m.Mesh, simple, render3d.FrameOf(m.Mesh), modes, "ready"
+				// The note says what of the file is not drawn, and a mode
+				// change the load made.
+				p.note = m.Note()
 				if !slices.Contains(p.modes, a.mode) {
 					// a.mode is set before the load only when a show asked for it.
 					asked := a.mode
 					a.setMode(defaultMode(p.modes))
 					if asked != "" {
-						p.note = fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
+						changed := fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
+						p.note = strings.Join(slices.DeleteFunc([]string{changed, p.note}, func(s string) bool { return s == "" }), "; ")
 					}
 				}
-				if m.Maps != nil && len(a.textures) == 0 {
-					a.textures = modelMapThumbs(m.Maps)
+				if len(m.Mesh.Mats) > 0 && len(a.textures) == 0 {
+					a.textures = modelMapThumbs(m.Mesh.Mats)
 				}
 				a.dirty()
 				a.trimSoon()
@@ -451,19 +455,37 @@ func (a *App) taskMaps(vt *service.ViewTask, st service.ViewStage, names []strin
 	}
 }
 
-// modelMapThumbs lists a model file's maps in the textures panel; their
-// pixels are the pane's (no copy).
-func modelMapThumbs(m *render3d.Maps) []*thumb {
+// modelMapThumbs lists a model file's textures in the textures panel, each
+// image once (under the first map that samples it): base_color,
+// metallic_roughness, normal, occlusion and emissive, as
+// <material>/<map> when the file has several materials (a material without
+// a name, or with another's, is "material <n>"). Their pixels are the
+// pane's (no copy).
+func modelMapThumbs(mats []*render3d.Material) []*thumb {
 	var out []*thumb
-	add := func(name string, t *render3d.Texture) {
-		if t != nil {
-			out = append(out, &thumb{kind: "map", name: name, w: t.W, h: t.H, src: func() (image.Image, error) { return textureImage(t), nil }})
+	seen := map[*uint8]bool{} // textures that share an image share its pixels
+	for i, mt := range mats {
+		prefix := ""
+		if len(mats) > 1 {
+			name := mt.Name
+			if name == "" || slices.ContainsFunc(mats[:i], func(o *render3d.Material) bool { return o.Name == name }) ||
+				slices.ContainsFunc(mats[i+1:], func(o *render3d.Material) bool { return o.Name == name }) {
+				name = fmt.Sprintf("material %d", i)
+			}
+			prefix = name + "/"
+		}
+		for _, m := range []struct {
+			name string
+			ref  *render3d.TexRef
+		}{{"base_color", mt.Base}, {"metallic_roughness", mt.MetalRough}, {"normal", mt.Normal}, {"occlusion", mt.Occlusion}, {"emissive", mt.Emission}} {
+			if m.ref == nil || len(m.ref.Tex.Pix) == 0 || seen[&m.ref.Tex.Pix[0]] {
+				continue
+			}
+			seen[&m.ref.Tex.Pix[0]] = true
+			t := m.ref.Tex
+			out = append(out, &thumb{kind: "map", name: prefix + m.name, w: t.W, h: t.H, src: func() (image.Image, error) { return textureImage(t), nil }})
 		}
 	}
-	add("diffuse", m.Diffuse)
-	add("pbr", m.PBR)
-	add("normal", m.Normal)
-	add("shaded", m.Shaded)
 	return out
 }
 

@@ -294,9 +294,20 @@ func (s *Service) viewMap(ctx context.Context, uuid string, a ViewAsset, kind st
 	return s.viewTexture(mapFile{kind: kind, data: b, sum: sum(b)})
 }
 
-// ViewModel reads a local model file.
-func (s *Service) ViewModel(ctx context.Context, path string) (*modelfile.Model, error) {
-	return modelfile.Load(ctx, path, s.decoders())
+// ViewModel reads a local model file; textures decodes its material maps.
+func (s *Service) ViewModel(ctx context.Context, path string, textures bool) (*modelfile.Model, error) {
+	return modelfile.Load(ctx, path, s.decoders(), textures)
+}
+
+// ViewModelTextures returns m with its material maps decoded.
+func (s *Service) ViewModelTextures(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error) {
+	return m.WithTextures(ctx, s.decoders())
+}
+
+// ViewModelPicture decodes glTF texture t of the model file at path, for
+// the textures panel.
+func (s *Service) ViewModelPicture(ctx context.Context, path string, t int) (*render3d.Texture, error) {
+	return modelfile.Picture(ctx, path, s.decoders(), t)
 }
 
 // ModelModes lists the render modes of a local model: the confirmed-geometry

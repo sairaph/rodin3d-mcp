@@ -47,7 +47,7 @@ func decoders(t *testing.T) Decoders {
 
 func load(t *testing.T, name string) *Model {
 	t.Helper()
-	m, err := Load(context.Background(), filepath.Join("testdata", name), decoders(t))
+	m, err := Load(context.Background(), filepath.Join("testdata", name), decoders(t), true)
 	if err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
@@ -236,13 +236,13 @@ func TestRefusedAndNoted(t *testing.T) {
 		doc["extensionsUsed"] = []any{"EXT_mesh_gpu_instancing"}
 		doc["extensionsRequired"] = []any{"EXT_mesh_gpu_instancing"}
 	})
-	if _, err := Load(ctx, p, decoders(t)); err == nil || !strings.Contains(err.Error(), "EXT_mesh_gpu_instancing") {
+	if _, err := Load(ctx, p, decoders(t), true); err == nil || !strings.Contains(err.Error(), "EXT_mesh_gpu_instancing") {
 		t.Errorf("unknown required extension: %v", err)
 	}
 	p = rewrite(t, "cube_png.glb", func(doc map[string]any, _ []byte) {
 		doc["extensionsRequired"] = []any{"KHR_materials_clearcoat"}
 	})
-	if _, err := Load(ctx, p, decoders(t)); err != nil {
+	if _, err := Load(ctx, p, decoders(t), true); err != nil {
 		t.Errorf("a required material extension: %v", err)
 	}
 	// Corrupt the compressed vertex stream of cube_meshopt.
@@ -253,7 +253,7 @@ func TestRefusedAndNoted(t *testing.T) {
 			bin[i] = 0xff
 		}
 	})
-	if _, err := Load(ctx, p, decoders(t)); err == nil {
+	if _, err := Load(ctx, p, decoders(t), true); err == nil {
 		t.Error("corrupt meshopt data: no error")
 	}
 	// Corrupt the base colour KTX2 picture; mark the material blended and
@@ -269,7 +269,7 @@ func TestRefusedAndNoted(t *testing.T) {
 		prim := doc["meshes"].([]any)[0].(map[string]any)["primitives"].([]any)[0].(map[string]any)
 		prim["attributes"].(map[string]any)["COLOR_0"] = prim["attributes"].(map[string]any)["NORMAL"]
 	})
-	m, err := Load(ctx, p, decoders(t))
+	m, err := Load(ctx, p, decoders(t), true)
 	if err != nil {
 		t.Fatalf("corrupt KTX2 picture: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestRefusedAndNoted(t *testing.T) {
 		t.Errorf("pbr: %v", err)
 	}
 	// Without a KTX2 transcoder the textures are notes, not an error.
-	m, err = Load(ctx, filepath.Join("testdata", "cube_etc1s.glb"), Decoders{})
+	m, err = Load(ctx, filepath.Join("testdata", "cube_etc1s.glb"), Decoders{}, true)
 	if err != nil || m.Mesh.Mats[0].Base != nil || !strings.Contains(m.Note(), "no KTX2 transcoder") {
 		t.Errorf("no transcoder: %v, note %q", err, m.Note())
 	}
@@ -300,14 +300,14 @@ func TestNoMaterialsNoTextures(t *testing.T) {
 	p := rewrite(t, "cube_png.glb", func(doc map[string]any, _ []byte) {
 		delete(doc["meshes"].([]any)[0].(map[string]any)["primitives"].([]any)[0].(map[string]any), "material")
 	})
-	m, err := Load(ctx, p, decoders(t))
+	m, err := Load(ctx, p, decoders(t), true)
 	if err != nil || len(m.Mesh.Mats) != 0 {
 		t.Fatalf("no material: %v, %d materials", err, len(m.Mesh.Mats))
 	}
 	p = rewrite(t, "cube_png.glb", func(doc map[string]any, _ []byte) {
 		delete(doc["meshes"].([]any)[0].(map[string]any)["primitives"].([]any)[0].(map[string]any)["attributes"].(map[string]any), "TEXCOORD_0")
 	})
-	m, err = Load(ctx, p, decoders(t))
+	m, err = Load(ctx, p, decoders(t), true)
 	if err != nil || len(m.Mesh.Mats) != 1 || m.Mesh.Mats[0].Base != nil || m.Mesh.Mats[0].Metallic != 0.5 {
 		t.Fatalf("no texture coordinates: %v, %+v", err, m.Mesh.Mats)
 	}
@@ -324,5 +324,61 @@ func TestTextureSources(t *testing.T) {
 	}
 	if got := tx.Sources(); !slices.Equal(got, []int{0, 1, 2}) {
 		t.Errorf("sources %v", got)
+	}
+}
+
+// TestTexturesOnDemand: without textures Load decodes no picture (a KTX2
+// file does not even start the transcoder) and the materials keep their
+// factors; WithTextures decodes each image once and shares the geometry;
+// WithoutTextures releases the maps; Picture decodes one texture.
+func TestTexturesOnDemand(t *testing.T) {
+	ctx := context.Background()
+	started := false
+	dec := decoders(t)
+	lazy := Decoders{Draco: dec.Draco, KTX2: func() (*basisu.Decoder, error) { started = true; return dec.KTX2() }}
+	path := filepath.Join("testdata", "cube_etc1s.glb")
+	m, err := Load(ctx, path, lazy, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt := m.Mesh.Mats[0]
+	if started || !m.Pending || mt.Base != nil || mt.MetalRough != nil || mt.Metallic != 0.5 || len(m.Textures) != 3 {
+		t.Fatalf("untextured load: transcoder started %v, pending %v, base %v, metal %v, %d textures", started, m.Pending, mt.Base != nil, mt.Metallic, len(m.Textures))
+	}
+	tm, err := m.WithTextures(ctx, lazy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt = tm.Mesh.Mats[0]
+	if !started || tm.Pending || mt.Base == nil || mt.Occlusion == nil || &mt.Occlusion.Tex.Pix[0] != &mt.MetalRough.Tex.Pix[0] {
+		t.Fatal("WithTextures did not decode the maps once each")
+	}
+	if &tm.Mesh.Pos[0] != &m.Mesh.Pos[0] || m.Mesh.Mats[0].Base != nil {
+		t.Error("WithTextures copied the geometry or changed the model it came from")
+	}
+	if again, _ := tm.WithTextures(ctx, lazy); again != tm {
+		t.Error("WithTextures on a textured model decoded again")
+	}
+	bare := tm.WithoutTextures()
+	if !bare.Pending || bare.Mesh.Mats[0].Base != nil || bare.Mesh.Mats[0].Roughness != 0.8 || tm.Mesh.Mats[0].Base == nil {
+		t.Error("WithoutTextures did not release the maps, or changed the textured model")
+	}
+	for i, want := range []string{"base_color", "metallic_roughness", "normal"} {
+		if m.Textures[i].Name != want {
+			t.Errorf("texture %d named %q, want %q", i, m.Textures[i].Name, want)
+		}
+	}
+	pic, err := Picture(ctx, path, lazy, m.Textures[0].Texture)
+	if err != nil || pic.W != 16 {
+		t.Errorf("Picture: %v", err)
+	}
+	// Several materials: names under the material, each image once.
+	mm := load(t, "cube_multi.glb")
+	var names []string
+	for _, ti := range mm.Textures {
+		names = append(names, ti.Name)
+	}
+	if !slices.Equal(names, []string{"first/base_color", "first/metallic_roughness"}) {
+		t.Errorf("multi-material names %v", names)
 	}
 }

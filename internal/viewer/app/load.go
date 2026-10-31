@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/imaging"
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
@@ -120,10 +122,20 @@ func (a *App) loadPane(p *pane) {
 	if p.vt != nil {
 		uuid = p.vt.UUID
 	}
+	// A model file's maps come with it when the mode shown will sample them
+	// (no mode yet: the default, pbr when it has materials).
+	textures := a.mode == "" || modeNeedsMaps(a.mode)
 	go func() {
+		// A file that breaks the reader fails its pane, not the window.
+		defer func() {
+			if v := recover(); v != nil {
+				log.Printf("load panicked: %v\n%s", v, debug.Stack())
+				failed(fmt.Errorf("the reader failed on this content: %v", v))
+			}
+		}()
 		t0 := time.Now()
 		if kind == viewer.KindModelFile {
-			m, err := a.svc.ViewModel(a.ctx, file)
+			m, err := a.svc.ViewModel(a.ctx, file, textures)
 			if err != nil {
 				failed(err)
 				return
@@ -135,21 +147,21 @@ func (a *App) loadPane(p *pane) {
 				if !current() {
 					return
 				}
-				p.mesh, p.simple, p.frame, p.modes, p.status = m.Mesh, simple, render3d.FrameOf(m.Mesh), modes, "ready"
-				// The note says what of the file is not drawn, and a mode
-				// change the load made.
-				p.note = m.Note()
+				p.model, p.mesh, p.simple, p.frame, p.modes, p.status = m, m.Mesh, simple, render3d.FrameOf(m.Mesh), modes, "ready"
+				p.modeNote = ""
 				if !slices.Contains(p.modes, a.mode) {
 					// a.mode is set before the load only when a show asked for it.
 					asked := a.mode
 					a.setMode(defaultMode(p.modes))
 					if asked != "" {
-						changed := fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
-						p.note = strings.Join(slices.DeleteFunc([]string{changed, p.note}, func(s string) bool { return s == "" }), "; ")
+						p.modeNote = fmt.Sprintf("mode %s is not available for this model, so it shows %s", asked, a.mode)
 					}
+				} else {
+					a.keepModelMaps(p, a.mode)
 				}
-				if len(m.Mesh.Mats) > 0 && len(a.textures) == 0 {
-					a.textures = modelMapThumbs(m.Mesh.Mats)
+				p.note = modelNote(p)
+				if len(m.Textures) > 0 && len(a.textures) == 0 {
+					a.textures = a.modelMapThumbs(file, m.Textures)
 				}
 				a.dirty()
 				a.trimSoon()
@@ -211,9 +223,20 @@ func sampledMaps(p *pane, mode string) []string {
 	return out
 }
 
+// modelMaps is the one "map" kind of a model file pane: the pictures of
+// all its materials' maps, decoded together.
+const modelMaps = "textures"
+
 // missingMaps lists the texture maps mode samples that a task pane has not
-// loaded yet.
+// loaded yet; for a model file pane, modelMaps while its materials' maps
+// wait.
 func missingMaps(p *pane, mode string) []string {
+	if p.kind == viewer.KindModelFile {
+		if p.model != nil && p.model.Pending && modeNeedsMaps(mode) {
+			return []string{modelMaps}
+		}
+		return nil
+	}
 	var out []string
 	for _, k := range sampledMaps(p, mode) {
 		if p.maps.Map(k) == nil {
@@ -266,6 +289,15 @@ func mapCount(m *render3d.Maps) int {
 	return n
 }
 
+// paneMapCount is the maps a pane holds, for its render key: a task pane's
+// maps, or 1 while a model file pane holds its materials' maps.
+func paneMapCount(p *pane) int {
+	if p.model != nil && len(p.model.Textures) > 0 && !p.model.Pending {
+		return 1
+	}
+	return mapCount(p.maps)
+}
+
 // mapsError says why a ready task pane cannot draw mode: a map mode samples
 // failed to load ("" when none did). Only that mode and the others that
 // sample the map are affected; the mesh stays and every other mode draws.
@@ -276,7 +308,11 @@ func mapsError(p *pane, mode string) string {
 			if !strings.HasSuffix(msg, ".") {
 				msg += "."
 			}
-			why = append(why, "the "+k+" map did not load: "+msg)
+			what := "the " + k + " map"
+			if k == modelMaps {
+				what = "the textures"
+			}
+			why = append(why, what+" did not load: "+msg)
 		}
 	}
 	if len(why) == 0 {
@@ -286,13 +322,17 @@ func mapsError(p *pane, mode string) string {
 }
 
 // setMode shows mode m. Each task pane keeps only the maps m samples (the
-// maps of earlier modes are released; switching back reads them again), and
-// map failures are forgotten, so a textured mode chosen again (the same one
+// maps of earlier modes are released; switching back reads them again), a
+// model file pane its materials' maps only when m samples them, and map
+// failures are forgotten, so a textured mode chosen again (the same one
 // too) loads its missing maps again.
 func (a *App) setMode(m string) {
 	a.mapsTry++
 	for _, p := range a.panes {
 		p.mapsFailed = nil
+		if p.kind == viewer.KindModelFile {
+			a.keepModelMaps(p, m)
+		}
 		if p.kind != viewer.KindTask {
 			continue
 		}
@@ -305,10 +345,46 @@ func (a *App) setMode(m string) {
 	a.dirty()
 }
 
+// keepModelMaps releases the materials' maps of a model file pane when mode
+// samples none (the textured modes decode them again).
+func (a *App) keepModelMaps(p *pane, mode string) {
+	if p.model == nil || modeNeedsMaps(mode) {
+		return
+	}
+	if bare := p.model.WithoutTextures(); bare != p.model {
+		p.model, p.mesh, p.simple = bare, bare.Mesh, withMats(p.simple, bare.Mesh.Mats)
+		a.trimSoon()
+	}
+}
+
+// withMats is a copy of mesh with materials mats (a quick copy keeps the
+// material indices of the mesh it was made from); nil stays nil.
+func withMats(mesh *render3d.Mesh, mats []*render3d.Material) *render3d.Mesh {
+	if mesh == nil {
+		return nil
+	}
+	c := *mesh
+	c.Mats = mats
+	return &c
+}
+
+// modelNote is a model file pane's note: a mode change its load made, and
+// what of the file is drawn without.
+func modelNote(p *pane) string {
+	var parts []string
+	for _, s := range []string{p.modeNote, p.model.Note()} {
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // loadPaneMaps loads the texture maps of kinds into a ready task pane whose
-// mode samples them; mapsWanted marks the load. The pane keeps the maps the
-// mode shown when the load ends samples; a map that fails is recorded in
-// mapsFailed (mapsError), unless the mode was chosen again meanwhile.
+// mode samples them, or a model file pane's materials' maps; mapsWanted
+// marks the load. The pane keeps the maps the mode shown when the load ends
+// samples; a map that fails is recorded in mapsFailed (mapsError), unless
+// the mode was chosen again meanwhile.
 func (a *App) loadPaneMaps(p *pane, kinds []string) {
 	if p.mapsWanted || p.status != "ready" {
 		return
@@ -316,6 +392,34 @@ func (a *App) loadPaneMaps(p *pane, kinds []string) {
 	gen, cgen, try := p.gen, a.contentGen, a.mapsTry
 	p.mapsWanted = true
 	a.dirty()
+	if p.kind == viewer.KindModelFile {
+		model, file := p.model, p.file
+		go func() {
+			t0 := time.Now()
+			m, err := a.modelTextures(a.ctx, model)
+			if err == nil {
+				log.Printf("model %s: textures in %v", filepath.Base(file), time.Since(t0).Round(time.Millisecond))
+			}
+			a.post(func() {
+				if a.contentGen != cgen || p.gen != gen {
+					return
+				}
+				p.mapsWanted = false
+				switch {
+				case err != nil:
+					if a.mapsTry == try {
+						p.mapsFailed = map[string]string{modelMaps: service.Classify(err).Message}
+					}
+				case modeNeedsMaps(a.mode) && p.model == model:
+					p.model, p.mesh, p.simple = m, m.Mesh, withMats(p.simple, m.Mesh.Mats)
+					p.note = modelNote(p)
+				}
+				a.dirty()
+				a.trimSoon()
+			})
+		}()
+		return
+	}
 	uuid, stage := p.vt.UUID, p.stage
 	go func() {
 		loaded := &render3d.Maps{}
@@ -455,36 +559,19 @@ func (a *App) taskMaps(vt *service.ViewTask, st service.ViewStage, names []strin
 	}
 }
 
-// modelMapThumbs lists a model file's textures in the textures panel, each
-// image once (under the first map that samples it): base_color,
-// metallic_roughness, normal, occlusion and emissive, as
-// <material>/<map> when the file has several materials (a material without
-// a name, or with another's, is "material <n>"). Their pixels are the
-// pane's (no copy).
-func modelMapThumbs(mats []*render3d.Material) []*thumb {
+// modelMapThumbs lists a model file's textures in the textures panel
+// (modelfile.TextureInfo names them); each is decoded from the file when it
+// is shown (loadTexture), as a task's maps are.
+func (a *App) modelMapThumbs(file string, textures []modelfile.TextureInfo) []*thumb {
 	var out []*thumb
-	seen := map[*uint8]bool{} // textures that share an image share its pixels
-	for i, mt := range mats {
-		prefix := ""
-		if len(mats) > 1 {
-			name := mt.Name
-			if name == "" || slices.ContainsFunc(mats[:i], func(o *render3d.Material) bool { return o.Name == name }) ||
-				slices.ContainsFunc(mats[i+1:], func(o *render3d.Material) bool { return o.Name == name }) {
-				name = fmt.Sprintf("material %d", i)
+	for _, ti := range textures {
+		out = append(out, &thumb{kind: "map", name: ti.Name, src: func() (image.Image, error) {
+			t, err := a.modelPicture(a.ctx, file, ti.Texture)
+			if err != nil {
+				return nil, err
 			}
-			prefix = name + "/"
-		}
-		for _, m := range []struct {
-			name string
-			ref  *render3d.TexRef
-		}{{"base_color", mt.Base}, {"metallic_roughness", mt.MetalRough}, {"normal", mt.Normal}, {"occlusion", mt.Occlusion}, {"emissive", mt.Emission}} {
-			if m.ref == nil || len(m.ref.Tex.Pix) == 0 || seen[&m.ref.Tex.Pix[0]] {
-				continue
-			}
-			seen[&m.ref.Tex.Pix[0]] = true
-			t := m.ref.Tex
-			out = append(out, &thumb{kind: "map", name: prefix + m.name, w: t.W, h: t.H, src: func() (image.Image, error) { return textureImage(t), nil }})
-		}
+			return textureImage(t), nil
+		}})
 	}
 	return out
 }

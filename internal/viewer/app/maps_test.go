@@ -433,32 +433,3 @@ func TestPaneMapsFailure(t *testing.T) {
 		t.Fatal("the new try's failure was not recorded")
 	}
 }
-
-// TestModelMapThumbs: a model file's textures panel lists each picture
-// once, named by map, under its material when there are several (a
-// material without a unique name by its number).
-func TestModelMapThumbs(t *testing.T) {
-	tex := func() *render3d.Texture { return &render3d.Texture{W: 1, H: 1, Pix: []uint8{1, 2, 3, 255}} }
-	orm, base := tex(), tex()
-	one := render3d.DefaultMaterial()
-	one.Base, one.MetalRough, one.Occlusion = &render3d.TexRef{Tex: base}, &render3d.TexRef{Tex: orm}, &render3d.TexRef{Tex: orm}
-	names := func(ts []*thumb) []string {
-		var out []string
-		for _, th := range ts {
-			out = append(out, th.name)
-		}
-		return out
-	}
-	if got := names(modelMapThumbs([]*render3d.Material{one})); !slices.Equal(got, []string{"base_color", "metallic_roughness"}) {
-		t.Errorf("one material: %v", got)
-	}
-	one.Name = "body"
-	two := render3d.DefaultMaterial()
-	two.Base, two.Emission = &render3d.TexRef{Tex: base}, &render3d.TexRef{Tex: tex()}
-	three := render3d.DefaultMaterial()
-	three.Name, three.Normal = "body", &render3d.TexRef{Tex: tex()}
-	got := names(modelMapThumbs([]*render3d.Material{one, two, three}))
-	if want := []string{"material 0/base_color", "material 0/metallic_roughness", "material 1/emissive", "material 2/normal"}; !slices.Equal(got, want) {
-		t.Errorf("three materials: %v, want %v", got, want)
-	}
-}

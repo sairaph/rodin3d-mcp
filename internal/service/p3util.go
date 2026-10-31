@@ -295,7 +295,8 @@ func (s *Service) renderModel(ctx context.Context, path, mode string, view rende
 		return nil, nil, "", err
 	}
 	defer release()
-	m, err := modelfile.Load(ctx, path, s.decoders())
+	// The maps are decoded only for a mode that samples them; "" may pick pbr.
+	m, err := modelfile.Load(ctx, path, s.decoders(), mode == "" || render3d.Mode(mode).NeedsMaps())
 	if err != nil {
 		return nil, nil, "", err
 	}

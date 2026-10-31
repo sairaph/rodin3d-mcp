@@ -487,6 +487,23 @@ func compSize(t int) int {
 	return 0
 }
 
+// inView reports whether count elements of size bytes, stride bytes apart
+// from offset, lie in a view of n bytes; it cannot overflow, so a huge
+// count or a negative stride is simply out of range.
+func inView(count, offset, stride, size, n int) bool {
+	if count < 0 || offset < 0 || stride < 0 || offset > n {
+		return false
+	}
+	if count == 0 {
+		return true
+	}
+	room := n - offset - size // where the last element may start
+	if room < 0 {
+		return false
+	}
+	return stride > 0 && count-1 <= room/stride
+}
+
 // floats reads a plain accessor as floats (normalised integers scaled).
 func (f *File) floats(ai int) ([]float32, int, error) {
 	if ai < 0 || ai >= len(f.Doc.Accessors) {
@@ -506,7 +523,7 @@ func (f *File) floats(ai int) ([]float32, int, error) {
 	if stride == 0 {
 		stride = nc * cs
 	}
-	if a.Count < 0 || a.ByteOffset < 0 || (a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+nc*cs > len(v)) {
+	if !inView(a.Count, a.ByteOffset, stride, nc*cs, len(v)) {
 		return nil, 0, fmt.Errorf("glb: accessor %d out of range", ai)
 	}
 	out := make([]float32, a.Count*nc)
@@ -565,7 +582,7 @@ func (f *File) indices(ai int) ([]uint32, error) {
 	if stride == 0 {
 		stride = cs
 	}
-	if a.Count < 0 || a.ByteOffset < 0 || (a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+cs > len(v)) {
+	if !inView(a.Count, a.ByteOffset, stride, cs, len(v)) {
 		return nil, fmt.Errorf("glb: accessor %d out of range", ai)
 	}
 	out := make([]uint32, a.Count)
@@ -586,14 +603,17 @@ func (f *File) indices(ai int) ([]uint32, error) {
 // MeshNodeNames lists the names of the default scene's nodes that carry a
 // mesh, in the order three.js traverses them (depth first, children in
 // order): the part names of a Bang result as the web reads them
-// (userData.name).
+// (userData.name). A node reached a second time (glTF nodes form trees) is
+// not walked again.
 func (f *File) MeshNodeNames() []string {
 	var out []string
+	seen := make([]bool, len(f.Doc.Nodes))
 	var walk func(n, depth int)
 	walk = func(n, depth int) {
-		if n < 0 || n >= len(f.Doc.Nodes) || depth > 64 {
+		if n < 0 || n >= len(f.Doc.Nodes) || depth > 64 || seen[n] {
 			return
 		}
+		seen[n] = true
 		nd := f.Doc.Nodes[n]
 		if nd.Mesh != nil {
 			out = append(out, nd.Name)
@@ -618,7 +638,9 @@ func (f *File) MeshNodeNames() []string {
 // primitives are decoded with dec (nil: a Draco primitive is an error), and a
 // decoded primitive whose point or face count differs from its accessors is
 // an error too. A file that requires a geometry extension the reader does
-// not read is an error (CheckRequired).
+// not read is an error (CheckRequired), and so is a node reached a second
+// time (glTF nodes form trees; a node listed twice would be walked over and
+// over). A done ctx stops the walk.
 func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) {
 	if err := f.CheckRequired(); err != nil {
 		return nil, err
@@ -632,11 +654,19 @@ func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) 
 	}
 	var prims []prim
 	var mats [][16]float64
+	seen := make([]bool, len(f.Doc.Nodes))
 	var walk func(n int, parent [16]float64, depth int) error
 	walk = func(n int, parent [16]float64, depth int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if n < 0 || n >= len(f.Doc.Nodes) || depth > 64 {
 			return fmt.Errorf("glb: bad node %d", n)
 		}
+		if seen[n] {
+			return fmt.Errorf("glb: node %d is reached twice; glTF nodes form trees", n)
+		}
+		seen[n] = true
 		nd := f.Doc.Nodes[n]
 		world := mul(parent, local(nd))
 		if nd.Mesh != nil {
@@ -652,10 +682,10 @@ func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) 
 					pr.material = *p.Material
 				}
 				chk := PrimCheck{}
-				if pi, ok := p.Attributes["POSITION"]; ok && pi < len(f.Doc.Accessors) {
+				if pi, ok := p.Attributes["POSITION"]; ok && pi >= 0 && pi < len(f.Doc.Accessors) {
 					chk.AccessorPoints = f.Doc.Accessors[pi].Count
 				}
-				if p.Indices != nil && *p.Indices < len(f.Doc.Accessors) {
+				if p.Indices != nil && *p.Indices >= 0 && *p.Indices < len(f.Doc.Accessors) {
 					chk.AccessorFaces = f.Doc.Accessors[*p.Indices].Count / 3
 				}
 				if d := p.Extensions.Draco; d != nil {
@@ -757,7 +787,7 @@ func (f *File) LoadMesh(ctx context.Context, dec *draco.Decoder) (*Mesh, error) 
 	roots := []int{}
 	if len(f.Doc.Scenes) > 0 {
 		s := 0
-		if f.Doc.Scene != nil && *f.Doc.Scene < len(f.Doc.Scenes) {
+		if f.Doc.Scene != nil && *f.Doc.Scene >= 0 && *f.Doc.Scene < len(f.Doc.Scenes) {
 			s = *f.Doc.Scene
 		}
 		roots = f.Doc.Scenes[s].Nodes

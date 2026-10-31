@@ -16,6 +16,7 @@ import (
 	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/domain"
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/turntable"
@@ -96,8 +97,11 @@ type pane struct {
 	gen    uint64 // bumps when the pane's mesh source changes
 	status string // loading | ready | error
 	err    string
-	note   string // a change the load made to what was asked (state notes)
-	what   string // what is loading, for the screen
+	note   string // a change the load made to what was asked, and what a model file is drawn without (state notes)
+
+	model    *modelfile.Model // a model file pane's model; its mesh is mesh
+	modeNote string           // a model file pane's mode change at load
+	what     string           // what is loading, for the screen
 
 	mesh, simple *render3d.Mesh
 	maps         *render3d.Maps
@@ -855,6 +859,7 @@ func (a *App) setStage(st service.ViewStage) {
 	a.releaseThumbs(a.strip)
 	a.trimSoon()
 	p.mesh, p.simple, p.maps, p.mapsWanted, p.mapsFailed, p.hasShown, p.hasQueued, p.renderErr = nil, nil, nil, false, nil, false, false, ""
+	p.model = nil
 	p.sheet = nil
 	a.flat = -1
 	a.loadPane(p)

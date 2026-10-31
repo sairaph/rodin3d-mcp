@@ -13,6 +13,7 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 
+	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
 	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
@@ -74,6 +75,11 @@ type App struct {
 	// viewMap reads one texture map of a task stage (Service.ViewMap; tests
 	// replace it).
 	viewMap func(ctx context.Context, uuid string, st service.ViewStage, kind string) (*render3d.Texture, error)
+	// modelTextures decodes a model file's material maps and modelPicture
+	// one of its textures (Service.ViewModelTextures, ViewModelPicture; tests
+	// replace them).
+	modelTextures func(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error)
+	modelPicture  func(ctx context.Context, path string, t int) (*render3d.Texture, error)
 
 	// Screen.
 	sw, sh       int
@@ -104,6 +110,7 @@ func newApp(ctx context.Context, svc *service.Service, version string) *App {
 	a.loadCameras()
 	a.ui = newUI()
 	a.viewMap = svc.ViewMap
+	a.modelTextures, a.modelPicture = svc.ViewModelTextures, svc.ViewModelPicture
 	a.saver = newSetSaver(svc.SaveInputSet, func(id string, err error) {
 		log.Printf("save input set %s: %v", id, err)
 		a.post(func() {
@@ -231,7 +238,7 @@ func modeNeedsMaps(mode string) bool { return render3d.Mode(mode).NeedsMaps() }
 // fullKey is the full-quality frame a pane should show now.
 func (a *App) fullKey(p *pane) renderKey {
 	r := a.ui.paneRect(p.index)
-	return renderKey{mode: a.mode, cam: a.cam.r3d(), w: max(r.Dx(), 16), h: max(r.Dy(), 16), bg: a.background, overlay: a.overlay, gen: p.gen, maps: mapCount(p.maps)}
+	return renderKey{mode: a.mode, cam: a.cam.r3d(), w: max(r.Dx(), 16), h: max(r.Dy(), 16), bg: a.background, overlay: a.overlay, gen: p.gen, maps: paneMapCount(p)}
 }
 
 // interacting reports whether quick frames are wanted.

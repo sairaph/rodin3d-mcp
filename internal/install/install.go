@@ -202,6 +202,12 @@ func runWizard(ctx context.Context, env Env, detector *harness.Detector, scope h
 	if state.Failure != nil {
 		fmt.Fprintln(env.Stderr, state.Failure)
 	}
+	// The guide skill goes to the clients the wizard registered (a dry run
+	// lists where), once the registration step has run.
+	skillCode := 0
+	if state.Results.Done {
+		skillCode = installSkills(env.Stdout, scope, selectedIDs(state.Harness.Selected), cmd.DryRun, false)
+	}
 	switch {
 	case cmd.DryRun:
 	case !state.Results.Done:
@@ -212,7 +218,7 @@ func runWizard(ctx context.Context, env Env, detector *harness.Detector, scope h
 	case code == 0:
 		printNext(env.Stdout, svc)
 	}
-	return code
+	return max(code, skillCode)
 }
 
 // printNext tells what is still to do after a registration: sign in, and
@@ -245,7 +251,9 @@ func runUnattended(ctx context.Context, env Env, detector *harness.Detector, sco
 			if len(cmd.Clients) > 0 {
 				return 2
 			}
-			return 0
+			// Every client is registered already; the guide skill is
+			// still written for them.
+			return installSkills(env.Stdout, scope, skillClients(harnesses, nil), cmd.DryRun, true)
 		}
 	} else {
 		for _, h := range harnesses {
@@ -262,8 +270,19 @@ func runUnattended(ctx context.Context, env Env, detector *harness.Detector, sco
 		}
 		return 0
 	}
+	// The guide skill follows the registrations: written for every client
+	// that runs this program after an install, removed with a project's
+	// registrations (ids is then every client configured in the scope, so
+	// no client stays to read a copy).
+	skills := func() int {
+		if enabling {
+			return installSkills(env.Stdout, scope, skillClients(harnesses, ids), cmd.DryRun, true)
+		}
+		return removeSkills(env.Stdout, scope, ids, nil, cmd.DryRun)
+	}
 	if cmd.DryRun {
-		return printPlan(ctx, env, detector, scope, ids, desired)
+		code := printPlan(ctx, env, detector, scope, ids, desired)
+		return max(code, skills())
 	}
 	policy := harness.ConflictReplace
 	if !enabling {
@@ -272,12 +291,13 @@ func runUnattended(ctx context.Context, env Env, detector *harness.Detector, sco
 	results := detector.ApplyIn(ctx, scope, ids, desired, policy)
 	installer.PrintResultsWithScope(env.Stdout, results, scope, enabling, false)
 	installer.PrintReloadHints(env.Stdout, results, byID(harnesses))
+	code := max(exitCodeFor(results), skills())
 	if enabling {
 		svc := env.Service()
 		printNext(env.Stdout, svc)
 		svc.Close()
 	}
-	return exitCodeFor(results)
+	return code
 }
 
 func printPlan(ctx context.Context, env Env, detector *harness.Detector, scope harness.Scope, ids []harness.ID, desired harness.DesiredState) int {

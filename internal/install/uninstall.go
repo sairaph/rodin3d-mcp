@@ -26,8 +26,8 @@ import (
 
 // Uninstall removes everything this project put on the computer, in this
 // order: sign out of Hyper3D, stop the syncer and the viewer, remove our
-// entry from every AI client config, then the files (planLeftovers), the
-// running binary last. It lists all of it first and asks in the terminal;
+// entry from every AI client config and the guide skill copies we wrote
+// (skill.go), then the files (planLeftovers), the running binary last. It lists all of it first and asks in the terminal;
 // --yes skips the question, --dry-run only lists. With --scope project it
 // removes that project's registrations only.
 func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
@@ -60,10 +60,14 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 	signOut := creds != nil || revokePending
 	daemonUp := svc.DaemonRunning()
 	viewerUp := viewer.Running(paths)
+	var skills []string
+	if home, err := skillHome(); err == nil {
+		skills = ownUserSkills(home)
+	}
 	files := planLeftovers(lay)
 
 	w := env.Stdout
-	if !signOut && !daemonUp && !viewerUp && len(regs) == 0 && len(files) == 0 {
+	if !signOut && !daemonUp && !viewerUp && len(regs) == 0 && len(skills) == 0 && len(files) == 0 {
 		fmt.Fprintf(w, "  Nothing to remove: %s is not installed on this computer.\n", domain.BinaryName)
 		printNotOurs(w, lay)
 		return 0
@@ -91,10 +95,13 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 			row(w, "AI client", fmt.Sprintf("%s: the %q entry in %s", h.Name, name, h.ConfigPath))
 		}
 	}
+	for _, s := range skills {
+		row(w, "Guide skill", s+" (the copy "+domain.BinaryName+" wrote)")
+	}
 	for _, lo := range files {
 		row(w, leftoverLabel(lo), planText(lo, lay))
 	}
-	fmt.Fprintf(w, "\n  Registrations made with `%s add` live in each project's own files;\n", domain.BinaryName)
+	fmt.Fprintf(w, "\n  Registrations and guide skills made with `%s add` live in each project's own files;\n", domain.BinaryName)
 	fmt.Fprintf(w, "  remove one first with `%s uninstall --scope project --dir <project>`.\n", domain.BinaryName)
 	printNotOurs(w, lay)
 
@@ -167,7 +174,22 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 		}
 	}
 
-	// 4-8. The files, the running binary last.
+	// 4. The guide skill copies this program wrote; a folder whose SKILL.md
+	// lost the marker since the list is somebody else's now and stays.
+	for _, s := range skills {
+		if ours, _ := ownSkill(s); !ours {
+			row(w, "Guide skill", s+": no longer the copy "+domain.BinaryName+" wrote; left as it is")
+			continue
+		}
+		if err := os.RemoveAll(s); err != nil {
+			failures++
+			row(env.Stderr, "Guide skill", s+" could not be removed: "+err.Error())
+			continue
+		}
+		row(w, "Guide skill", "removed "+s)
+	}
+
+	// 5-9. The files, the running binary last.
 	closeService()
 	removals := applyLeftovers(files, store)
 	var deferred *removal

@@ -31,6 +31,7 @@ var Tools = []string{
 	"confirm_material", "export_model", "fork_task", "set_private",
 	"generate_agentic", "split_parts", "rig_model", "animate_model", "list_animation_presets", "texture_model",
 	"open_viewer", "show_in_viewer", "control_viewer", "get_viewer_state", "close_viewer",
+	"get_guide",
 }
 
 func registered(tool string) bool {

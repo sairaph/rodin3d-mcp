@@ -132,6 +132,9 @@ func main() {
 		os.Exit(runDoctor(ctx))
 	case "update":
 		os.Exit(runUpdate(ctx, cmd))
+	case "refresh-guide":
+		// Not listed in the usage: update runs it with the new binary.
+		os.Exit(runRefreshGuide(cmd))
 	case "licenses":
 		fmt.Print(thirdPartyNotices)
 	case "help":
@@ -406,13 +409,16 @@ func (clientsCheck) Run(ctx context.Context) doctor.Result {
 
 func runUpdate(ctx context.Context, cmd cli.Command) int {
 	opts := updateOptions()
+	// `update --from <file>` swaps in a binary that was already downloaded
+	// and verified by other means, then refreshes the guide skill, as a
+	// download does.
 	if len(cmd.Args) >= 2 && cmd.Args[0] == "--from" {
 		if err := update.SwapFrom(ctx, cmd.Args[1], opts); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 		fmt.Println("  Updated.")
-		return 0
+		return runNewBinaryGuideRefresh(ctx, filepath.Join(opts.InstallDir, opts.BinaryName))
 	}
 	if version == "dev" {
 		fmt.Println("  This is a development build; build from source to update.")
@@ -433,7 +439,32 @@ func runUpdate(ctx context.Context, cmd cli.Command) int {
 		return 1
 	}
 	fmt.Printf("  Updated to %s.\n", latest)
+	// The new binary carries the matching guide; let it refresh the copies.
+	return runNewBinaryGuideRefresh(ctx, filepath.Join(opts.InstallDir, opts.BinaryName))
+}
+
+// runNewBinaryGuideRefresh runs `refresh-guide` with the binary an update
+// just installed, since this process still holds the old guide.
+func runNewBinaryGuideRefresh(ctx context.Context, exe string) int {
+	cmd := exec.CommandContext(ctx, exe, "refresh-guide")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Could not update the guide skill (%v); run `%s install --yes` to write it again.\n", err, domain.BinaryName)
+		return 1
+	}
 	return 0
+}
+
+// runRefreshGuide rewrites the copies of the guide skill this program wrote
+// before with the guide embedded in this binary. --dry-run only lists them.
+func runRefreshGuide(cmd cli.Command) int {
+	dryRun := false
+	for _, a := range cmd.Args {
+		if a == "--dry-run" || a == "-dry-run" {
+			dryRun = true
+		}
+	}
+	return install.RefreshSkills(os.Stdout, dryRun)
 }
 
 // --- App ---

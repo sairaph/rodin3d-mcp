@@ -50,6 +50,9 @@ release's `SHA256SUMS.txt`, puts it on your PATH (`~/.rodin3d-mcp/bin`, or
 2. **Sign in** to Hyper3D (below).
 3. **Permissions:** every operation starts allowed; deny the ones the agent
    should not run (below).
+4. **Guide skill:** after the registration, the `rodin3d` skill is written
+   into the skill folder each registered client reads ([Guide
+   skill](#guide-skill)).
 
 Run the setup again at any time with `rodin3d-mcp install`.
 `rodin3d-mcp install --yes --all` registers every detected client without
@@ -71,7 +74,8 @@ anything (`--yes` skips the question, `--dry-run` only lists):
    still deleted, so nothing on the computer can use it.
 2. Stops the background syncer and closes the viewer window.
 3. Removes the `rodin3d` entry from every AI client config that has it,
-   and nothing else in those files.
+   and nothing else in those files, and the `rodin3d` guide skill copies it
+   wrote into the clients' skill folders.
 4. Deletes `~/.rodin3d-mcp`: the task index, downloads, previews, cache,
    permissions, sign-in and logs, and on Linux and macOS the program in
    `~/.rodin3d-mcp/bin`. Model files you downloaded to a folder of your own
@@ -85,8 +89,9 @@ on Windows `rodin3d-mcp.exe` stays and the summary names the folder to
 delete afterwards. The summary also reports anything that could not be
 removed and any other `rodin3d-mcp` still on your PATH.
 
-Registrations made with `rodin3d-mcp add` live in that project's own files:
-remove them first with `rodin3d-mcp uninstall --scope project --dir <project>`.
+Registrations and guide skills made with `rodin3d-mcp add` live in that
+project's own files: remove them first with
+`rodin3d-mcp uninstall --scope project --dir <project>`.
 
 ## Sign in
 
@@ -168,9 +173,43 @@ price never changes behind the agent's back.
 | `rig_model`, `animate_model`, `list_animation_presets` | Rig a model (templates, own skeleton or FBX bones) and export it with animations |
 | `texture_model` | Texture a model file of your own |
 | `open_viewer`, `show_in_viewer`, `control_viewer`, `get_viewer_state`, `close_viewer` | The viewer window |
+| `get_guide` | The usage guide by topic (below) |
 
 Each result carries the task's stage and the actions it allows, and the tools
 that change a stage attach a preview.
+
+## Guide skill
+
+rodin3d-mcp ships a short guide that teaches an agent to use these tools
+well: sign in, quote before every paid call, never resend a call that timed
+out, tag the input views, walk the stages and show each draft to you, and
+what to do for each error. It is the `rodin3d` skill, in topics:
+
+| Topic | What it covers |
+|---|---|
+| `start` | Account, sign-in with the link and QR code, permissions |
+| `credits` | `quote_cost`, `expected_credits`, timeouts, free operations, frozen credits |
+| `inputs` | Images, view tags, weights, input sets from the viewer |
+| `settings` | Models, tiers, modes, recipes and every stage's settings |
+| `staged-flow` | Draft, redo, confirm, texture, export, download, fork, waiting |
+| `other-modes` | Agentic builds, parts, rigging, animation, texturing your own model |
+| `viewing` | `get_preview` modes and the viewer window |
+| `privacy-and-errors` | Private tasks and what to do for each error code |
+
+- **As a skill:** `install` and `add` write it into the skill folder each
+  registered client reads, one copy per folder: `.claude/skills` for Claude
+  Code (and Cursor, OpenCode and VS Code beside it), `.agents/skills` for
+  Codex, Gemini CLI and the other clients, `.kiro/skills` for Kiro and
+  `.continue/skills` for Continue; under your home folder, or under the
+  project for `add`. Claude Desktop takes skills only as an upload, so the
+  setup says so instead.
+- **As a tool:** `get_guide` serves the same topics to any client, Claude
+  Desktop included, without signing in; the server instructions point agents
+  to it. `get_guide` with no arguments lists the topics.
+- Only a copy whose `SKILL.md` carries the `generator: rodin3d-mcp` marker is
+  ever replaced or removed: a `rodin3d` skill without it (one you wrote, or a
+  copy whose marker line you removed to keep your edits) stays as it is. `rodin3d-mcp update` rewrites the copies it wrote with the
+  new version's guide, and `uninstall` removes them.
 
 ## Viewer
 

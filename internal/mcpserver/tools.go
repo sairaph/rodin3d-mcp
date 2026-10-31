@@ -250,6 +250,7 @@ func (s *Server) registerTools() {
 	s.registerFlowTools()
 	s.registerP3Tools()
 	s.registerViewerTools()
+	s.registerGuideTool()
 }
 
 // --- handlers ---

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -117,4 +118,26 @@ func FuzzDecode(f *testing.F) {
 		}
 		_, _ = Decode(count, size, src, mode, filter)
 	})
+}
+
+// TestShortPayloadAllocatesNothing: a 64-byte payload claiming half a
+// billion elements is refused before the output is allocated.
+func TestShortPayloadAllocatesNothing(t *testing.T) {
+	src := make([]byte, 64)
+	for _, tc := range []struct {
+		mode string
+		head byte
+	}{{"ATTRIBUTES", 0xa1}, {"TRIANGLES", 0xe1}, {"INDICES", 0xd1}} {
+		src[0] = tc.head
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := Decode(536870910, 4, src, tc.mode, "")
+		runtime.ReadMemStats(&after)
+		if err == nil {
+			t.Errorf("%s: no error", tc.mode)
+		}
+		if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
+			t.Errorf("%s: allocated %d bytes for a refused payload", tc.mode, n)
+		}
+	}
 }

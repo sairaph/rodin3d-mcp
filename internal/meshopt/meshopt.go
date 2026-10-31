@@ -25,6 +25,26 @@ func Decode(count, size int, src []byte, mode, filter string) ([]byte, error) {
 	if count < 0 || size <= 0 || size > 256 || count > math.MaxInt32/size {
 		return nil, fmt.Errorf("meshopt: %d elements of %d bytes", count, size)
 	}
+	// The output is allocated only when src is long enough to hold count
+	// elements, so a short payload claiming a huge count costs nothing.
+	need := 0
+	switch mode {
+	case "ATTRIBUTES":
+		if size%4 != 0 {
+			return nil, fmt.Errorf("meshopt: vertex stride %d", size)
+		}
+		// The header byte, a v1 control byte per 4 bytes of each block (the
+		// least a block can take) and the shortest tail.
+		maxBlock := min((0x2000/size)&^0x0f, 0x100)
+		need = 1 + (count+maxBlock-1)/maxBlock*(size/4) + 24
+	case "TRIANGLES":
+		need = 1 + count/3 + 16 // a code byte per triangle, the code table
+	case "INDICES":
+		need = 1 + count + 4 // a byte per index at least, the padding
+	}
+	if len(src) < need {
+		return nil, ErrMalformed
+	}
 	dst := make([]byte, count*size)
 	var err error
 	switch mode {

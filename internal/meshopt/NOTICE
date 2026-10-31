@@ -1,0 +1,12 @@
+Third-party code in internal/meshopt
+
+meshopt.go is a Go port of meshopt_decoder_reference.js of meshoptimizer
+1.3.0 (https://github.com/zeux/meshoptimizer; copyright Arseny Kapoulkine;
+the reference decoder is by Jasper St. Pierre), the file the npm package
+meshoptimizer@1.3.0 ships. It follows that decoder step by step: the vertex
+codec (versions 0 and 1), the triangle and index sequence codecs and the
+four vertex filters; the port adds bounds checks.
+
+meshoptimizer is licensed under the MIT License. Its license file is
+LICENSE-meshoptimizer in this directory, copied unchanged from the
+meshoptimizer 1.3.0 package (LICENSE.md).

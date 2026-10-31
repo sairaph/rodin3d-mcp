@@ -5,3 +5,4 @@
 *.glb binary
 *.drc binary
 *.wasm binary
+*.ktx2 binary

@@ -285,6 +285,21 @@ func acceptedFailure(op, uuid, then string, err error) error {
 		hint+".", map[string]any{"accepted": true, "task_id": uuid})
 }
 
+// causeStep is what to do first about the error e of a second call that
+// failed after a first one was accepted, followed by a space: e's own hint
+// when no call can work before it (sign in again, credits), a pause when
+// Hyper3D asks for fewer requests, else "" (the reply's own hint replaces
+// e's, which may advise a repeat of the whole tool call).
+func causeStep(e render.Error) string {
+	switch e.Code {
+	case render.CodeAuth, CodeInsufficientCredits:
+		return e.Hint + " "
+	case render.CodeRateLimited:
+		return "Hyper3D asks for fewer requests: wait a minute first. "
+	}
+	return ""
+}
+
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // settled is a task's card once the job of a call finished or the wait

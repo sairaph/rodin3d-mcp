@@ -4,8 +4,8 @@
 
 - Every task this tool creates is made private right after the request: generate_model, generate_agentic, texture_model and fork_task. public true keeps the new task public: pass it only when the user asks.
 - set_private (free, no permission key) makes an existing task private (the default) or, with private false, public. A task already in that state is left as it is.
-- When a create's reply says the new task could not be made private, call set_private as its note says.
-- set_private sends Hyper3D's toggle. When it answers that the card still reads the old privacy, call get_task in a few seconds and call set_private again only if it still shows the old privacy; otherwise the toggle flips the task back.
+- When a create's reply says the new task could not be made private, follow its privacy note.
+- set_private sends Hyper3D's toggle, which flips the task. When a reply says the toggle was accepted or sent but no card read shows the result, do not call set_private again now: call get_task first, and call set_private only if it still shows the old privacy. set_private waits a few seconds after a recent toggle of the task before it reads the card.
 
 ## Errors
 

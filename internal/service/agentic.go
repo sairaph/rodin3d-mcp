@@ -126,7 +126,7 @@ func (s *Service) GenerateAgentic(ctx context.Context, in AgenticInput) (Result,
 	set, err := s.settle(ctx, reply.UUID, stage.Status{}, reply.UUIDs(), in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, acceptedFailure("generate_agentic", reply.UUID, "", err)
+		return Result{}, withPrivacyNote(acceptedFailure("generate_agentic", reply.UUID, "", err), privacyNote)
 	}
 	lead := fmt.Sprintf("Agentic task %s started (%s budget, producer %s).", reply.UUID, budget, orUnknown(reply.Producer))
 	res := s.finishFlow(ctx, sp, set, lead, detail)

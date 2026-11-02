@@ -206,7 +206,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			// never plan or both again, whatever the claim's error advises.
 			e := Classify(err)
 			return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split was not sent: %s", version, e.Message),
-				"Do not send step plan or both again (it makes a new plan): get_task with "+uuid+" shows the plan and any split running; split_parts with step generate then splits by this plan.",
+				causeStep(e)+"Do not send step plan or both again (it makes a new plan): get_task with "+uuid+" shows the plan and any split running; split_parts with step generate then splits by this plan.",
 				e.Fields)
 		}
 	}
@@ -219,11 +219,11 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		}
 		// Step both: the plan was accepted before the split was sent, so
 		// sending step both again would make (and charge) a new plan.
-		hint := "Do not send step plan or both again (it makes a new plan): get_task with " + uuid + " shows the plan; split_parts with step generate splits by it."
+		e := Classify(sendFailure("split_parts (bang_generate)", uuid, err))
+		hint := causeStep(e) + "Do not send step plan or both again (it makes a new plan): get_task with " + uuid + " shows the plan; split_parts with step generate splits by it."
 		if sentUnanswered(err) {
 			hint = "Do not send it again: get_task with " + uuid + " shows whether the split started; only if it did not, split_parts with step generate splits by this plan (never step plan or both, which make a new plan)."
 		}
-		e := Classify(sendFailure("split_parts (bang_generate)", uuid, err))
 		return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split call failed: %s", version, e.Message), hint, e.Fields)
 	}
 	detail.Result = &bangPart{Version: reply.Version}

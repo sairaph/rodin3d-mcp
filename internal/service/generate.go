@@ -224,7 +224,7 @@ func (s *Service) Generate(ctx context.Context, in GenerateInput) (Result, error
 	set, err := s.settle(ctx, reply.UUID, stage.Status{}, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, acceptedFailure("generate_model", reply.UUID, "", err)
+		return Result{}, withPrivacyNote(acceptedFailure("generate_model", reply.UUID, "", err), privacyNote)
 	}
 	lead := fmt.Sprintf("Submitted %d image(s) as task %s (%s).", len(images), reply.UUID, strings.Join(strings.Fields(model+" "+tier+" "+mode), " "))
 	res := s.finishFlow(ctx, sp, set, lead, detail)

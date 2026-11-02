@@ -644,7 +644,7 @@ func reskinFailure(uuid string, reskinOnly bool, err error) error {
 	if !reskinOnly {
 		// The rig call was accepted (and paid) before: only the reskin is
 		// to be sent, never the rig again, whatever the error advises.
-		hint = "The reskin was not started and the rig is done: do not send rig_model without reskin again (get_task with " + uuid + " shows the rig); rig_model with the same fbx_skeleton_path and reskin true sends the reskin; animate_model works with the rig as it is."
+		hint = causeStep(e) + "The reskin was not started and the rig is done: do not send rig_model without reskin again (get_task with " + uuid + " shows the rig); rig_model with the same fbx_skeleton_path and reskin true sends the reskin; animate_model works with the rig as it is."
 	}
 	if sentUnanswered(err) {
 		hint = "It may have started on Hyper3D, and no read shows its progress: do not send it again unless the user decides to. animate_model works with the rig either way."

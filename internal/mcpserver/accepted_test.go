@@ -5,8 +5,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sairaph/rodin3d-mcp/internal/fakehyper"
+	"github.com/sairaph/rodin3d-mcp/internal/service"
+	"github.com/sairaph/rodin3d-mcp/internal/store"
 )
 
 // priceNow reads the price a paid call refused with expected_credits -1.
@@ -120,4 +123,152 @@ func TestAcceptedCallsAreNeverSentAgain(t *testing.T) {
 func splitSetup(f *fixture, _ map[string]any) {
 	f.fake.Tasks(fakehyper.DraftID).Settings["brilliant_mode"] = "gen-2.5-extreme-low"
 	f.fake.SetFile(fakehyper.DraftID+"/plan.png", fakehyper.PNG(80, 60))
+}
+
+// setPrivacySettle shortens how long a privacy change waits after a toggle
+// for one test.
+func setPrivacySettle(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := service.PrivacySettle
+	service.PrivacySettle = d
+	t.Cleanup(func() { service.PrivacySettle = old })
+}
+
+// checkToggleSent checks the reply of a privacy change whose toggle was
+// accepted while no card read shows its result: get_task with task first,
+// never set_private again now nor a retry.
+func checkToggleSent(t *testing.T, r toolReply, hint, task string) {
+	t.Helper()
+	switch {
+	case !strings.Contains(hint, "get_task with "+task+" first") || !strings.Contains(hint, "o not call set_private"):
+		t.Fatalf("%q does not say get_task with %s first and not to call set_private now:\n%s", hint, task, r.text)
+	case strings.Contains(hint, "Call set_private") || strings.Contains(hint, "Retry") || strings.Contains(hint, "retry"):
+		t.Fatalf("%q advises set_private or a retry:\n%s", hint, r.text)
+	}
+}
+
+// M4 (notes/75): task/set_private flips the task. Once a toggle may have
+// reached Hyper3D and no card read after it shows the result (the read
+// failed, or the card lags), the reply says accepted and get_task first,
+// and a set_private sent after it decides only from a settled card, so a
+// lagging card never makes it flip the task back.
+func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
+	setPrivacySettle(t, 500*time.Millisecond)
+	toggle := "task/set_private"
+	t.Run("set_private, the read after it fails", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.fake.FailAfter(toggle, "task/card")
+		r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
+		hint, _ := get(r.front, "error", "hint").(string)
+		msg, _ := get(r.front, "error", "message").(string)
+		if r.code() != "unavailable" || !strings.Contains(msg, "accepted") || get(r.front, "error", "fields", "task_id") != fakehyper.GeometryID {
+			t.Fatalf("code %q, message %q:\n%s", r.code(), msg, r.text)
+		}
+		checkToggleSent(t, r, hint, fakehyper.GeometryID)
+		if n := f.fake.Calls(toggle); n != 1 || !f.fake.Tasks(fakehyper.GeometryID).Private {
+			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(fakehyper.GeometryID).Private)
+		}
+	})
+	t.Run("set_private, the card lags, sent again after get_task", func(t *testing.T) {
+		f := newFixture(t, true, true)
+		f.fake.SetPrivacyLag(250 * time.Millisecond)
+		r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
+		hint, _ := get(r.front, "error", "hint").(string)
+		if r.code() != "unavailable" {
+			t.Fatalf("code %q:\n%s", r.code(), r.text)
+		}
+		checkToggleSent(t, r, hint, fakehyper.GeometryID)
+		// The card still shows public, so the agent calls set_private.
+		if g := f.call("get_task", map[string]any{"task_id": fakehyper.GeometryID}); !strings.Contains(g.text, "private: false") {
+			t.Fatalf("the lagging card does not show public:\n%s", g.text)
+		}
+		r = f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
+		if r.code() != "" || get(r.front, "changed") != false || !strings.Contains(r.text, "already private") {
+			t.Fatalf("the second set_private:\n%s", r.text)
+		}
+		if n := f.fake.Calls(toggle); n != 1 || !f.fake.Tasks(fakehyper.GeometryID).Private {
+			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(fakehyper.GeometryID).Private)
+		}
+	})
+
+	img := writeFile(t, "front.png", fakehyper.PNG(64, 64))
+	newTask := "99999999-9999-4999-8999-000000000001" // the fake's first submit
+	generate := func(t *testing.T) *fixture {
+		f := newFixture(t, true, true)
+		f.allow("generate")
+		draft := f.fake.Tasks(fakehyper.DraftID)
+		f.fake.AddTask(&fakehyper.Task{UUID: newTask, Prompt: draft.Prompt, Created: "2026-11-02T10:00:00.000Z",
+			Step: "ModelGenerate", UserState: "DonePreview", Settings: draft.Settings, Inputs: draft.Inputs})
+		return f
+	}
+	args := func() map[string]any {
+		return map[string]any{"images": []any{map[string]any{"path": img}}, "tier": "medium"}
+	}
+	t.Run("new task, the reads after the toggle fail", func(t *testing.T) {
+		f := generate(t)
+		f.fake.FailAfter(toggle, "task/card")
+		r := f.paidCall("generate_model", args())
+		hint, _ := get(r.front, "error", "hint").(string)
+		if r.code() != "unavailable" || !strings.Contains(hint, "get_task with "+newTask+" for its progress") {
+			t.Fatalf("code %q, hint %q:\n%s", r.code(), hint, r.text)
+		}
+		checkToggleSent(t, r, hint, newTask)
+		if n := f.fake.Calls(toggle); n != 1 {
+			t.Fatalf("%s sent %d times", toggle, n)
+		}
+	})
+	t.Run("new task, the card lags, sent again after get_task", func(t *testing.T) {
+		f := generate(t)
+		f.fake.SetPrivacyLag(250 * time.Millisecond)
+		r := f.paidCall("generate_model", args())
+		if r.code() != "" {
+			t.Fatalf("code %q:\n%s", r.code(), r.text)
+		}
+		i := strings.Index(r.text, "Privacy:")
+		if i < 0 {
+			t.Fatalf("no privacy note:\n%s", r.text)
+		}
+		checkToggleSent(t, r, r.text[i:], newTask)
+		r = f.call("set_private", map[string]any{"task_id": newTask, "private": true})
+		if r.code() != "" || get(r.front, "changed") != false {
+			t.Fatalf("set_private after the note:\n%s", r.text)
+		}
+		if n := f.fake.Calls(toggle); n != 1 || !f.fake.Tasks(newTask).Private {
+			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(newTask).Private)
+		}
+	})
+}
+
+// L7 (notes/75): split_parts step both whose split claim is refused after
+// its plan was accepted (another session's split of the version started in
+// between) says the plan was made, never to send step plan or both again,
+// and step generate; the split is not sent.
+func TestSplitBothClaimRefusedAfterPlan(t *testing.T) {
+	f := newFixture(t, true, true)
+	f.allow("split_parts")
+	splitSetup(f, nil)
+	f.fake.OnCall("task/bang_plan", func() {
+		st, err := f.svc.Store()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for _, v := range f.fake.Tasks(fakehyper.DraftID).GeoVersions {
+			if _, _, err := st.ClaimJob(store.Job{UUID: fakehyper.DraftID, Kind: "bang_generate", Key: v}, nil, 0); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	r := f.paidCall("split_parts", map[string]any{"task_id": fakehyper.DraftID})
+	hint, _ := get(r.front, "error", "hint").(string)
+	msg, _ := get(r.front, "error", "message").(string)
+	switch {
+	case f.fake.Calls("task/bang_plan") != 1 || f.fake.Calls("task/bang_generate") != 0:
+		t.Fatalf("bang_plan sent %d times, bang_generate %d:\n%s", f.fake.Calls("task/bang_plan"), f.fake.Calls("task/bang_generate"), r.text)
+	case r.code() != "conflict" || !strings.Contains(msg, "was made, but the split was not sent"):
+		t.Fatalf("code %q, message %q:\n%s", r.code(), msg, r.text)
+	case !strings.Contains(hint, "Do not send step plan or both again") || !strings.Contains(hint, "get_task with "+fakehyper.DraftID) ||
+		!strings.Contains(hint, "step generate"):
+		t.Fatalf("hint %q:\n%s", hint, r.text)
+	}
 }

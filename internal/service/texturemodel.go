@@ -179,7 +179,7 @@ func (s *Service) TextureModel(ctx context.Context, in TextureModelInput) (Resul
 	set, err := s.settle(ctx, reply.UUID, stage.Status{}, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, acceptedFailure("texture_model", reply.UUID, "", err)
+		return Result{}, withPrivacyNote(acceptedFailure("texture_model", reply.UUID, "", err), privacyNote)
 	}
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Submitted %s with %d reference image(s) as 3D Editing task %s (%s).",
 		filepath.Base(mp), len(images), reply.UUID, strings.TrimSpace(model+" "+mode)), detail)

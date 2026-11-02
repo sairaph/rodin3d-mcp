@@ -71,6 +71,19 @@ type Task struct {
 	// RigTime is its generation_time, which every rodin_rigging call sets anew
 	// (the server's time of taking the request); empty: none is answered.
 	Rig, RigSkinning, RigTime string
+	// shownPrivate is what the card and the list show until shownUntil:
+	// the privacy before the last task/set_private, while the cards lag
+	// (SetPrivacyLag).
+	shownPrivate bool
+	shownUntil   time.Time
+}
+
+// isPrivate is the is_private the card and the list show now.
+func (t *Task) isPrivate() bool {
+	if time.Now().Before(t.shownUntil) {
+		return t.shownPrivate
+	}
+	return t.Private
 }
 
 // Server is the fake.
@@ -94,15 +107,17 @@ type Server struct {
 	refreshes int
 	revokes   int
 	// Switches set through their methods (under the lock).
-	bodyRefuse int      // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
-	failList   int      // next n history lists: HTTP 503
-	failRevoke int      // next n revokes: HTTP 503
-	fileStatus int      // non-zero: every file request answers this status
-	extraTotal int      // added to the history list's reported total
-	fileOK     int      // file replies with the body
-	fileNotMod int      // file replies 304 Not Modified
-	failAfter  string   // once this procedure was called, failProcs answer HTTP 503
-	failProcs  []string // procedures (as Calls names them) failing after failAfter
+	bodyRefuse int               // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
+	failList   int               // next n history lists: HTTP 503
+	failRevoke int               // next n revokes: HTTP 503
+	fileStatus int               // non-zero: every file request answers this status
+	extraTotal int               // added to the history list's reported total
+	fileOK     int               // file replies with the body
+	fileNotMod int               // file replies 304 Not Modified
+	failAfter  string            // once this procedure was called, failProcs answer HTTP 503
+	failProcs  []string          // procedures (as Calls names them) failing after failAfter
+	privacyLag time.Duration     // how long the cards show the privacy before a task/set_private
+	onCall     map[string]func() // runs once when the procedure is called (OnCall)
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
 	// Reject401 makes the next n API calls answer 401 regardless of the token.
@@ -258,6 +273,27 @@ func (s *Server) FailAfter(after string, procs ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failAfter, s.failProcs = after, procs
+}
+
+// SetPrivacyLag makes the card and the list show a task's privacy from
+// before a task/set_private for d after the call (0: at once, as live).
+func (s *Server) SetPrivacyLag(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.privacyLag = d
+}
+
+// OnCall runs fn once, the next time procedure (as Calls names it) is
+// called, before the call is answered and outside the fake's lock: a test
+// changes what happens between two calls of a tool (another session's
+// write).
+func (s *Server) OnCall(procedure string, fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.onCall == nil {
+		s.onCall = map[string]func(){}
+	}
+	s.onCall[procedure] = fn
 }
 
 // SetFileStatus makes every file request answer status (403: an expired
@@ -505,6 +541,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 	}
 	s.calls[name]++
+	if fn := s.onCall[name]; fn != nil {
+		delete(s.onCall, name)
+		s.mu.Unlock()
+		fn()
+		s.mu.Lock()
+	}
 	before := s.calls[s.failAfter] // calls of failAfter before this one
 	if name == s.failAfter {
 		before--
@@ -574,7 +616,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		for _, id := range ids[start:end] {
 			t := s.tasks[id]
 			rows = append(rows, map[string]any{"task_uuid": t.UUID, "type": "Rodin", "prompt": t.Prompt, "time": t.Created, "step": t.Step,
-				"is_private": t.Private, "is_hidden": false, "pending_jobs": make([]string, t.Pending), "num_like": 0,
+				"is_private": t.isPrivate(), "is_hidden": false, "pending_jobs": make([]string, t.Pending), "num_like": 0,
 				"author": map[string]any{"username": s.User.Username, "email": s.User.Email}, "image_url": "", "video_url": ""})
 		}
 		pages := (total + limit - 1) / limit
@@ -711,6 +753,16 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		writeJSON(w, 201, map[string]any{"job": map[string]any{"uuids": []string{"job-" + name}, "subscription_key": "k"}})
 	case proc == "task/select_candidate":
 		writeJSON(w, 201, map[string]any{})
+	case proc == "task/set_private":
+		// A toggle, as live: the same call makes a task private and public.
+		t, ok := s.tasks[str("task_uuid")]
+		if !ok {
+			writeJSON(w, 201, map[string]any{"error": "NO_SUCH_TASK"})
+			return
+		}
+		t.shownPrivate, t.shownUntil = t.isPrivate(), time.Now().Add(s.privacyLag)
+		t.Private = !t.Private
+		writeJSON(w, 201, map[string]any{})
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})
 	}
@@ -736,7 +788,7 @@ func (s *Server) card(t *Task) map[string]any {
 	}
 	return map[string]any{
 		"task_uuid": t.UUID, "type": cmp.Or(t.Type, "Rodin"), "is_agentic_prepare": false, "prompt": t.Prompt, "num_like": 0, "is_like": false,
-		"time": t.Created, "author": map[string]any{"username": s.User.Username, "email": s.User.Email}, "is_private": t.Private, "is_hidden": false,
+		"time": t.Created, "author": map[string]any{"username": s.User.Username, "email": s.User.Email}, "is_private": t.isPrivate(), "is_hidden": false,
 		"step": t.Step, "pending_jobs": make([]string, t.Pending), "image_url": "", "video_url": "",
 		"settings": t.Settings, "rodin_generate_info": info, "card_poster_info": poster, "model_preview_info": preview,
 		"user_state": t.UserState, "generate_time": "2026-10-01T10:05:00.000Z", "is_featured": false,

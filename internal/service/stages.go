@@ -901,7 +901,7 @@ func (s *Service) Fork(ctx context.Context, in ForkInput) (Result, error) {
 	set, err := s.settle(ctx, newID, stage.Status{}, nil, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, acceptedFailure("fork_task", newID, "", err)
+		return Result{}, withPrivacyNote(acceptedFailure("fork_task", newID, "", err), privacyNote)
 	}
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Forked %s at the %s stage as new task %s.", short(uuid), from, newID),
 		map[string]any{"forked_from": uuid, "stage": from, "privacy": privacy})

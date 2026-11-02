@@ -140,6 +140,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_by_task ON jobs(uuid, kind, key, at_ms);
 
+-- The last task/set_private per task that may have reached Hyper3D (it
+-- flips the task), so a later privacy change of the task in any session
+-- reads the card only once the card had time to show it.
+CREATE TABLE IF NOT EXISTS toggles (
+  uuid  TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL -- when that call ended
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
   phase        TEXT NOT NULL DEFAULT 'idle',

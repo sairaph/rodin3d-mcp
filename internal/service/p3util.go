@@ -298,7 +298,7 @@ func (s *Service) renderModel(ctx context.Context, path, mode string, view rende
 	// The maps are decoded only for a mode that samples them; "" may pick pbr.
 	m, err := modelfile.Load(ctx, path, s.decoders(), mode == "" || render3d.Mode(mode).NeedsMaps())
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", modelFileError(path, err)
 	}
 	modes := ModelModes(m)
 	if mode == "" {

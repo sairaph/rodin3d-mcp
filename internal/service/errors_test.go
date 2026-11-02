@@ -1,0 +1,76 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sairaph/mcp-wizard/render"
+
+	"github.com/sairaph/rodin3d-mcp/internal/rodin"
+)
+
+// TestClassifyLocalFileErrors: a file of this computer that cannot be
+// opened is not reported as Hyper3D out of reach (a *fs.PathError passes
+// as a net.Error): a missing one is not_found and names the path, any
+// other names the file and its cause with a local hint. Network errors
+// stay network errors.
+func TestClassifyLocalFileErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone.glb")
+	_, openErr := os.Open(missing)
+	if openErr == nil {
+		t.Fatal("the missing file opened")
+	}
+	for _, err := range []error{openErr, fmt.Errorf("read the cached file: %w", openErr)} {
+		e := Classify(err)
+		if e.Code != render.CodeNotFound || e.Message != "No file at "+missing+"." || e.Hint != "Check the path." {
+			t.Errorf("missing file %q: %+v", err, e)
+		}
+	}
+
+	denied := &fs.PathError{Op: "open", Path: `C:\models\locked.glb`, Err: errors.New("Access is denied.")}
+	e := Classify(fmt.Errorf("save the model: %w", denied))
+	if e.Code != render.CodeUnavailable || !strings.Contains(e.Message, `C:\models\locked.glb`) || !strings.Contains(e.Message, "Access is denied") ||
+		strings.Contains(e.Message, "Hyper3D") || e.Hint != hintLocalFile {
+		t.Errorf("unreadable file: %+v", e)
+	}
+
+	for name, err := range map[string]error{
+		"dial":              &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+		"rodin transport":   &rodin.NetError{Procedure: "task/card", Err: errors.New("connection reset")},
+		"deadline":          fmt.Errorf("call: %w", context.DeadlineExceeded),
+		"transport of file": &rodin.NetError{Procedure: "upload", Err: denied},
+	} {
+		if e := Classify(err); e.Code != render.CodeUnavailable || !strings.HasPrefix(e.Message, "Hyper3D could not be reached") || e.Hint != hintRetry {
+			t.Errorf("%s: %+v", name, e)
+		}
+	}
+}
+
+// TestModelFileGoneIsNotFound: a model file deleted after the check reads
+// as a show of a missing path does; a file beside it that is missing is
+// named as such.
+func TestModelFileGoneIsNotFound(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone.glb")
+	want := Classify(CheckModelFile(missing))
+	_, err := (&Service{}).ViewModel(context.Background(), missing, false)
+	if got := Classify(err); got.Code != render.CodeNotFound || got.Message != want.Message || got.Message != "No model file at "+missing+"." || got.Hint != want.Hint {
+		t.Fatalf("ViewModel of a missing file: %+v, want %+v", got, want)
+	}
+
+	dir := t.TempDir()
+	gltf := filepath.Join(dir, "cube.gltf")
+	if err := os.WriteFile(gltf, []byte(`{"asset":{"version":"2.0"},"buffers":[{"uri":"cube.bin","byteLength":4}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&Service{}).ViewModel(context.Background(), gltf, false)
+	if got := Classify(err); got.Code != render.CodeNotFound || got.Message != "No file at "+filepath.Join(dir, "cube.bin")+"." {
+		t.Fatalf("ViewModel of a .gltf without its buffer: %+v", got)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"strings"
@@ -36,6 +37,7 @@ const (
 	hintListTasks = "Call list_tasks to see the task ids (an id prefix of 8 or more characters works too)."
 	hintRetry     = "Retry the call in a moment; if it keeps failing, run `" + domain.BinaryName + " doctor`."
 	hintInternal  = "This is not caused by the arguments. Run `" + domain.BinaryName + " doctor`, then retry."
+	hintLocalFile = "The file is on this computer: check that it exists and that this program may use it (another program may hold it open), then retry."
 )
 
 // Failure is an error that already carries its structured form.
@@ -193,9 +195,22 @@ func Classify(err error) render.Error {
 	if errors.As(err, &pin) {
 		return render.Error{Code: render.CodeInvalidInput, Message: capital(pin.Reason) + ".", Hint: "Call quote_cost with the values listed in its description."}
 	}
+	// A file of this computer that cannot be opened, read or written is not
+	// a network failure, though *fs.PathError passes as a net.Error (it has
+	// Timeout and Temporary): it is checked after the transport errors and
+	// before that interface.
 	var ne *rodin.NetError
+	var opErr *net.OpError
+	var pe *fs.PathError
 	var netErr net.Error
-	if errors.As(err, &ne) || errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.As(err, &ne) || errors.As(err, &opErr):
+		return render.Error{Code: render.CodeUnavailable, Message: "Hyper3D could not be reached: " + err.Error(), Hint: hintRetry}
+	case errors.As(err, &pe) && errors.Is(err, fs.ErrNotExist):
+		return render.Error{Code: render.CodeNotFound, Message: "No file at " + pe.Path + ".", Hint: "Check the path."}
+	case errors.As(err, &pe):
+		return render.Error{Code: render.CodeUnavailable, Message: capital(err.Error()) + ".", Hint: hintLocalFile}
+	case errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded):
 		return render.Error{Code: render.CodeUnavailable, Message: "Hyper3D could not be reached: " + err.Error(), Hint: hintRetry}
 	}
 	return render.Error{Code: render.CodeInternal, Message: capital(err.Error()), Hint: hintInternal}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
+	"github.com/sairaph/rodin3d-mcp/internal/service"
 	"github.com/sairaph/rodin3d-mcp/internal/viewer"
 )
 
@@ -86,15 +87,17 @@ func testdataFile(name string) string {
 }
 
 // modelFileApp is a window showing the model file file in mode, loaded by
-// the pane's own load (as a show does) through the real reader; loads
-// counts the reads of the file.
+// the pane's own load (as a show does) through the service's reader (the
+// fixtures need neither Draco nor KTX2); loads counts the reads of the
+// file.
 func modelFileApp(t *testing.T, file, mode string) (a *App, p *pane, loads *atomic.Int32) {
 	t.Helper()
 	a, _ = mapsApp(newFakeMaps(), mode)
 	loads = &atomic.Int32{}
+	svc := &service.Service{}
 	a.viewModel = func(ctx context.Context, path string, textures bool) (*modelfile.Model, error) {
 		loads.Add(1)
-		return modelfile.Load(ctx, path, modelfile.Decoders{}, textures)
+		return svc.ViewModel(ctx, path, textures)
 	}
 	a.modelTextures = func(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error) {
 		return m.WithTextures(ctx, modelfile.Decoders{})
@@ -356,7 +359,8 @@ func TestModelFileReloadChanges(t *testing.T) {
 		runPost(t, a)
 		runPost(t, a)
 		ps := a.snapshot().Panes[0]
-		if ps.Status != "error" || !strings.Contains(ps.Error, "out.glb") || ps.Note != reloadedNote || p.mesh != nil {
+		// The error a show of the missing path gives (CheckModelFile).
+		if ps.Status != "error" || ps.Error != "No model file at "+file+"." || ps.Note != reloadedNote || p.mesh != nil {
 			t.Fatalf("%s, file gone: status %s, error %q, note %q", from, ps.Status, ps.Error, ps.Note)
 		}
 		if n := loads.Load(); n != reads+1 {

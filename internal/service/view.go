@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -296,7 +297,23 @@ func (s *Service) viewMap(ctx context.Context, uuid string, a ViewAsset, kind st
 
 // ViewModel reads a local model file; textures decodes its material maps.
 func (s *Service) ViewModel(ctx context.Context, path string, textures bool) (*modelfile.Model, error) {
-	return modelfile.Load(ctx, path, s.decoders(), textures)
+	m, err := modelfile.Load(ctx, path, s.decoders(), textures)
+	return m, modelFileError(path, err)
+}
+
+// modelFileError is err of reading the model file at path, with a file
+// gone since it was checked (a reload of a deleted file) reported as
+// CheckModelFile reports a missing path.
+func modelFileError(path string, err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) && errors.Is(err, fs.ErrNotExist) && filepath.Clean(pe.Path) == filepath.Clean(path) {
+		return noModelFile(path)
+	}
+	return err
+}
+
+func noModelFile(path string) error {
+	return fail(render.CodeNotFound, "No model file at "+path+".", "Check the path.")
 }
 
 // ViewModelTextures returns m with its material maps decoded;
@@ -339,7 +356,7 @@ func CheckModelFile(path string) error {
 			"Convert it to one of those, or use images for pictures.")
 	}
 	if fi, err := os.Stat(path); err != nil || fi.IsDir() {
-		return fail(render.CodeNotFound, "No model file at "+path+".", "Check the path.")
+		return noModelFile(path)
 	}
 	return nil
 }

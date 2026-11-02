@@ -269,11 +269,11 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 		if wait {
 			if jr, err = s.waitJobs(ctx, reply.Job.UUIDs, deadline); err != nil {
 				sp.close(ctx, nil)
-				then := ""
+				then := "its rig block says when the rigging is done"
 				if fbxPath != "" {
-					then = "; once its rig block says done, rig_model with the same fbx_skeleton_path and reskin true sends the reskin call"
+					then += "; then rig_model with the same fbx_skeleton_path and reskin true sends the reskin call"
 				}
-				return Result{}, wrapf(err, "the rigging was started; get_task with %s shows when it is done%s", uuid, then)
+				return Result{}, acceptedFailure("rig_model", uuid, then, err)
 			}
 			s.endJobs(id, jr)
 		}
@@ -636,11 +636,16 @@ func (s *Service) sendReskin(ctx context.Context, uuid, source string, c claim, 
 // what the rig is, so the agent does not send the first call again.
 func reskinFailure(uuid string, reskinOnly bool, err error) error {
 	e := Classify(sendFailure("rig_model (reskin)", uuid, err))
-	lead := "The rig from the FBX bones is done; the reskin call failed: "
+	lead := "The rig_model request was accepted (task " + uuid + ") and the rig from the FBX bones is done; the reskin call failed: "
 	if reskinOnly {
 		lead = "The task's rig is unchanged; the reskin call failed: "
 	}
 	hint := e.Hint + " The reskin was not started: rig_model with the same fbx_skeleton_path and reskin true sends it again; animate_model works with the rig as it is."
+	if !reskinOnly {
+		// The rig call was accepted (and paid) before: only the reskin is
+		// to be sent, never the rig again, whatever the error advises.
+		hint = "The reskin was not started and the rig is done: do not send rig_model without reskin again (get_task with " + uuid + " shows the rig); rig_model with the same fbx_skeleton_path and reskin true sends the reskin; animate_model works with the rig as it is."
+	}
 	if sentUnanswered(err) {
 		hint = "It may have started on Hyper3D, and no read shows its progress: do not send it again unless the user decides to. animate_model works with the rig either way."
 	}
@@ -826,7 +831,7 @@ func (s *Service) AnimateModel(ctx context.Context, in AnimateInput) (Result, er
 	set, err := s.settle(ctx, uuid, st, jobs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("animate_model", uuid, "", err)
 	}
 	detail := map[string]any{"format": format, "type": typ, "material": matWire, "resolution": resWire, "presets": in.Presets}
 	if len(in.Files) > 0 {

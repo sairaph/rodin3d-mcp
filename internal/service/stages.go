@@ -117,7 +117,7 @@ func (s *Service) RedoGeometry(ctx context.Context, in RedoGeometryInput) (Resul
 	set, err := s.settle(ctx, uuid, st, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("redo_geometry", uuid, "", err)
 	}
 	// The new version is in the history once the job finished; a redo
 	// still running reports none rather than the old count.
@@ -203,7 +203,7 @@ func (s *Service) ConfirmGeometry(ctx context.Context, in ConfirmGeometryInput) 
 	set, err := s.settle(ctx, uuid, st, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("confirm_geometry", uuid, "", err)
 	}
 	mesh := fmt.Sprintf("%v", settings["mesh_export_type"])
 	if f, ok := settings["quality_override"].(int); ok {
@@ -546,7 +546,7 @@ func (s *Service) GenerateTexture(ctx context.Context, in TextureInput) (Result,
 	set, err := s.settle(ctx, uuid, st, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("generate_texture", uuid, "", err)
 	}
 	refName := firstNonEmptyString(reply.ReferenceFilename, req.ReferenceFilename, "new image")
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Texture (%s) started from reference %s.", mode, refName), map[string]any{"reference": refName, "settings": settings})
@@ -638,7 +638,7 @@ func (s *Service) RedoMaterial(ctx context.Context, in TextureInput) (Result, er
 	set, err := s.settle(ctx, uuid, st, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("redo_material", uuid, "", err)
 	}
 	var detail any
 	if set.status.State == stage.Ready {
@@ -695,7 +695,7 @@ func (s *Service) ConfirmMaterial(ctx context.Context, in ConfirmMaterialInput) 
 	set, err := s.settle(ctx, uuid, st, reply.Job.UUIDs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("confirm_material", uuid, "", err)
 	}
 	return s.finishFlow(ctx, sp, set, fmt.Sprintf("Material %s (reference %s) confirmed.", version, ref), map[string]any{"version": version, "reference": ref}), nil
 }
@@ -821,7 +821,7 @@ func (s *Service) Export(ctx context.Context, in ExportInput) (Result, error) {
 	set, err := s.settle(ctx, uuid, st, jobs, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("export_model", uuid, "", err)
 	}
 	detail := exportDetail{Pack: body}
 	delete(detail.Pack, "task_uuid")
@@ -901,7 +901,7 @@ func (s *Service) Fork(ctx context.Context, in ForkInput) (Result, error) {
 	set, err := s.settle(ctx, newID, stage.Status{}, nil, in.Wait)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, wrapf(err, "the fork %s was created; read its card", newID)
+		return Result{}, acceptedFailure("fork_task", newID, "", err)
 	}
 	res := s.finishFlow(ctx, sp, set, fmt.Sprintf("Forked %s at the %s stage as new task %s.", short(uuid), from, newID),
 		map[string]any{"forked_from": uuid, "stage": from, "privacy": privacy})
@@ -957,7 +957,7 @@ func (s *Service) SelectCandidate(ctx context.Context, in SelectInput) (Result, 
 	set, err := s.settle(ctx, uuid, st, nil, false)
 	sp.close(ctx, nil)
 	if err != nil {
-		return Result{}, err
+		return Result{}, acceptedFailure("select_candidate", uuid, "", err)
 	}
 	return s.finishFlow(ctx, sp, set, fmt.Sprintf("Candidate %s selected.", cand), map[string]any{"candidate": cand}), nil
 }

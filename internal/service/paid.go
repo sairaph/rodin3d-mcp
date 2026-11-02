@@ -270,6 +270,21 @@ func sendFailure(op, uuid string, err error) error {
 		"Do not send it again: call "+where+".")
 }
 
+// acceptedFailure is the reply when Hyper3D accepted the request of op on
+// task uuid (its credits may be frozen) and a read after it failed: the
+// first card read, or the wait for its jobs. The call runs, so it is never
+// to be sent again, whatever the read's own error would advise; get_task
+// shows its progress. then, when set, says how to go on from there.
+func acceptedFailure(op, uuid, then string, err error) error {
+	hint := "Do not send it again: call get_task with " + uuid + " for its progress"
+	if then != "" {
+		hint += "; " + then
+	}
+	return failFields(render.CodeUnavailable,
+		fmt.Sprintf("The %s request was accepted (task %s), but reading its progress afterwards failed (%s).", op, uuid, oneLine(err.Error())),
+		hint+".", map[string]any{"accepted": true, "task_id": uuid})
+}
+
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // settled is a task's card once the job of a call finished or the wait

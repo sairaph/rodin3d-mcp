@@ -179,7 +179,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		if wait {
 			if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
 				sp.close(ctx, nil)
-				return Result{}, wrapf(err, "the Bang plan was started; get_task with %s shows it (bang_plan) once it is made, then split_parts with step generate splits by it", uuid)
+				return Result{}, acceptedFailure("split_parts (bang_plan)", uuid, "its bang_plan shows the plan once it is made, then split_parts with step generate splits by it", err)
 			}
 			s.endJobs(id, jr)
 		}
@@ -202,15 +202,29 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 			if err == nil {
 				err = s.splitRunning(uuid, version, *busy)
 			}
+			// The plan was accepted and paid: the way on is step generate,
+			// never plan or both again, whatever the claim's error advises.
 			e := Classify(err)
-			return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split was not sent: %s", version, e.Message), e.Hint, e.Fields)
+			return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split was not sent: %s", version, e.Message),
+				"Do not send step plan or both again (it makes a new plan): get_task with "+uuid+" shows the plan and any split running; split_parts with step generate then splits by this plan.",
+				e.Fields)
 		}
 	}
 	reply, err := s.client.BangGenerate(ctx, uuid, version)
 	if err != nil {
 		c.drop()
 		sp.close(ctx, err)
-		return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
+		if step != "both" {
+			return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
+		}
+		// Step both: the plan was accepted before the split was sent, so
+		// sending step both again would make (and charge) a new plan.
+		hint := "Do not send step plan or both again (it makes a new plan): get_task with " + uuid + " shows the plan; split_parts with step generate splits by it."
+		if sentUnanswered(err) {
+			hint = "Do not send it again: get_task with " + uuid + " shows whether the split started; only if it did not, split_parts with step generate splits by this plan (never step plan or both, which make a new plan)."
+		}
+		e := Classify(sendFailure("split_parts (bang_generate)", uuid, err))
+		return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split call failed: %s", version, e.Message), hint, e.Fields)
 	}
 	detail.Result = &bangPart{Version: reply.Version}
 	id := c.fill(reply.UUIDs(), map[string]string{"result": reply.Version})
@@ -218,7 +232,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	if wait {
 		if jr, err = s.waitJobs(ctx, reply.UUIDs(), deadline); err != nil {
 			sp.close(ctx, nil)
-			return Result{}, wrapf(err, "the split was started (Bang version %s); follow it with get_task", reply.Version)
+			return Result{}, acceptedFailure("split_parts (bang_generate)", uuid, "the split is Bang version "+reply.Version, err)
 		}
 		s.endJobs(id, jr)
 	}

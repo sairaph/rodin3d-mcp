@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,13 +94,15 @@ type Server struct {
 	refreshes int
 	revokes   int
 	// Switches set through their methods (under the lock).
-	bodyRefuse int // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
-	failList   int // next n history lists: HTTP 503
-	failRevoke int // next n revokes: HTTP 503
-	fileStatus int // non-zero: every file request answers this status
-	extraTotal int // added to the history list's reported total
-	fileOK     int // file replies with the body
-	fileNotMod int // file replies 304 Not Modified
+	bodyRefuse int      // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
+	failList   int      // next n history lists: HTTP 503
+	failRevoke int      // next n revokes: HTTP 503
+	fileStatus int      // non-zero: every file request answers this status
+	extraTotal int      // added to the history list's reported total
+	fileOK     int      // file replies with the body
+	fileNotMod int      // file replies 304 Not Modified
+	failAfter  string   // once this procedure was called, failProcs answer HTTP 503
+	failProcs  []string // procedures (as Calls names them) failing after failAfter
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
 	// Reject401 makes the next n API calls answer 401 regardless of the token.
@@ -245,6 +248,16 @@ func (s *Server) FailRevokes(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failRevoke = n
+}
+
+// FailAfter makes every call of the procedures procs (as Calls names them:
+// task/card, scheduler) answer HTTP 503 once procedure after was called (a
+// second call of after itself, when it is among procs), as when Hyper3D
+// accepted a paid request and the reads that follow it fail.
+func (s *Server) FailAfter(after string, procs ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failAfter, s.failProcs = after, procs
 }
 
 // SetFileStatus makes every file request answer status (403: an expired
@@ -492,6 +505,14 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 	}
 	s.calls[name]++
+	before := s.calls[s.failAfter] // calls of failAfter before this one
+	if name == s.failAfter {
+		before--
+	}
+	if s.failAfter != "" && before > 0 && slices.Contains(s.failProcs, name) {
+		writeJSON(w, 503, map[string]any{"statusCode": 503, "message": "Service Unavailable"})
+		return
+	}
 	if s.Reject401 > 0 {
 		s.Reject401--
 		writeJSON(w, 401, map[string]any{"statusCode": 401, "message": "Invalid authorization header"})
@@ -679,6 +700,17 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 			t.RigTime = fmt.Sprintf("2026-10-27T10:00:%02d.000Z", s.calls[name]%60)
 			writeJSON(w, 201, map[string]any{"job": map[string]any{"uuids": []string{fmt.Sprintf("job-rig-%d", s.calls[name])}, "subscription_key": "k"}})
 		}
+	// The submits and the stage calls accept the request and change nothing:
+	// a submit or a fork names a new task the fake does not serve (tests of
+	// these calls follow what the reads after them do).
+	case proc == "task/rodin_mesh", proc == "task/rodin_agentic", proc == "task/rodin_fork":
+		writeJSON(w, 201, map[string]any{"uuid": fmt.Sprintf("99999999-9999-4999-8999-%012d", s.calls[name]), "producer": "high-poly",
+			"job": map[string]any{"uuids": []string{"job-" + name}, "subscription_key": "k"}})
+	case proc == "task/rodin_update", proc == "task/rodin_confirm", proc == "task/rodin_polygen", proc == "task/rodin_texture",
+		proc == "task/rodin_unlock", proc == "task/rodin_rigging_pack":
+		writeJSON(w, 201, map[string]any{"job": map[string]any{"uuids": []string{"job-" + name}, "subscription_key": "k"}})
+	case proc == "task/select_candidate":
+		writeJSON(w, 201, map[string]any{})
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})
 	}

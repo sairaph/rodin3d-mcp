@@ -117,6 +117,7 @@ type Server struct {
 	failAfter  string            // once this procedure was called, failProcs answer HTTP 503
 	failProcs  []string          // procedures (as Calls names them) failing after failAfter
 	privacyLag time.Duration     // how long the cards show the privacy before a task/set_private
+	toggleCode int               // non-zero: task/set_private toggles, then answers this status
 	onCall     map[string]func() // runs once when the procedure is called (OnCall)
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
@@ -281,6 +282,14 @@ func (s *Server) SetPrivacyLag(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.privacyLag = d
+}
+
+// SetToggleStatus makes task/set_private toggle the task and then answer
+// HTTP status (a gateway that fails after Hyper3D acted); 0 answers 201 again.
+func (s *Server) SetToggleStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toggleCode = status
 }
 
 // OnCall runs fn once, the next time procedure (as Calls names it) is
@@ -762,6 +771,10 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 		t.shownPrivate, t.shownUntil = t.isPrivate(), time.Now().Add(s.privacyLag)
 		t.Private = !t.Private
+		if s.toggleCode != 0 {
+			writeJSON(w, s.toggleCode, map[string]any{"statusCode": s.toggleCode, "message": http.StatusText(s.toggleCode)})
+			return
+		}
 		writeJSON(w, 201, map[string]any{})
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})

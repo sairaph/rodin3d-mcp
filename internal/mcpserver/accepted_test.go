@@ -151,9 +151,13 @@ func checkToggleSent(t *testing.T, r toolReply, hint, task string) {
 // reached Hyper3D and no card read after it shows the result (the read
 // failed, or the card lags), the reply says accepted and get_task first,
 // and a set_private sent after it decides only from a settled card, so a
-// lagging card never makes it flip the task back.
+// lagging card never makes it flip the task back. M5: the same holds for a
+// toggle answered 5xx, which may have been applied.
 func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
-	setPrivacySettle(t, 500*time.Millisecond)
+	// The cards lag less than the settle wait; get_task right after the
+	// toggle still sees the old privacy.
+	lag := 400 * time.Millisecond
+	setPrivacySettle(t, 700*time.Millisecond)
 	toggle := "task/set_private"
 	t.Run("set_private, the read after it fails", func(t *testing.T) {
 		f := newFixture(t, true, true)
@@ -169,27 +173,26 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(fakehyper.GeometryID).Private)
 		}
 	})
-	t.Run("set_private, the card lags, sent again after get_task", func(t *testing.T) {
-		f := newFixture(t, true, true)
-		f.fake.SetPrivacyLag(250 * time.Millisecond)
-		r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
-		hint, _ := get(r.front, "error", "hint").(string)
-		if r.code() != "unavailable" {
-			t.Fatalf("code %q:\n%s", r.code(), r.text)
-		}
-		checkToggleSent(t, r, hint, fakehyper.GeometryID)
-		// The card still shows public, so the agent calls set_private.
-		if g := f.call("get_task", map[string]any{"task_id": fakehyper.GeometryID}); !strings.Contains(g.text, "private: false") {
-			t.Fatalf("the lagging card does not show public:\n%s", g.text)
-		}
-		r = f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
-		if r.code() != "" || get(r.front, "changed") != false || !strings.Contains(r.text, "already private") {
-			t.Fatalf("the second set_private:\n%s", r.text)
-		}
-		if n := f.fake.Calls(toggle); n != 1 || !f.fake.Tasks(fakehyper.GeometryID).Private {
-			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(fakehyper.GeometryID).Private)
-		}
-	})
+	// M5: a toggle answered 5xx (a gateway failing after Hyper3D acted) may
+	// have been applied: it is answered and recorded as an accepted one.
+	answers := []struct {
+		name   string
+		status int // what task/set_private answers after it toggled; 0: 201
+	}{{"the card lags", 0}, {"the toggle answered 503 after it was applied, the card lags", 503}}
+	for _, a := range answers {
+		t.Run("set_private, "+a.name+", sent again after get_task", func(t *testing.T) {
+			f := newFixture(t, true, true)
+			f.fake.SetPrivacyLag(lag)
+			f.fake.SetToggleStatus(a.status)
+			r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
+			hint, _ := get(r.front, "error", "hint").(string)
+			if r.code() != "unavailable" || get(r.front, "error", "fields", "toggle_sent") != true {
+				t.Fatalf("code %q:\n%s", r.code(), r.text)
+			}
+			checkToggleSent(t, r, hint, fakehyper.GeometryID)
+			setPrivateAgain(t, f, fakehyper.GeometryID)
+		})
+	}
 
 	img := writeFile(t, "front.png", fakehyper.PNG(64, 64))
 	newTask := "99999999-9999-4999-8999-000000000001" // the fake's first submit
@@ -217,26 +220,42 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 			t.Fatalf("%s sent %d times", toggle, n)
 		}
 	})
-	t.Run("new task, the card lags, sent again after get_task", func(t *testing.T) {
-		f := generate(t)
-		f.fake.SetPrivacyLag(250 * time.Millisecond)
-		r := f.paidCall("generate_model", args())
-		if r.code() != "" {
-			t.Fatalf("code %q:\n%s", r.code(), r.text)
-		}
-		i := strings.Index(r.text, "Privacy:")
-		if i < 0 {
-			t.Fatalf("no privacy note:\n%s", r.text)
-		}
-		checkToggleSent(t, r, r.text[i:], newTask)
-		r = f.call("set_private", map[string]any{"task_id": newTask, "private": true})
-		if r.code() != "" || get(r.front, "changed") != false {
-			t.Fatalf("set_private after the note:\n%s", r.text)
-		}
-		if n := f.fake.Calls(toggle); n != 1 || !f.fake.Tasks(newTask).Private {
-			t.Fatalf("%s sent %d times, private %v", toggle, n, f.fake.Tasks(newTask).Private)
-		}
-	})
+	for _, a := range answers {
+		t.Run("new task, "+a.name+", sent again after get_task", func(t *testing.T) {
+			f := generate(t)
+			f.fake.SetPrivacyLag(lag)
+			f.fake.SetToggleStatus(a.status)
+			r := f.paidCall("generate_model", args())
+			if r.code() != "" {
+				t.Fatalf("code %q:\n%s", r.code(), r.text)
+			}
+			i := strings.Index(r.text, "Privacy:")
+			if i < 0 {
+				t.Fatalf("no privacy note:\n%s", r.text)
+			}
+			checkToggleSent(t, r, r.text[i:], newTask)
+			setPrivateAgain(t, f, newTask)
+		})
+	}
+}
+
+// setPrivateAgain follows a toggleSent reply on task id the way an agent
+// may: get_task still shows public (the card lags), so set_private private
+// true. That call sends nothing and the task stays private: the toggle was
+// sent once in all.
+func setPrivateAgain(t *testing.T, f *fixture, id string) {
+	t.Helper()
+	if g := f.call("get_task", map[string]any{"task_id": id}); !strings.Contains(g.text, "private: false") {
+		t.Fatalf("the lagging card does not show public:\n%s", g.text)
+	}
+	f.fake.SetToggleStatus(0)
+	r := f.call("set_private", map[string]any{"task_id": id, "private": true})
+	if r.code() != "" || get(r.front, "changed") != false || !strings.Contains(r.text, "already private") {
+		t.Fatalf("the second set_private:\n%s", r.text)
+	}
+	if n := f.fake.Calls("task/set_private"); n != 1 || !f.fake.Tasks(id).Private {
+		t.Fatalf("task/set_private sent %d times, private %v", n, f.fake.Tasks(id).Private)
+	}
 }
 
 // L7 (notes/75): split_parts step both whose split claim is refused after

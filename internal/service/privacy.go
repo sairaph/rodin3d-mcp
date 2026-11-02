@@ -8,6 +8,7 @@ import (
 
 	"github.com/sairaph/mcp-wizard/render"
 
+	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
 )
 
@@ -57,14 +58,15 @@ func (s *Service) applyPrivacy(ctx context.Context, uuid string, want bool) (*ro
 		return card, false, nil
 	}
 	callErr := s.client.SetPrivate(ctx, uuid)
-	reached := callErr == nil || sentUnanswered(callErr)
+	reached := callErr == nil || !toggleRefused(callErr)
 	if reached {
 		s.markToggle(uuid)
 	}
 	after, err := s.client.Card(ctx, uuid)
 	switch {
 	case err == nil && after.IsPrivate == want:
-		// Also when the call got no answer: the card is what counts.
+		// Also when the call got no answer or an error: the card is what
+		// counts.
 		return after, true, nil
 	case !reached && err != nil:
 		// Hyper3D refused the toggle: nothing changed, and its error says
@@ -76,6 +78,28 @@ func (s *Service) applyPrivacy(ctx context.Context, uuid string, want bool) (*ro
 		return nil, false, toggleSent(uuid, want, callErr, err)
 	}
 	return after, false, toggleSent(uuid, want, callErr, nil)
+}
+
+// toggleRefused reports whether callErr, the error of a task/set_private,
+// is a clear refusal, after which the task is unchanged: a Hyper3D error
+// code in the body, a session Hyper3D refused or none to send (401, sign in
+// again), or another HTTP 4xx. Any other error may have come after Hyper3D
+// applied the toggle: a 5xx from a gateway after the backend acted, or no
+// answer or a broken one.
+func toggleRefused(callErr error) bool {
+	var se *rodin.ServiceError
+	var ae *rodin.AuthError
+	var he *rodin.HTTPError
+	var lr *auth.LoginRequired
+	var oe *auth.OAuthError
+	switch {
+	case errors.As(callErr, &se), errors.As(callErr, &ae), errors.Is(callErr, rodin.ErrUnauthorized),
+		errors.As(callErr, &lr), errors.As(callErr, &oe):
+		return true
+	case errors.As(callErr, &he):
+		return he.Status < 500
+	}
+	return false
 }
 
 // settledCard reads the card of task uuid once no task/set_private on it
@@ -115,15 +139,18 @@ func (s *Service) lastToggle(uuid string) time.Time {
 }
 
 // toggleSent is the error of a change whose task/set_private may have
-// reached Hyper3D (accepted: callErr nil; or sent without an answer) while
-// no card read after it shows the wanted privacy: the read failed (readErr)
-// or the card still shows the old privacy. Another toggle now could undo the
-// first, so the reply sends the agent to get_task first, whatever the read's
-// own error would advise.
+// been applied (accepted: callErr nil; or not clearly refused:
+// toggleRefused) while no card read after it shows the wanted privacy: the
+// read failed (readErr) or the card still shows the old privacy. Another
+// toggle now could undo the first, so the reply sends the agent to get_task
+// first, whatever the call's or the read's own error would advise.
 func toggleSent(uuid string, want bool, callErr, readErr error) *Failure {
 	sent := "was accepted"
-	if callErr != nil {
+	switch {
+	case callErr != nil && sentUnanswered(callErr):
 		sent = "was sent but no answer came back (" + oneLine(callErr.Error()) + ")"
+	case callErr != nil:
+		sent = "was answered with an error that does not say it was refused (" + oneLine(callErr.Error()) + "), so it may have been applied"
 	}
 	after := "its card still reads " + privacyWord(!want)
 	if readErr != nil {

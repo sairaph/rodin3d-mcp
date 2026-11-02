@@ -101,6 +101,7 @@ type pane struct {
 
 	model    *modelfile.Model // a model file pane's model; its mesh is mesh
 	modeNote string           // a model file pane's mode change at load
+	reloaded bool             // the model file changed on disk and was read again (reloadPane), until the next show
 	what     string           // what is loading, for the screen
 
 	mesh, simple *render3d.Mesh
@@ -365,7 +366,9 @@ func (a *App) layouts() []string {
 		return []string{viewer.LayoutTextures}
 	case viewer.KindModelFile:
 		out := []string{viewer.LayoutSingle}
-		if len(a.textures) > 0 {
+		// A reload empties the textures panel it shows until the file is
+		// read again (fitTextures then leaves it when the file has none).
+		if len(a.textures) > 0 || a.layout == viewer.LayoutTextures {
 			out = append(out, viewer.LayoutTextures)
 		}
 		return out

@@ -12,7 +12,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -51,19 +53,44 @@ type Model struct {
 	parts []glb.Part
 }
 
-// ErrChanged is returned when a model file changed on disk after Load read
-// it, so its pictures would no longer match the model.
+// ErrChanged is returned when a model file (or a file a .gltf names beside
+// it) changed on disk after Load read it, or is gone, so its pictures would
+// no longer match the model.
 var ErrChanged = errors.New("changed on disk since it was read; show it again")
 
-// File is a model file as it was read: its path, size and modification
-// time.
+// File is a model file as it was read: its path, size, modification time
+// and checksum (a rewrite within a coarse modification time, as on FAT or a
+// network share, keeps the size and the time but not the bytes), and the
+// size and modification time of the files a .gltf names beside it (its
+// buffer and images).
 type File struct {
-	Path string
+	Path  string
+	size  int64
+	mod   time.Time
+	sum   uint32
+	sides []stamp
+}
+
+// stamp is a file beside a .gltf as it was: its size (-1: missing) and
+// modification time.
+type stamp struct {
+	path string
 	size int64
 	mod  time.Time
 }
 
-// readFile reads the file at path with its size and modification time.
+func stampOf(path string) stamp {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return stamp{path: path, size: -1}
+	}
+	return stamp{path: path, size: fi.Size(), mod: fi.ModTime()}
+}
+
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// readFile reads the file at path with its size, modification time and
+// checksum.
 func readFile(path string) ([]byte, File, error) {
 	fh, err := os.Open(path)
 	if err != nil {
@@ -78,18 +105,27 @@ func readFile(path string) ([]byte, File, error) {
 	if err != nil {
 		return nil, File{}, err
 	}
-	return data, File{Path: path, size: fi.Size(), mod: fi.ModTime()}, nil
+	return data, File{Path: path, size: fi.Size(), mod: fi.ModTime(), sum: crc32.Checksum(data, castagnoli)}, nil
 }
 
-// read reads f again; ErrChanged when its size or modification time is
-// not the one it had.
+// read reads f again; ErrChanged when it is gone, when its size,
+// modification time or bytes are not the ones it had, or when a file
+// beside it changed.
 func (f File) read() ([]byte, error) {
 	data, now, err := readFile(f.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%s %w", filepath.Base(f.Path), ErrChanged)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if now.size != f.size || !now.mod.Equal(f.mod) || int64(len(data)) != f.size {
+	if now.size != f.size || !now.mod.Equal(f.mod) || int64(len(data)) != f.size || now.sum != f.sum {
 		return nil, fmt.Errorf("%s %w", filepath.Base(f.Path), ErrChanged)
+	}
+	for _, s := range f.sides {
+		if n := stampOf(s.path); n.size != s.size || !n.mod.Equal(s.mod) {
+			return nil, fmt.Errorf("%s %w", filepath.Base(s.path), ErrChanged)
+		}
 	}
 	return data, nil
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/modelfile"
 	"github.com/sairaph/rodin3d-mcp/internal/render3d"
@@ -75,9 +76,10 @@ type App struct {
 	// viewMap reads one texture map of a task stage (Service.ViewMap; tests
 	// replace it).
 	viewMap func(ctx context.Context, uuid string, st service.ViewStage, kind string) (*render3d.Texture, error)
-	// modelTextures decodes a model file's material maps and modelPicture
-	// one of its textures (Service.ViewModelTextures, ViewModelPicture; tests
-	// replace them).
+	// viewModel reads a model file, modelTextures decodes its material maps
+	// and modelPicture one of its textures (Service.ViewModel,
+	// ViewModelTextures, ViewModelPicture; tests replace them).
+	viewModel     func(ctx context.Context, path string, textures bool) (*modelfile.Model, error)
 	modelTextures func(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error)
 	modelPicture  func(ctx context.Context, file modelfile.File, t int) (*render3d.Texture, error)
 
@@ -110,7 +112,7 @@ func newApp(ctx context.Context, svc *service.Service, version string) *App {
 	a.loadCameras()
 	a.ui = newUI()
 	a.viewMap = svc.ViewMap
-	a.modelTextures, a.modelPicture = svc.ViewModelTextures, svc.ViewModelPicture
+	a.viewModel, a.modelTextures, a.modelPicture = svc.ViewModel, svc.ViewModelTextures, svc.ViewModelPicture
 	a.saver = newSetSaver(svc.SaveInputSet, func(id string, err error) {
 		log.Printf("save input set %s: %v", id, err)
 		a.post(func() {
@@ -381,16 +383,27 @@ func (a *App) serveCaptures(now time.Time) {
 		if c.since != nil {
 			rep.Actions, rep.ActionsTruncated = a.actionsSince(*c.since)
 		}
-		go func(c *captureReq) {
-			img := &image.RGBA{Pix: pix, Stride: 4 * b.Dx(), Rect: image.Rect(0, 0, b.Dx(), b.Dy())}
-			opaque(img)
-			var buf bytes.Buffer
-			_ = png.Encode(&buf, img)
-			rep.PNG = buf.Bytes()
-			c.done <- rep
-		}(c)
+		go encodeCapture(c, rep, pix, b.Dx(), b.Dy())
 	}
 	a.captures = keep
+}
+
+// encodeCapture encodes a screenshot's w x h pixels as PNG into rep and
+// answers c (off the game loop). An encoding that fails, or panics, answers
+// with the error instead; the window stays.
+func encodeCapture(c *captureReq, rep viewer.CaptureReply, pix []byte, w, h int) {
+	var buf bytes.Buffer
+	err := guard("screenshot", func() error {
+		img := &image.RGBA{Pix: pix, Stride: 4 * w, Rect: image.Rect(0, 0, w, h)}
+		opaque(img)
+		return png.Encode(&buf, img)
+	})
+	if err != nil {
+		rep.Error = &viewer.Error{Code: render.CodeInternal, Message: "The screenshot could not be encoded: " + err.Error() + ".", Hint: "Call get_viewer_state with screenshot true to take it again."}
+	} else {
+		rep.PNG = buf.Bytes()
+	}
+	c.done <- rep
 }
 
 // opaque sets every alpha to 255 (the window is opaque; the offscreen's

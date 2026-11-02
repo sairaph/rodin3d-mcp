@@ -34,6 +34,23 @@ func (a *App) post(fn func()) {
 	}
 }
 
+// guard runs fn, the reading or decoding of file content on a background
+// goroutine. A file that breaks a reader (a panic) is logged with the stack
+// and becomes fn's error, so its load fails, not the window.
+func guard(what string, fn func() error) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			log.Printf("%s panicked: %v\n%s", what, v, debug.Stack())
+			err = fmt.Errorf("the reader failed on this content: %v", v)
+		}
+	}()
+	return fn()
+}
+
+// readPicture reads a picture file of the strip, the inputs panel or the
+// flat view (decodeFile; tests replace it).
+var readPicture = decodeFile
+
 // startLoads begins loading everything new content shows.
 func (a *App) startLoads(p *prepared) {
 	for _, pn := range a.panes {
@@ -113,6 +130,9 @@ func (a *App) loadPane(p *pane) {
 		a.post(func() {
 			if current() {
 				p.status, p.err = "error", e.Message
+				if p.kind == viewer.KindModelFile {
+					a.fitTextures()
+				}
 				a.dirty()
 			}
 		})
@@ -136,7 +156,7 @@ func (a *App) loadPane(p *pane) {
 		}()
 		t0 := time.Now()
 		if kind == viewer.KindModelFile {
-			m, err := a.svc.ViewModel(a.ctx, file, textures)
+			m, err := a.viewModel(a.ctx, file, textures)
 			if err != nil {
 				failed(err)
 				return
@@ -151,7 +171,8 @@ func (a *App) loadPane(p *pane) {
 				p.model, p.mesh, p.simple, p.frame, p.modes, p.status = m, m.Mesh, simple, render3d.FrameOf(m.Mesh), modes, "ready"
 				p.modeNote = ""
 				if !slices.Contains(p.modes, a.mode) {
-					// a.mode is set before the load only when a show asked for it.
+					// a.mode is set before the load only when a show asked for
+					// it, or by a reload (the mode shown).
 					asked := a.mode
 					a.setMode(defaultMode(p.modes))
 					if asked != "" {
@@ -164,6 +185,7 @@ func (a *App) loadPane(p *pane) {
 				if len(m.Textures) > 0 && len(a.textures) == 0 {
 					a.textures = a.modelMapThumbs(m.File, m.Textures)
 				}
+				a.fitTextures()
 				a.dirty()
 				a.trimSoon()
 			})
@@ -369,10 +391,17 @@ func withMats(mesh *render3d.Mesh, mats []*render3d.Material) *render3d.Mesh {
 	return &c
 }
 
-// modelNote is a model file pane's note: a mode change its load made, and
-// what of the file is drawn without.
+// reloadedNote is in a model file pane's note after the window read the
+// file again because it changed on disk (reloadPane), until the next show.
+const reloadedNote = "reloaded: the file changed on disk"
+
+// modelNote is a model file pane's note: a reload, a mode change its load
+// made, and what of the file is drawn without.
 func modelNote(p *pane) string {
 	var parts []string
+	if p.reloaded {
+		parts = append(parts, reloadedNote)
+	}
 	for _, s := range []string{p.modeNote, p.model.Note()} {
 		if s != "" {
 			parts = append(parts, s)
@@ -381,11 +410,63 @@ func modelNote(p *pane) string {
 	return strings.Join(parts, "; ")
 }
 
+// modelPane is the pane of the model file shown, or nil.
+func (a *App) modelPane() *pane {
+	if a.kind == viewer.KindModelFile && len(a.panes) == 1 {
+		return a.panes[0]
+	}
+	return nil
+}
+
+// reloadPane reads a model file pane's file again, as showing it again
+// would, when a load of its pictures found that the file changed on disk
+// since it was read (modelfile.ErrChanged; a file only touched too, as its
+// pictures come out the same): new geometry, materials, modes and textures
+// panel. The mode stays when the new model has it (else its default, with
+// the usual mode note), and so does the camera; the old pictures are
+// released. The reload is one read of the file, so it cannot find the file
+// changed itself: a file that changes again reloads the next time a load
+// needs it. Like any load it does not bump the revision; the pane's status
+// (loading, then ready or the error) and its note say what happened.
+func (a *App) reloadPane(p *pane) {
+	log.Printf("model %s changed on disk: reading it again", filepath.Base(p.file))
+	a.rend.drop(p)
+	p.gen++
+	release(&p.img)
+	a.releaseThumbs(a.textures)
+	a.textures = nil
+	a.trimSoon()
+	p.model, p.mesh, p.simple, p.maps, p.mapsWanted, p.mapsFailed = nil, nil, nil, nil, false, nil
+	p.hasShown, p.hasQueued, p.renderErr = false, false, ""
+	p.reloaded, p.modeNote, p.note = true, "", reloadedNote
+	a.loadPane(p)
+}
+
+// fitTextures keeps the textures panel of a model file whose pane loaded
+// (or reloaded, or failed): the picture selected by name stays selected
+// when the file still has it, else the first is; without pictures the
+// window leaves the textures layout.
+func (a *App) fitTextures() {
+	if name := a.selected.TextureMap; name != "" {
+		a.texSel = a.textureIndex(name)
+		if a.texSel < 0 {
+			a.texSel, a.selected.TextureMap = 0, ""
+		}
+	}
+	if a.texSel >= len(a.textures) {
+		a.texSel = 0
+	}
+	if a.layout == viewer.LayoutTextures && len(a.textures) == 0 {
+		a.layout = viewer.LayoutSingle
+	}
+}
+
 // loadPaneMaps loads the texture maps of kinds into a ready task pane whose
 // mode samples them, or a model file pane's materials' maps; mapsWanted
 // marks the load. The pane keeps the maps the mode shown when the load ends
 // samples; a map that fails is recorded in mapsFailed (mapsError), unless
-// the mode was chosen again meanwhile.
+// the mode was chosen again meanwhile. A model file that changed on disk
+// since the pane read it is read again (reloadPane).
 func (a *App) loadPaneMaps(p *pane, kinds []string) {
 	if p.mapsWanted || p.status != "ready" {
 		return
@@ -397,7 +478,11 @@ func (a *App) loadPaneMaps(p *pane, kinds []string) {
 		model, file := p.model, p.file
 		go func() {
 			t0 := time.Now()
-			m, err := a.modelTextures(a.ctx, model)
+			var m *modelfile.Model
+			err := guard("model textures", func() (err error) {
+				m, err = a.modelTextures(a.ctx, model)
+				return err
+			})
 			if err == nil {
 				log.Printf("model %s: textures in %v", filepath.Base(file), time.Since(t0).Round(time.Millisecond))
 			}
@@ -408,8 +493,9 @@ func (a *App) loadPaneMaps(p *pane, kinds []string) {
 				p.mapsWanted = false
 				switch {
 				case errors.Is(err, modelfile.ErrChanged):
-					// The file changed on disk: the model shown is no longer it.
-					p.status, p.err = "error", service.Classify(err).Message
+					// The model shown is no longer the file: read it again.
+					a.reloadPane(p)
+					return
 				case err != nil:
 					if a.mapsTry == try {
 						p.mapsFailed = map[string]string{modelMaps: service.Classify(err).Message}
@@ -430,7 +516,11 @@ func (a *App) loadPaneMaps(p *pane, kinds []string) {
 		failed := map[string]string{}
 		for _, k := range kinds {
 			t0 := time.Now()
-			t, err := a.viewMap(a.ctx, uuid, stage, k)
+			var t *render3d.Texture
+			err := guard(k+" map", func() (err error) {
+				t, err = a.viewMap(a.ctx, uuid, stage, k)
+				return err
+			})
 			if err != nil {
 				failed[k] = service.Classify(err).Message
 				log.Printf("task %s %s: %s map: %s", uuid[:8], stage.Name, k, failed[k])
@@ -481,7 +571,11 @@ func (a *App) loadStrip(vt *service.ViewTask, st service.ViewStage) {
 
 // fetchThumb gets a file (download when needed) and makes its thumbnail.
 func (a *App) fetchThumb(cgen uint64, t *thumb, get func() (string, error)) {
-	file, err := get()
+	var file string
+	err := guard("fetch "+t.name, func() (err error) {
+		file, err = get()
+		return err
+	})
 	if err != nil {
 		e := service.Classify(err)
 		a.post(func() {
@@ -506,7 +600,12 @@ func (a *App) loadThumb(t *thumb, file string) {
 }
 
 func (a *App) decodeThumb(cgen uint64, t *thumb, file string) {
-	img, w, h, err := decodeFile(file, thumbEdge)
+	var img image.Image
+	var w, h int
+	err := guard("thumbnail "+filepath.Base(file), func() (err error) {
+		img, w, h, err = readPicture(file, thumbEdge)
+		return err
+	})
 	a.post(func() {
 		if a.contentGen != cgen || !a.listed(t) {
 			return
@@ -611,12 +710,17 @@ func (a *App) syncImages() {
 }
 
 // loadTexture decodes a texture panel picture and uploads it if it is still
-// the one shown.
+// the one shown. A model file that changed on disk since its pane read it
+// is read again (reloadPane).
 func (a *App) loadTexture(t *thumb) {
 	t.loading = true
 	cgen := a.contentGen
 	go func() {
-		img, err := t.src()
+		var img image.Image
+		err := guard("texture "+t.name, func() (err error) {
+			img, err = t.src()
+			return err
+		})
 		var msg string
 		if err != nil {
 			msg = service.Classify(err).Message
@@ -626,6 +730,10 @@ func (a *App) loadTexture(t *thumb) {
 				return
 			}
 			t.loading = false
+			if p := a.modelPane(); p != nil && errors.Is(err, modelfile.ErrChanged) && slices.Contains(a.textures, t) {
+				a.reloadPane(p)
+				return
+			}
 			switch {
 			case err != nil:
 				t.err = msg

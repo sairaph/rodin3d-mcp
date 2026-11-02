@@ -38,6 +38,12 @@ func loadGLTF(ctx context.Context, data []byte, file File, dec Decoders, texture
 	if err != nil {
 		return nil, err
 	}
+	// The files beside a .gltf are read again with it (its images, when a
+	// textured mode or the textures panel needs them): a rewrite of one alone
+	// changes the model too.
+	for _, p := range f.ExternalFiles() {
+		file.sides = append(file.sides, stampOf(p))
+	}
 	var d *draco.Decoder
 	for _, gm := range f.Doc.Meshes {
 		for _, p := range gm.Primitives {

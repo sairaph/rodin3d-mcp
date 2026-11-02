@@ -300,13 +300,15 @@ func (s *Service) ViewModel(ctx context.Context, path string, textures bool) (*m
 }
 
 // ViewModelTextures returns m with its material maps decoded;
-// modelfile.ErrChanged (a conflict) when the file changed since it was read.
+// modelfile.ErrChanged (a conflict) when the file changed since it was read
+// (the window then reads it again).
 func (s *Service) ViewModelTextures(ctx context.Context, m *modelfile.Model) (*modelfile.Model, error) {
 	return m.WithTextures(ctx, s.decoders())
 }
 
 // ViewModelPicture decodes glTF texture t of a model file (Model.File),
-// for the textures panel; modelfile.ErrChanged when the file changed since.
+// for the textures panel; modelfile.ErrChanged when the file changed since
+// (the window then reads it again).
 func (s *Service) ViewModelPicture(ctx context.Context, file modelfile.File, t int) (*render3d.Texture, error) {
 	return modelfile.Picture(ctx, file, s.decoders(), t)
 }

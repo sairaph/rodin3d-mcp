@@ -372,11 +372,42 @@ func (f *File) uriBytes(uri string) ([]byte, error) {
 	if f.Dir == "" {
 		return nil, errors.New("an external file needs the .gltf's folder")
 	}
+	return os.ReadFile(f.uriPath(uri))
+}
+
+// uriPath is the file a uri names, relative to f.Dir.
+func (f *File) uriPath(uri string) string {
 	name, err := url.PathUnescape(uri)
 	if err != nil {
 		name = uri
 	}
-	return os.ReadFile(filepath.Join(f.Dir, filepath.FromSlash(name)))
+	return filepath.Join(f.Dir, filepath.FromSlash(name))
+}
+
+// ExternalFiles lists the files a .gltf's buffers and images name (not
+// data: addresses), each once; none for a GLB.
+func (f *File) ExternalFiles() []string {
+	if f.Dir == "" {
+		return nil
+	}
+	var out []string
+	add := func(uri string) {
+		if uri == "" || strings.HasPrefix(uri, "data:") {
+			return
+		}
+		if p := f.uriPath(uri); !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, b := range f.Doc.Buffers {
+		add(b.URI)
+	}
+	for _, im := range f.Doc.Images {
+		if im.BufferView == nil {
+			add(im.URI)
+		}
+	}
+	return out
 }
 
 // ImageData returns the bytes of image i: embedded in a buffer view, or

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -385,8 +386,101 @@ func TestTexturesOnDemand(t *testing.T) {
 	}
 }
 
+// splitGLTF writes the GLB testdata file name as a .gltf in a new folder,
+// with its buffer in cube.bin and each image in image<i> beside it, and
+// returns the .gltf's path.
+func splitGLTF(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := int(binary.LittleEndian.Uint32(b[12:]))
+	var doc map[string]any
+	if err := json.Unmarshal(b[20:20+n], &doc); err != nil {
+		t.Fatal(err)
+	}
+	bin := b[20+n+8:]
+	dir := t.TempDir()
+	write := func(name string, data []byte) {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, im := range doc["images"].([]any) {
+		im := im.(map[string]any)
+		off, n := view(doc, int(im["bufferView"].(float64)))
+		file := fmt.Sprintf("image%d", i)
+		write(file, bin[off:off+n])
+		delete(im, "bufferView")
+		im["uri"] = file
+	}
+	write("cube.bin", bin)
+	doc["buffers"].([]any)[0].(map[string]any)["uri"] = "cube.bin"
+	js, _ := json.Marshal(doc)
+	write("cube.gltf", js)
+	return filepath.Join(dir, "cube.gltf")
+}
+
+// TestGLTFSideFilesChanged: a .gltf whose buffer or image file alone was
+// rewritten (or touched, or removed) after Load answers ErrChanged too; one
+// left as it was reads its textures.
+func TestGLTFSideFilesChanged(t *testing.T) {
+	ctx := context.Background()
+	later := time.Now().Add(time.Minute)
+	touch := func(path string) {
+		if err := os.Chtimes(path, later, later); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(dir string)
+	}{
+		{"nothing", func(string) {}},
+		{"buffer touched", func(dir string) { touch(filepath.Join(dir, "cube.bin")) }},
+		{"image touched", func(dir string) { touch(filepath.Join(dir, "image0")) }},
+		{"image rewritten", func(dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "image0"), []byte("not a picture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"image removed", func(dir string) {
+			if err := os.Remove(filepath.Join(dir, "image1")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		path := splitGLTF(t, "cube_png.glb")
+		m, err := Load(ctx, path, decoders(t), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m.File.sides) != 4 {
+			t.Fatalf("%d files stamped beside the .gltf, want the buffer and 3 images", len(m.File.sides))
+		}
+		tc.change(filepath.Dir(path))
+		_, errT := m.WithTextures(ctx, decoders(t))
+		_, errP := Picture(ctx, m.File, decoders(t), m.Textures[0].Texture)
+		if tc.name == "nothing" {
+			if errT != nil || errP != nil {
+				t.Errorf("unchanged: WithTextures %v, Picture %v", errT, errP)
+			}
+			continue
+		}
+		if !errors.Is(errT, ErrChanged) || !errors.Is(errP, ErrChanged) {
+			t.Errorf("%s: WithTextures %v, Picture %v; want ErrChanged", tc.name, errT, errP)
+		}
+	}
+	// A GLB names no files beside it.
+	if m := load(t, "cube_png.glb"); len(m.File.sides) != 0 {
+		t.Errorf("a GLB has %d side files", len(m.File.sides))
+	}
+}
+
 // TestFileChanged: a file rewritten on disk after Load (another export to
-// the same path; or the same bytes written again later) is not read for
+// the same path; the same bytes written again later; other bytes of the
+// same size within the same modification time), or removed, is not read for
 // textures: WithTextures and Picture answer ErrChanged instead of painting
 // the new pictures on the old geometry.
 func TestFileChanged(t *testing.T) {
@@ -407,6 +501,26 @@ func TestFileChanged(t *testing.T) {
 		"same bytes, later": func(path string) {
 			later := time.Now().Add(time.Minute)
 			if err := os.Chtimes(path, later, later); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"removed": func(path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		// A rewrite within a coarse modification time (FAT, a network share).
+		"other bytes, same size and time": func(path string) {
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := read("cube_png.glb")
+			b[len(b)-1] ^= 0xff
+			if err := os.WriteFile(path, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
 				t.Fatal(err)
 			}
 		},

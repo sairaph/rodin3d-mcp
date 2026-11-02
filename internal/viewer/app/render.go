@@ -5,6 +5,7 @@ import (
 	"image"
 	"log"
 	"math"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -234,7 +235,7 @@ func (r *renderer) run(j *renderJob, cancel chan struct{}) (res renderDone) {
 	res.job = j
 	defer func() {
 		if v := recover(); v != nil {
-			log.Printf("render panicked: %v", v)
+			log.Printf("render panicked: %v\n%s", v, debug.Stack())
 			res.err = errors.New("the renderer failed")
 		}
 	}()

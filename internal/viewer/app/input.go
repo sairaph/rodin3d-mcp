@@ -3,7 +3,9 @@ package app
 import (
 	"errors"
 	"fmt"
+	"image"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -425,7 +427,8 @@ func (a *App) userDismiss() {
 	a.userAction("dismiss_message", "")
 }
 
-// loadFlat loads a strip picture at full size for the flat view.
+// loadFlat loads a strip picture at full size for the flat view (one that
+// does not load leaves the flat view its thumbnail).
 func (a *App) loadFlat(t *thumb) {
 	if t.full != nil || t.file == "" || t.fullLoading {
 		return
@@ -434,7 +437,11 @@ func (a *App) loadFlat(t *thumb) {
 	cgen := a.contentGen
 	file := t.file
 	go func() {
-		img, _, _, err := decodeFile(file, 4096)
+		var img image.Image
+		err := guard("picture "+filepath.Base(file), func() (err error) {
+			img, _, _, err = readPicture(file, 4096)
+			return err
+		})
 		a.post(func() {
 			if a.contentGen != cgen || !a.listed(t) {
 				return

@@ -261,8 +261,7 @@ func sentUnanswered(err error) bool {
 // sendRefused reports whether err, the error of a request that charges or
 // changes a task, is a clear refusal, after which nothing was charged or
 // changed:
-//   - a Hyper3D error code in a 2xx body that names a check of the request
-//     (not one of serverFailureCodes);
+//   - a known refusal code in a 2xx body (refusalCode);
 //   - a session Hyper3D refused, or none to send (401, sign in again);
 //   - an HTTP status below 500: 403, the other 4xx, and 429. Treating 429 as
 //     refused follows the usual rate-limiter practice of answering before
@@ -272,8 +271,12 @@ func sentUnanswered(err error) bool {
 //     applies a request it answers with 429.
 //
 // Any other error may have come after Hyper3D took the request: a 5xx from a
-// gateway after the backend acted, a body code naming a server failure, no
-// answer, or a broken one. Such a request is never to be sent again.
+// gateway after the backend acted, a body code naming a server failure or
+// one this build does not know, no answer, or a broken one. Such a request is
+// never to be sent again: wrongly saying "may have started" costs a get_task
+// call and at most a claim until store.ClaimBound, wrongly saying "refused"
+// can pay twice or flip a private task back (decided in fix round 8,
+// notes/74).
 func sendRefused(err error) bool {
 	var se *rodin.ServiceError
 	var ae *rodin.AuthError
@@ -282,7 +285,7 @@ func sendRefused(err error) bool {
 	var oe *auth.OAuthError
 	switch {
 	case errors.As(err, &se):
-		return !serverFailureCodes[se.Code]
+		return refusalCode(se.Code)
 	case errors.As(err, &ae), errors.Is(err, rodin.ErrUnauthorized), errors.As(err, &lr), errors.As(err, &oe):
 		return true
 	case errors.As(err, &he):
@@ -291,21 +294,29 @@ func sendRefused(err error) bool {
 	return false
 }
 
-// serverFailureCodes are the body error codes that name a failure on
-// Hyper3D's side, not a check of the request, so the request may have been
-// taken before it (the same as a 5xx):
-//   - INTERNAL_SERVER_ERROR: "An unexpected error occurred" (the web's
-//     table, rodin.WebMessages);
-//   - NS_ERROR_FAILURE: "WebSocket connection failed" (the same table);
-//   - API_UNKNOWN: the API v2 docs' unknown error (notes/10);
-//   - rodin.CodeNoTaskInReply: the client's own code for a create taken with
-//     a reply that names no task.
-//
-// Every other code of the table names a check of the request (balance,
-// stage, plan, input) or belongs to no task procedure (the referral and
-// e-mail codes), and stays a refusal.
+// refusalCode reports whether code, a body error code, is a known refusal:
+// a code of the web's table (rodin.WebMessages) or of the codes this build
+// maps (serviceCodes) that names a check of the request (balance, quota,
+// stage, plan, permission, input, rate), not a failure of Hyper3D's own
+// (serverFailureCodes). A code in neither list, such as the API v2 docs'
+// API_UNKNOWN (notes/10) or the client's rodin.CodeNoTaskInReply for a
+// create taken with a reply that names no task, is not one.
+func refusalCode(code string) bool {
+	_, web := rodin.WebMessages[code]
+	_, mapped := serviceCodes[code]
+	return (web || mapped) && !serverFailureCodes[code]
+}
+
+// serverFailureCodes are the codes of the web's table that name a failure on
+// Hyper3D's side, after which the request may have been taken (the same as
+// a 5xx):
+//   - INTERNAL_SERVER_ERROR: "An unexpected error occurred";
+//   - NS_ERROR_FAILURE: "WebSocket connection failed";
+//   - REFERRAL_UNKNOWN_ERROR and FAILED_TO_SEND: an unknown referral error
+//     and an e-mail that could not be sent. No task procedure is known to
+//     answer them; they are listed so that one never reads as a refusal.
 var serverFailureCodes = map[string]bool{
-	"INTERNAL_SERVER_ERROR": true, "NS_ERROR_FAILURE": true, "API_UNKNOWN": true, rodin.CodeNoTaskInReply: true,
+	"INTERNAL_SERVER_ERROR": true, "NS_ERROR_FAILURE": true, "REFERRAL_UNKNOWN_ERROR": true, "FAILED_TO_SEND": true,
 }
 
 // sendFailure turns the error of the sent request into the reply: a request

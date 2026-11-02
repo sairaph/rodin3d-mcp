@@ -94,6 +94,8 @@ func TestSendRefused(t *testing.T) {
 		{"body server error", &rodin.ServiceError{Procedure: proc, Code: "INTERNAL_SERVER_ERROR"}, false},
 		{"body NS_ERROR_FAILURE", &rodin.ServiceError{Procedure: proc, Code: "NS_ERROR_FAILURE"}, false},
 		{"body API_UNKNOWN", &rodin.ServiceError{Procedure: proc, Code: "API_UNKNOWN"}, false},
+		{"body code this build does not know", &rodin.ServiceError{Procedure: proc, Code: "SOMETHING_NEW_FAILED"}, false},
+		{"body code only this build maps", &rodin.ServiceError{Procedure: proc, Code: "REVERSION_EXISTS"}, true},
 		{"401", &rodin.AuthError{Procedure: proc, Status: 401}, true},
 		{"403", &rodin.HTTPError{Procedure: proc, Status: 403}, true},
 		{"400", &rodin.HTTPError{Procedure: proc, Status: 400}, true},

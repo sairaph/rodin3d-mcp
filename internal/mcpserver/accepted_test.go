@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"cmp"
 	"regexp"
 	"strconv"
 	"strings"
@@ -425,17 +426,25 @@ func TestPaidSendBodyServerErrorIsNeverSentAgain(t *testing.T) {
 		where            string // what the hint must point to
 		ledger           string // the task whose ledger row says unknown ("" none known)
 		setup            func(f *fixture)
-		claim            bool // a repeat is refused while the claim stays
+		claim            bool   // a repeat is refused while the claim stays
+		code             string // the body code answered; "" INTERNAL_SERVER_ERROR
 	}{
 		{"generate_model", "generate_model", "task/rodin_mesh",
 			func() map[string]any {
 				return map[string]any{"images": []any{map[string]any{"path": img}}, "tier": "medium"}
-			}, "list_tasks", "", nil, false},
+			}, "list_tasks", "", nil, false, ""},
 		{"redo_geometry", "redo_geometry", "task/rodin_update", func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID} },
-			"get_task with " + fakehyper.DraftID, fakehyper.DraftID, nil, false},
+			"get_task with " + fakehyper.DraftID, fakehyper.DraftID, nil, false, ""},
 		{"split_parts generate", "split_parts", "task/bang_generate",
 			func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID, "step": "generate"} }, "get_task with " + fakehyper.DraftID,
-			fakehyper.DraftID, func(f *fixture) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }, true},
+			fakehyper.DraftID, func(f *fixture) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }, true, ""},
+		// Round 8 (notes/74): a code this build does not know is not a refusal.
+		{"redo_geometry, a body code this build does not know", "redo_geometry", "task/rodin_update",
+			func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID} },
+			"get_task with " + fakehyper.DraftID, fakehyper.DraftID, nil, false, "SOMETHING_NEW_FAILED"},
+		{"split_parts generate, a body code this build does not know", "split_parts", "task/bang_generate",
+			func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID, "step": "generate"} }, "get_task with " + fakehyper.DraftID,
+			fakehyper.DraftID, func(f *fixture) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }, true, "SOMETHING_NEW_FAILED"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -444,7 +453,7 @@ func TestPaidSendBodyServerErrorIsNeverSentAgain(t *testing.T) {
 			if c.setup != nil {
 				c.setup(f)
 			}
-			f.fake.ActThenBodyError(c.sent, "INTERNAL_SERVER_ERROR")
+			f.fake.ActThenBodyError(c.sent, cmp.Or(c.code, "INTERNAL_SERVER_ERROR"))
 			r := f.paidCall(c.tool, c.args())
 			hint, _ := get(r.front, "error", "hint").(string)
 			msg, _ := get(r.front, "error", "message").(string)

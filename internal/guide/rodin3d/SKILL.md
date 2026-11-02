@@ -20,7 +20,7 @@ Call the tools by their bare names, such as get_account; your client may add a p
 ## Rules
 
 - Show the user the price before a paid call unless they already agreed to it. The price comes from quote_cost, never from memory.
-- Never resend a paid call that timed out or got no answer: it may have started. get_task or list_tasks shows whether it did.
+- Never resend a paid call whose reply says it may have started (it timed out, got no answer, or got a server error): get_task or list_tasks shows whether it did.
 - After each draft, show it (the attached poster or get_preview) and let the user choose redo or confirm before more credits go.
 - Follow each reply's actions and Next line, and each error's hint: they name the next call.
 - New tasks are private. Make one public only when the user asks: topic `privacy-and-errors`.

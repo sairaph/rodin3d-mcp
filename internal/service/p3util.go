@@ -179,9 +179,13 @@ func (c claim) fill(jobs []string, detail map[string]string) int64 {
 	return c.id
 }
 
-// drop removes the claim of a call whose send failed.
-func (c claim) drop() {
-	if c.id == 0 {
+// sendFailed handles the claim of a call whose send failed with err. A clear
+// refusal (sendRefused) sent nothing that runs, so the claim is removed. Any
+// other failure may have started the call: the claim stays, without jobs,
+// and keeps blocking a repeat (in any session) until store.ClaimBound, as a
+// claim being sent does; get_task shows the call running until then.
+func (c claim) sendFailed(err error) {
+	if c.id == 0 || !sendRefused(err) {
 		return
 	}
 	if st, err := c.s.Store(); err == nil {

@@ -50,7 +50,13 @@ func (e *HTTPError) Error() string {
 	return s
 }
 
-// ServiceError is a 2xx reply whose body carries {"error": CODE}.
+// CodeNoTaskInReply is the ServiceError of a create (rodin_mesh,
+// rodin_agentic, rodin_fork) whose 2xx reply names no task. Hyper3D did not
+// answer it as an error: the request was taken, and the reply is broken.
+const CodeNoTaskInReply = "NO_TASK_IN_REPLY"
+
+// ServiceError is a 2xx reply whose body carries {"error": CODE}, or a reply
+// that cannot be used (CodeNoTaskInReply).
 type ServiceError struct {
 	Procedure string
 	Code      string

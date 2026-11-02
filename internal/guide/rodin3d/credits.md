@@ -20,7 +20,7 @@ The paid tools: generate_model, redo_geometry, confirm_geometry, generate_textur
 
 ## Never resend a paid call
 
-- A request that got no answer answers unavailable and says it may have started on Hyper3D. Do not send it again. Call get_task with the task id, or list_tasks (newest first) for a call that creates a task, to see whether it started.
+- A request that got no answer, or an error answer that does not say it was refused (a 5xx), answers unavailable and says it may have started on Hyper3D. Do not send it again. Call get_task with the task id, or list_tasks (newest first) for a call that creates a task, to see whether it started.
 - A request that was accepted but whose progress could not be read answers unavailable, says the request was accepted, and names the task. Do not send it again. Call get_task with that task id.
 - A reply with timed_out true is not a failure: the job runs on. Call wait_task with the task id.
 - get_task lists under spend every paid or changing call this tool made on the task.

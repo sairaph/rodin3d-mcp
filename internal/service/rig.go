@@ -259,7 +259,7 @@ func (s *Service) RigModel(ctx context.Context, in RigInput) (Result, error) {
 	if !in.Reskin {
 		reply, err := s.client.Rigging(ctx, uuid, settings)
 		if err != nil {
-			c.drop()
+			c.sendFailed(err)
 			sp.close(ctx, err)
 			return Result{}, sendFailure("rig_model", uuid, err)
 		}
@@ -617,7 +617,7 @@ func samePath(a, b string) bool {
 func (s *Service) sendReskin(ctx context.Context, uuid, source string, c claim, call *reskinCall, deadline time.Time) (string, error) {
 	reply, err := s.client.Rigging(ctx, uuid, call.settings)
 	if err != nil {
-		c.drop()
+		c.sendFailed(err)
 		return "", err
 	}
 	id := c.fill(reply.Job.UUIDs, nil)
@@ -646,8 +646,11 @@ func reskinFailure(uuid string, reskinOnly bool, err error) error {
 		// to be sent, never the rig again, whatever the error advises.
 		hint = causeStep(e) + "The reskin was not started and the rig is done: do not send rig_model without reskin again (get_task with " + uuid + " shows the rig); rig_model with the same fbx_skeleton_path and reskin true sends the reskin; animate_model works with the rig as it is."
 	}
-	if sentUnanswered(err) {
-		hint = "It may have started on Hyper3D, and no read shows its progress: do not send it again unless the user decides to. animate_model works with the rig either way."
+	if !sendRefused(err) {
+		// The reskin claim stays (sendFailed), so get_task's rig block
+		// shows it running while it may run, and a repeat is refused.
+		hint = "It may have started on Hyper3D: do not send it again now. get_task with " + uuid + " shows the reskin in its rig block; " +
+			"rig_model with the same fbx_skeleton_path and reskin true sends it only when that shows no reskin running. animate_model works with the rig either way."
 	}
 	return failFields(e.Code, lead+e.Message, hint, e.Fields)
 }

@@ -117,7 +117,7 @@ type Server struct {
 	failAfter  string            // once this procedure was called, failProcs answer HTTP 503
 	failProcs  []string          // procedures (as Calls names them) failing after failAfter
 	privacyLag time.Duration     // how long the cards show the privacy before a task/set_private
-	toggleCode int               // non-zero: task/set_private toggles, then answers this status
+	actThen    map[string]int    // procedure -> the status it answers after acting (ActThenAnswer)
 	onCall     map[string]func() // runs once when the procedure is called (OnCall)
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
@@ -284,12 +284,16 @@ func (s *Server) SetPrivacyLag(d time.Duration) {
 	s.privacyLag = d
 }
 
-// SetToggleStatus makes task/set_private toggle the task and then answer
-// HTTP status (a gateway that fails after Hyper3D acted); 0 answers 201 again.
-func (s *Server) SetToggleStatus(status int) {
+// ActThenAnswer makes every call of procedure (as Calls names it) act as
+// usual and then answer HTTP status instead of its own reply, as a gateway
+// that fails after Hyper3D acted; 0 gives the procedure its own reply again.
+func (s *Server) ActThenAnswer(procedure string, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.toggleCode = status
+	if s.actThen == nil {
+		s.actThen = map[string]int{}
+	}
+	s.actThen[procedure] = status
 }
 
 // OnCall runs fn once, the next time procedure (as Calls names it) is
@@ -592,6 +596,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 		return t, ok
 	}
+	if status := s.actThen[name]; status != 0 {
+		// The procedure acts as usual; its own answer is dropped (ActThenAnswer).
+		answer := w
+		w = httptest.NewRecorder()
+		defer writeJSON(answer, status, map[string]any{"statusCode": status, "message": http.StatusText(status)})
+	}
 
 	switch {
 	case proc == "user/get_info":
@@ -771,10 +781,6 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 		t.shownPrivate, t.shownUntil = t.isPrivate(), time.Now().Add(s.privacyLag)
 		t.Private = !t.Private
-		if s.toggleCode != 0 {
-			writeJSON(w, s.toggleCode, map[string]any{"statusCode": s.toggleCode, "message": http.StatusText(s.toggleCode)})
-			return
-		}
 		writeJSON(w, 201, map[string]any{})
 	default:
 		writeJSON(w, 404, map[string]any{"statusCode": 404, "message": "Cannot POST /api/" + proc})

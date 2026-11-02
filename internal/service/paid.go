@@ -12,6 +12,7 @@ import (
 	"github.com/sairaph/mcp-wizard/render"
 
 	"github.com/sairaph/rodin3d-mcp/internal/assets"
+	"github.com/sairaph/rodin3d-mcp/internal/auth"
 	"github.com/sairaph/rodin3d-mcp/internal/daemon"
 	"github.com/sairaph/rodin3d-mcp/internal/price"
 	"github.com/sairaph/rodin3d-mcp/internal/rodin"
@@ -218,7 +219,7 @@ func (sp *spend) close(ctx context.Context, callErr error) {
 	}
 	result := "ok"
 	switch {
-	case callErr != nil && sentUnanswered(callErr):
+	case callErr != nil && !sendRefused(callErr):
 		result = "unknown: " + oneLine(callErr.Error())
 	case callErr != nil:
 		result = "error: " + oneLine(callErr.Error())
@@ -248,25 +249,64 @@ func (sp *spend) walletText() string {
 }
 
 // sentUnanswered reports whether err means the request may have reached
-// the service without an answer: it must not be sent again.
+// the service and no answer came back (a transport failure, a time-out, a
+// cancelled call). It decides only the wording; sendRefused decides whether
+// a request is never to be sent again.
 func sentUnanswered(err error) bool {
 	var ne *rodin.NetError
 	var netErr net.Error
 	return errors.As(err, &ne) || errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
-// sendFailure turns the error of the sent request into the reply: a
-// request that got no answer is never to be sent again.
+// sendRefused reports whether err, the error of a request that charges or
+// changes a task, is a clear refusal, after which nothing was charged or
+// changed:
+//   - a Hyper3D error code in a 2xx body (not CodeNoTaskInReply, which the
+//     client reports for a create taken with a broken reply);
+//   - a session Hyper3D refused, or none to send (401, sign in again);
+//   - an HTTP status below 500: 403, the other 4xx, and 429, which by
+//     convention (RFC 6585) means the request was not processed; nothing in
+//     the docs or the notes says that Hyper3D applies a request it answers
+//     with 429.
+//
+// Any other error may have come after Hyper3D took the request: a 5xx from a
+// gateway after the backend acted, no answer, or a broken one. Such a
+// request is never to be sent again.
+func sendRefused(err error) bool {
+	var se *rodin.ServiceError
+	var ae *rodin.AuthError
+	var he *rodin.HTTPError
+	var lr *auth.LoginRequired
+	var oe *auth.OAuthError
+	switch {
+	case errors.As(err, &se):
+		return se.Code != rodin.CodeNoTaskInReply
+	case errors.As(err, &ae), errors.Is(err, rodin.ErrUnauthorized), errors.As(err, &lr), errors.As(err, &oe):
+		return true
+	case errors.As(err, &he):
+		return he.Status < 500
+	}
+	return false
+}
+
+// sendFailure turns the error of the sent request into the reply: a request
+// that was not clearly refused (sendRefused) may have started, and is never
+// to be sent again. uuid is the task the request works on; "" for a create,
+// whose new task only list_tasks can show.
 func sendFailure(op, uuid string, err error) error {
-	if !sentUnanswered(err) {
+	if sendRefused(err) {
 		return err
 	}
 	where := "list_tasks (newest first) to see whether the new task exists"
 	if uuid != "" {
 		where = "get_task with " + uuid + " to see whether the job started"
 	}
+	answer := "was sent but no answer came back"
+	if !sentUnanswered(err) {
+		answer = "was sent and answered with an error that does not say it was refused"
+	}
 	return fail(render.CodeUnavailable,
-		fmt.Sprintf("The %s request was sent but no answer came back (%s); it may have started on Hyper3D.", op, oneLine(err.Error())),
+		fmt.Sprintf("The %s request %s (%s); it may have started on Hyper3D.", op, answer, oneLine(err.Error())),
 		"Do not send it again: call "+where+".")
 }
 

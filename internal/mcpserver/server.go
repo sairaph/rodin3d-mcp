@@ -42,7 +42,7 @@ const instructions = "Rodin (Hyper3D) image-to-3D generations of the signed-in a
 	"split_parts (split a draft into parts), rig_model and animate_model (skeleton, animations; list_animation_presets), and " +
 	"texture_model (start from your own model file). Each of these runs unless the user set its [permission] key to deny in " +
 	"config.toml (get_account shows them), and the paid ones need expected_credits: the credits quote_cost returned for the same call. " +
-	"Never resend a paid call that timed out; get_task or list_tasks shows whether it started. " +
+	"Never resend a paid call that timed out or whose reply says it may have started; get_task or list_tasks shows whether it started. " +
 	"New tasks are private; set_private (free, no permission key) changes the privacy of a task, and public true on a tool that " +
 	"creates a task (generate_model, generate_agentic, texture_model, fork_task) keeps it public: use either for public only when the user asks for it."
 

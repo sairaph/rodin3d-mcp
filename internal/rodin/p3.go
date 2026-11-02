@@ -89,7 +89,7 @@ func (c *Client) Agentic(ctx context.Context, req AgenticRequest) (*AgenticReply
 		return nil, err
 	}
 	if out.UUID == "" {
-		return nil, &ServiceError{Procedure: "task/rodin_agentic", Code: "NO_TASK_IN_REPLY", Message: "the reply names no task"}
+		return nil, &ServiceError{Procedure: "task/rodin_agentic", Code: CodeNoTaskInReply, Message: "the reply names no task"}
 	}
 	return &out, nil
 }

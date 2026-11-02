@@ -102,7 +102,7 @@ func (c *Client) Mesh(ctx context.Context, req MeshRequest) (*JobReply, error) {
 		return nil, err
 	}
 	if out.UUID == "" {
-		return nil, &ServiceError{Procedure: "task/rodin_mesh", Code: "NO_TASK_IN_REPLY", Message: "the reply names no task"}
+		return nil, &ServiceError{Procedure: "task/rodin_mesh", Code: CodeNoTaskInReply, Message: "the reply names no task"}
 	}
 	return &out, nil
 }
@@ -214,7 +214,7 @@ func (c *Client) Fork(ctx context.Context, uuid, state string) (string, error) {
 		return "", err
 	}
 	if out.UUID == "" {
-		return "", &ServiceError{Procedure: "task/rodin_fork", Code: "NO_TASK_IN_REPLY", Message: "the reply names no task"}
+		return "", &ServiceError{Procedure: "task/rodin_fork", Code: CodeNoTaskInReply, Message: "the reply names no task"}
 	}
 	return out.UUID, nil
 }

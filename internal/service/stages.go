@@ -894,7 +894,7 @@ func (s *Service) Fork(ctx context.Context, in ForkInput) (Result, error) {
 	newID, err := s.client.Fork(ctx, uuid, state)
 	if err != nil {
 		sp.close(ctx, err)
-		return Result{}, sendFailure("fork_task", uuid, err)
+		return Result{}, sendFailure("fork_task", "", err) // the new task has no id yet
 	}
 	sp.uuid = newID
 	privacy, privacyNote := s.privacyOfNew(ctx, newID, in.Public)

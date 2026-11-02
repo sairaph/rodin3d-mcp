@@ -169,7 +169,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	} else {
 		reply, err := s.client.BangPlan(ctx, req, strength)
 		if err != nil {
-			c.drop()
+			c.sendFailed(err)
 			sp.close(ctx, err)
 			return Result{}, sendFailure("split_parts (bang_plan)", uuid, err)
 		}
@@ -212,7 +212,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 	}
 	reply, err := s.client.BangGenerate(ctx, uuid, version)
 	if err != nil {
-		c.drop()
+		c.sendFailed(err)
 		sp.close(ctx, err)
 		if step != "both" {
 			return Result{}, sendFailure("split_parts (bang_generate)", uuid, err)
@@ -221,7 +221,7 @@ func (s *Service) SplitParts(ctx context.Context, in SplitInput) (Result, error)
 		// sending step both again would make (and charge) a new plan.
 		e := Classify(sendFailure("split_parts (bang_generate)", uuid, err))
 		hint := causeStep(e) + "Do not send step plan or both again (it makes a new plan): get_task with " + uuid + " shows the plan; split_parts with step generate splits by it."
-		if sentUnanswered(err) {
+		if !sendRefused(err) {
 			hint = "Do not send it again: get_task with " + uuid + " shows whether the split started; only if it did not, split_parts with step generate splits by this plan (never step plan or both, which make a new plan)."
 		}
 		return Result{}, failFields(e.Code, fmt.Sprintf("The Bang plan of geometry %s was made, but the split call failed: %s", version, e.Message), hint, e.Fields)

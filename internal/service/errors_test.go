@@ -74,3 +74,43 @@ func TestModelFileGoneIsNotFound(t *testing.T) {
 		t.Fatalf("ViewModel of a .gltf without its buffer: %+v", got)
 	}
 }
+
+// TestSendRefused: only a clear refusal of a request that charges or changes
+// a task leaves it free to send again; every other error after it left may
+// have come after Hyper3D took it (a 5xx from a gateway, no answer, a broken
+// reply), and sendFailure answers that it may have started.
+func TestSendRefused(t *testing.T) {
+	proc := "task/rodin_update"
+	cases := []struct {
+		name    string
+		err     error
+		refused bool
+	}{
+		{"body error code", &rodin.ServiceError{Procedure: proc, Code: "INSUFFICIENT_BALANCE"}, true},
+		{"body rate limit", &rodin.ServiceError{Procedure: proc, Code: "RATE_LIMITED"}, true},
+		{"2xx naming no task", &rodin.ServiceError{Procedure: "task/rodin_mesh", Code: rodin.CodeNoTaskInReply}, false},
+		{"401", &rodin.AuthError{Procedure: proc, Status: 401}, true},
+		{"403", &rodin.HTTPError{Procedure: proc, Status: 403}, true},
+		{"400", &rodin.HTTPError{Procedure: proc, Status: 400}, true},
+		{"429", &rodin.HTTPError{Procedure: proc, Status: 429}, true},
+		{"500", &rodin.HTTPError{Procedure: proc, Status: 500}, false},
+		{"502", &rodin.HTTPError{Procedure: proc, Status: 502}, false},
+		{"503", &rodin.HTTPError{Procedure: proc, Status: 503}, false},
+		{"no answer", &rodin.NetError{Procedure: proc, Err: context.DeadlineExceeded}, false},
+		{"broken reply", fmt.Errorf("%s: decode reply: %w", proc, errors.New("unexpected end of JSON input")), false},
+	}
+	for _, c := range cases {
+		if got := sendRefused(c.err); got != c.refused {
+			t.Errorf("%s: sendRefused = %v, want %v", c.name, got, c.refused)
+		}
+		err := sendFailure("redo_geometry", "u-1", c.err)
+		f, isFailure := err.(*Failure)
+		switch {
+		case c.refused && isFailure:
+			t.Errorf("%s: a refusal became %q", c.name, f.E.Message)
+		case !c.refused && (!isFailure || f.E.Code != render.CodeUnavailable || !strings.Contains(f.E.Message, "may have started") ||
+			!strings.HasPrefix(f.E.Hint, "Do not send it again: call get_task with u-1")):
+			t.Errorf("%s: not answered as may have started: %v", c.name, err)
+		}
+	}
+}

@@ -25,6 +25,6 @@ Every error carries a code, a message and a hint that names the next call. Follo
 | service_error | Hyper3D answered an error this build does not map (field service_code) | Check the arguments against get_generation_options, then retry |
 | internal_error | A bug, not caused by the arguments | Run `rodin3d-mcp doctor`, then retry |
 
-- An unavailable answer that says the request was sent but no answer came back is the exception: never send it again. Call get_task with the task id, or list_tasks for a call that creates a task.
+- An unavailable answer that says the request may have started (no answer came back, or an error answer that does not say it was refused) is the exception: never send it again. Call get_task with the task id, or list_tasks for a call that creates a task.
 - A conflict on a RodinAgentic task (an n-gons result of generate_agentic): only get_task, wait_task, get_preview and set_private act on it.
 - A download_model conflict means no finished pack yet: export_model first.

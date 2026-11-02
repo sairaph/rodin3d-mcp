@@ -183,7 +183,7 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 		t.Run("set_private, "+a.name+", sent again after get_task", func(t *testing.T) {
 			f := newFixture(t, true, true)
 			f.fake.SetPrivacyLag(lag)
-			f.fake.SetToggleStatus(a.status)
+			f.fake.ActThenAnswer(toggle, a.status)
 			r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
 			hint, _ := get(r.front, "error", "hint").(string)
 			if r.code() != "unavailable" || get(r.front, "error", "fields", "toggle_sent") != true {
@@ -224,7 +224,7 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 		t.Run("new task, "+a.name+", sent again after get_task", func(t *testing.T) {
 			f := generate(t)
 			f.fake.SetPrivacyLag(lag)
-			f.fake.SetToggleStatus(a.status)
+			f.fake.ActThenAnswer(toggle, a.status)
 			r := f.paidCall("generate_model", args())
 			if r.code() != "" {
 				t.Fatalf("code %q:\n%s", r.code(), r.text)
@@ -248,7 +248,7 @@ func setPrivateAgain(t *testing.T, f *fixture, id string) {
 	if g := f.call("get_task", map[string]any{"task_id": id}); !strings.Contains(g.text, "private: false") {
 		t.Fatalf("the lagging card does not show public:\n%s", g.text)
 	}
-	f.fake.SetToggleStatus(0)
+	f.fake.ActThenAnswer("task/set_private", 0)
 	r := f.call("set_private", map[string]any{"task_id": id, "private": true})
 	if r.code() != "" || get(r.front, "changed") != false || !strings.Contains(r.text, "already private") {
 		t.Fatalf("the second set_private:\n%s", r.text)
@@ -289,5 +289,116 @@ func TestSplitBothClaimRefusedAfterPlan(t *testing.T) {
 	case !strings.Contains(hint, "Do not send step plan or both again") || !strings.Contains(hint, "get_task with "+fakehyper.DraftID) ||
 		!strings.Contains(hint, "step generate"):
 		t.Fatalf("hint %q:\n%s", hint, r.text)
+	}
+}
+
+// Fix round 5 (notes/74): a paid send answered 5xx (a gateway failing after
+// Hyper3D acted) may have started, as one that got no answer: the reply says
+// so, never to send it again, and get_task (list_tasks for a create) shows
+// whether it started; never a retry, which could pay twice.
+func TestPaidSend5xxIsNeverSentAgain(t *testing.T) {
+	img := writeFile(t, "front.png", fakehyper.PNG(64, 64))
+	model := writeFile(t, "chair.obj", []byte("o chair\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"))
+	list := "list_tasks"
+	onTask := func(id string) string { return "get_task with " + id }
+	planned := func(f *fixture, _ map[string]any) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }
+	cases := []struct {
+		name, tool, sent string
+		args             map[string]any
+		where            string // what the hint must point to
+		setup            func(f *fixture, args map[string]any)
+		reskin           bool // the 503 is the second rodin_rigging (the reskin)
+	}{
+		{"generate_model", "generate_model", "task/rodin_mesh",
+			map[string]any{"images": []any{map[string]any{"path": img}}, "tier": "medium"}, list, nil, false},
+		{"generate_agentic", "generate_agentic", "task/rodin_agentic", map[string]any{"images": []string{img}, "budget": "basic"}, list, nil, false},
+		{"texture_model", "texture_model", "task/rodin_mesh", map[string]any{"model_path": model, "images": []string{img}}, list, nil, false},
+		{"fork_task", "fork_task", "task/rodin_fork", map[string]any{"task_id": fakehyper.GeometryID, "stage": "geometry"}, list, nil, false},
+		{"redo_geometry", "redo_geometry", "task/rodin_update", map[string]any{"task_id": fakehyper.DraftID}, onTask(fakehyper.DraftID), nil, false},
+		{"confirm_geometry", "confirm_geometry", "task/rodin_confirm", map[string]any{"task_id": fakehyper.DraftID}, onTask(fakehyper.DraftID), nil, false},
+		{"select_candidate", "select_candidate", "task/select_candidate", map[string]any{"task_id": fakehyper.DraftID, "candidate": "v1"},
+			onTask(fakehyper.DraftID), nil, false},
+		{"generate_texture", "generate_texture", "task/rodin_texture", map[string]any{"task_id": fakehyper.GeometryID}, onTask(fakehyper.GeometryID), nil, false},
+		{"redo_material", "redo_material", "task/rodin_update", map[string]any{"task_id": fakehyper.MatDraftID}, onTask(fakehyper.MatDraftID), nil, false},
+		{"confirm_material", "confirm_material", "task/rodin_confirm", map[string]any{"task_id": fakehyper.MatDraftID}, onTask(fakehyper.MatDraftID), nil, false},
+		{"export_model", "export_model", "task/rodin_unlock", map[string]any{"task_id": fakehyper.PackedID}, onTask(fakehyper.PackedID), nil, false},
+		{"split_parts plan", "split_parts", "task/bang_plan", map[string]any{"task_id": fakehyper.DraftID, "step": "plan"},
+			onTask(fakehyper.DraftID), splitSetup, false},
+		{"split_parts generate", "split_parts", "task/bang_generate", map[string]any{"task_id": fakehyper.DraftID, "step": "generate"},
+			onTask(fakehyper.DraftID), planned, false},
+		{"split_parts both, the split answered 503", "split_parts", "task/bang_generate", map[string]any{"task_id": fakehyper.DraftID},
+			onTask(fakehyper.DraftID) + " shows whether the split started", splitSetup, false},
+		{"rig_model", "rig_model", "task/rodin_rigging", map[string]any{"task_id": fakehyper.PackedID, "template": "human"},
+			onTask(fakehyper.PackedID), nil, false},
+		{"rig_model with an FBX, the reskin answered 503", "rig_model", "task/rodin_rigging", map[string]any{"task_id": fakehyper.PackedID},
+			"do not send it again", func(f *fixture, args map[string]any) {
+				args["fbx_skeleton_path"] = fbxRig(t, f, fakehyper.PackedID, func(s string) string { return s })
+			}, true},
+		{"animate_model", "animate_model", "task/rodin_rigging_pack", map[string]any{"task_id": fakehyper.PackedID, "presets": []string{"human/Walking"}},
+			onTask(fakehyper.PackedID), func(f *fixture, _ map[string]any) { f.fake.Tasks(fakehyper.PackedID).Rig = "human" }, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, true, true)
+			f.allow("generate", "redo", "confirm_geometry", "generate_texture", "confirm_material", "export", "fork", "agentic",
+				"split_parts", "rig", "animate", "texture_model")
+			if c.setup != nil {
+				c.setup(f, c.args)
+			}
+			sends := 1
+			if c.reskin {
+				// The rig call is answered; the reskin call after its wait is not.
+				sends = 2
+				f.fake.OnCall("scheduler", func() { f.fake.ActThenAnswer(c.sent, 503) })
+			} else {
+				f.fake.ActThenAnswer(c.sent, 503)
+			}
+			r := f.paidCall(c.tool, c.args)
+			hint, _ := get(r.front, "error", "hint").(string)
+			msg, _ := get(r.front, "error", "message").(string)
+			switch {
+			case f.fake.Calls(c.sent) != sends:
+				t.Fatalf("%s sent %d times:\n%s", c.sent, f.fake.Calls(c.sent), r.text)
+			case r.code() != "unavailable" || !strings.Contains(msg, "may have started"):
+				t.Fatalf("code %q, message %q:\n%s", r.code(), msg, r.text)
+			case !strings.Contains(hint, c.where) || !strings.Contains(hint, "o not send it again"):
+				t.Fatalf("hint %q does not say %q and not to send it again:\n%s", hint, c.where, r.text)
+			case strings.Contains(hint, "Retry") || strings.Contains(hint, "retry"):
+				t.Fatalf("hint %q advises a retry:\n%s", hint, r.text)
+			}
+		})
+	}
+}
+
+// A recorded call whose send answered 5xx keeps its claim (it may run), so
+// a repeat in this or another session is refused until store.ClaimBound
+// instead of being sent and paid twice.
+func TestPaidSend5xxKeepsItsClaim(t *testing.T) {
+	cases := []struct {
+		tool, sent string
+		args       func() map[string]any
+		setup      func(f *fixture)
+	}{
+		{"split_parts", "task/bang_generate", func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID, "step": "generate"} },
+			func(f *fixture) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }},
+		{"rig_model", "task/rodin_rigging", func() map[string]any { return map[string]any{"task_id": fakehyper.PackedID, "template": "human"} }, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.tool, func(t *testing.T) {
+			f := newFixture(t, true, true)
+			f.allow("split_parts", "rig")
+			if c.setup != nil {
+				c.setup(f)
+			}
+			f.fake.ActThenAnswer(c.sent, 503)
+			if r := f.paidCall(c.tool, c.args()); r.code() != "unavailable" {
+				t.Fatalf("first call:\n%s", r.text)
+			}
+			f.fake.ActThenAnswer(c.sent, 0)
+			r := f.paidCall(c.tool, c.args())
+			if r.code() != "conflict" || !strings.Contains(r.text, "still running") || f.fake.Calls(c.sent) != 1 {
+				t.Fatalf("the repeat: %s sent %d times:\n%s", c.sent, f.fake.Calls(c.sent), r.text)
+			}
+		})
 	}
 }

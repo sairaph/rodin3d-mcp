@@ -44,8 +44,7 @@ func noUserPath(t *testing.T) {
 
 func isOurs(t *testing.T, dir string) bool {
 	t.Helper()
-	ours, _ := ownSkill(dir)
-	return ours
+	return ownSkill(dir)
 }
 
 func TestInstallYesAndUninstallCarryTheSkill(t *testing.T) {

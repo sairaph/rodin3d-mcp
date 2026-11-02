@@ -451,7 +451,7 @@ func assertOurs(t *testing.T, dir, wantSkill string) {
 	if err != nil || string(got) != wantSkill {
 		t.Fatalf("%s/SKILL.md = %q (%v), want %q", dir, got, err, wantSkill)
 	}
-	if ours, _ := ownSkill(dir); !ours {
+	if !ownSkill(dir) {
 		t.Fatalf("%s is no longer recognised as ours", dir)
 	}
 }
@@ -631,53 +631,263 @@ func TestALinkedCopyLosesOnlyTheLink(t *testing.T) {
 	}
 }
 
-// A removal that cannot delete the emptied folder itself leaves an empty
-// folder, which stays ours: install rewrites it and the next removal goes.
-func TestAnEmptyFolderLeftByARemovalStaysOurs(t *testing.T) {
+// writeFiles makes dir with the named files in it.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const markerText = guide.Generator + "\n"
+
+// A folder is ours, free (empty), foreign or absent by its content only.
+func TestOwnerOfGoesByContentOnly(t *testing.T) {
+	root := t.TempDir()
+	ours := "---\nname: rodin3d\nmetadata:\n  " + guide.Generator + "\n---\nx\n"
+	for _, c := range []struct {
+		name  string
+		files map[string]string // nil: no folder
+		want  skillOwner
+	}{
+		{"absent", nil, skillAbsent},
+		{"our SKILL.md", map[string]string{"SKILL.md": ours, "topic.md": "t"}, skillOurs},
+		{"our SKILL.md beside the marker", map[string]string{"SKILL.md": ours, skillMarker: markerText}, skillOurs},
+		{"only the marker", map[string]string{skillMarker: markerText}, skillOurs},
+		{"empty", map[string]string{}, skillFree},
+		{"somebody else's SKILL.md", map[string]string{"SKILL.md": foreignSkill}, skillForeign},
+		{"somebody else's SKILL.md beside the marker", map[string]string{"SKILL.md": foreignSkill, skillMarker: markerText}, skillForeign},
+		{"the marker beside another file", map[string]string{skillMarker: markerText, "notes.txt": "mine"}, skillForeign},
+		{"a marker file with other text", map[string]string{skillMarker: "mine\n"}, skillForeign},
+		{"files without a SKILL.md", map[string]string{"notes.txt": "mine"}, skillForeign},
+	} {
+		dir := filepath.Join(root, strings.ReplaceAll(c.name, " ", "_"), guide.Name)
+		if c.files != nil {
+			writeFiles(t, dir, c.files)
+		}
+		if got := ownerOf(dir); got != c.want {
+			t.Errorf("%s: owner %d, want %d", c.name, got, c.want)
+		}
+	}
+	// A folder named like the marker is not the marker.
+	dir := filepath.Join(root, "marker_folder", guide.Name)
+	if err := os.MkdirAll(filepath.Join(dir, skillMarker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(dir); got != skillForeign {
+		t.Errorf("a folder named %s: owner %d, want foreign", skillMarker, got)
+	}
+}
+
+// A removal that cannot delete the emptied folder itself (a shell's working
+// directory) leaves the marker in it and fails: the folder stays ours, the
+// next removal retries and goes, and install writes over it.
+func TestAFailedFolderRemovalLeavesTheMarker(t *testing.T) {
 	project := t.TempDir()
 	scope := harness.ProjectScopeDir(project)
 	dir := filepath.Dir(skillPath(project, folderClaude))
 	var out bytes.Buffer
-	installSkills(&out, scope, []harness.ID{"claude-code"}, false, false)
-
-	restore := removePath
-	failOn(t, &removePath, func(p string) error {
-		if p == dir {
-			return errLocked
+	lockDir := func() func() {
+		restore := removePath
+		failOn(t, &removePath, func(p string) error {
+			if p == dir {
+				return errLocked
+			}
+			return restore(p)
+		})
+		return func() { removePath = restore }
+	}
+	marked := func(step string) {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 1 || entries[0].Name() != skillMarker {
+			t.Fatalf("%s: want only the marker left: %v %v", step, entries, err)
 		}
-		return restore(p)
-	})
-	if code := removeOwnSkills(&out, []string{dir}, false); code != 1 {
-		t.Fatalf("code %d, want 1", code)
+		if got, _ := os.ReadFile(filepath.Join(dir, skillMarker)); string(got) != markerText {
+			t.Fatalf("%s: marker holds %q", step, got)
+		}
+		if !ownSkill(dir) {
+			t.Fatalf("%s: the marked folder is not ours", step)
+		}
 	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("want the emptied folder left: %v %v", entries, err)
-	}
-	if ours, exists := ownSkill(dir); !ours || !exists {
-		t.Fatalf("ownSkill(empty folder) = %v, %v, want ours", ours, exists)
-	}
-	removePath = restore
 
-	out.Reset()
-	plan := planSkills(scope, []harness.ID{"claude-code"}, false)
-	if len(plan.Rows) != 1 || plan.Rows[0].State != skillWritten || !isOurs(t, dir) {
-		t.Fatalf("install over the empty folder: %+v", plan.Rows)
+	installSkills(&out, scope, []harness.ID{"claude-code"}, false, false)
+	unlock := lockDir()
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 1 || !strings.Contains(out.String(), "[fail] "+dir) {
+		t.Fatalf("code %d, want 1 with a [fail] line:\n%s", code, out.String())
 	}
-	if code := removeOwnSkills(&out, []string{dir}, false); code != 0 {
-		t.Fatalf("removal: code %d\n%s", code, out.String())
+	marked("first removal")
+	// A retry while the folder is still locked fails the same way.
+	out.Reset()
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 1 {
+		t.Fatalf("retry: code %d, want 1", code)
+	}
+	marked("retry")
+	unlock()
+	out.Reset()
+	if code := removeOwnSkills(&out, []string{dir}, false); code != 0 || !strings.Contains(out.String(), "removed the guide skill "+dir) {
+		t.Fatalf("removal once unlocked: code %d\n%s", code, out.String())
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("the folder is still there (%v)", err)
 	}
 
-	// In the home, refresh and uninstall find it too.
+	// install over the marked folder writes the guide; the marker goes.
+	installSkills(&out, scope, []harness.ID{"claude-code"}, false, false)
+	unlock = lockDir()
+	removeOwnSkills(&out, []string{dir}, false)
+	unlock()
+	marked("removal before install")
+	plan := planSkills(scope, []harness.ID{"claude-code"}, false)
+	if len(plan.Rows) != 1 || plan.Rows[0].State != skillWritten || !isOurs(t, dir) {
+		t.Fatalf("install over the marked folder: %+v", plan.Rows)
+	}
+	if _, err := os.Stat(filepath.Join(dir, skillMarker)); !os.IsNotExist(err) {
+		t.Errorf("the marker is in the new copy (%v)", err)
+	}
+	for _, side := range []string{".new", ".old"} {
+		if _, err := os.Stat(dir + side); !os.IsNotExist(err) {
+			t.Errorf("%s was left behind", dir+side)
+		}
+	}
+
+	// In the home, update and uninstall find a marked folder.
 	home := testHome(t)
-	empty := filepath.Dir(skillPath(home, folderAgents))
-	if err := os.MkdirAll(empty, 0o755); err != nil {
+	agents := filepath.Dir(skillPath(home, folderAgents))
+	writeFiles(t, agents, map[string]string{skillMarker: markerText})
+	t.Cleanup(func() { os.RemoveAll(filepath.Join(home, ".agents")) })
+	if got := ownUserSkills(home); len(got) != 1 || got[0] != agents {
+		t.Errorf("own user skills = %v, want %s", got, agents)
+	}
+}
+
+// An empty rodin3d folder is anybody's: install and the re-write in
+// removeSkills write into it; update, prune and uninstall leave it.
+func TestAnEmptyFolderIsFree(t *testing.T) {
+	home := testHome(t)
+	claude := filepath.Dir(skillPath(home, folderClaude))
+	agents := filepath.Dir(skillPath(home, folderAgents))
+	t.Cleanup(func() {
+		os.RemoveAll(filepath.Join(home, ".claude"))
+		os.RemoveAll(filepath.Join(home, ".agents"))
+	})
+	empty := func(dir, step string) {
+		t.Helper()
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Errorf("%s: %s was touched: %v %v", step, dir, entries, err)
+		}
+	}
+	for _, dir := range []string{claude, agents} {
+		writeFiles(t, dir, nil)
+	}
+	var out bytes.Buffer
+
+	// uninstall lists only the copies that are ours; update rewrites them.
+	if got := ownUserSkills(home); len(got) != 0 {
+		t.Errorf("own user skills = %v, want none", got)
+	}
+	if code := RefreshSkills(&out, false); code != 0 || strings.Contains(out.String(), "updated") {
+		t.Errorf("refresh: code %d\n%s", code, out.String())
+	}
+	empty(claude, "refresh")
+	empty(agents, "refresh")
+
+	// removeSkills does not remove it.
+	out.Reset()
+	if code := removeSkills(&out, harness.Scope{}, []harness.ID{"codex"}, nil, false); code != 0 || out.Len() != 0 {
+		t.Errorf("removeSkills: code %d\n%s", code, out.String())
+	}
+	empty(agents, "removeSkills")
+
+	// install writes into an empty folder; prune leaves the empty one in
+	// the folder no client reads.
+	out.Reset()
+	if code := installSkills(&out, harness.Scope{}, []harness.ID{"claude-code"}, false, true); code != 0 {
+		t.Fatalf("install: code %d\n%s", code, out.String())
+	}
+	if !isOurs(t, claude) || strings.Contains(out.String(), "removed") {
+		t.Fatalf("install over the empty folder:\n%s", out.String())
+	}
+	empty(agents, "prune")
+	for _, side := range []string{".new", ".old"} {
+		if _, err := os.Stat(claude + side); !os.IsNotExist(err) {
+			t.Errorf("%s was left behind", claude+side)
+		}
+	}
+
+	// removeSkills' re-write gives a remaining client a copy in its empty
+	// folder (Cursor without Claude Code reads .agents).
+	out.Reset()
+	if code := removeSkills(&out, harness.Scope{}, []harness.ID{"claude-code"}, []harness.ID{"cursor"}, false); code != 0 {
+		t.Fatalf("removeSkills: code %d\n%s", code, out.String())
+	}
+	if _, err := os.Stat(claude); !os.IsNotExist(err) {
+		t.Errorf("the removed client's copy is still there (%v)", err)
+	}
+	if !isOurs(t, agents) || !strings.Contains(out.String(), "wrote the guide skill to "+agents) {
+		t.Errorf("cursor got no copy in its empty folder:\n%s", out.String())
+	}
+}
+
+// A write clears what an earlier one left aside: an empty folder (the
+// empty one a write replaced) with removePath, a copy aside that holds only
+// the marker, and a .new that holds only the marker.
+func TestAnEmptyOrMarkedFolderAsideIsCleared(t *testing.T) {
+	for _, c := range []struct {
+		name, side string
+		files      map[string]string
+	}{
+		{"empty .old", ".old", map[string]string{}},
+		{"marked .old", ".old", map[string]string{skillMarker: markerText}},
+		{"marked .new", ".new", map[string]string{skillMarker: markerText}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "rodin3d")
+			writeOurs(t, dir)
+			writeFiles(t, dir+c.side, c.files)
+			if err := writeSkillFolder(dir); err != nil {
+				t.Fatal(err)
+			}
+			assertOurs(t, dir, guide.SkillMarkdown())
+			if _, err := os.Lstat(dir + c.side); !os.IsNotExist(err) {
+				t.Errorf("%s is still there (%v)", dir+c.side, err)
+			}
+		})
+	}
+
+	// An empty folder written over is renamed aside and removed.
+	dir := filepath.Join(t.TempDir(), "rodin3d")
+	writeFiles(t, dir, nil)
+	var removed []string
+	restore := removePath
+	failOn(t, &removePath, func(p string) error {
+		removed = append(removed, p)
+		return restore(p)
+	})
+	if err := writeSkillFolder(dir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(filepath.Join(home, ".agents")) })
-	if got := ownUserSkills(home); len(got) != 1 || got[0] != empty {
-		t.Errorf("own user skills = %v, want %s", got, empty)
+	assertOurs(t, dir, guide.SkillMarkdown())
+	if _, err := os.Lstat(dir + ".old"); !os.IsNotExist(err) {
+		t.Errorf("the empty folder renamed aside is still there (%v)", err)
+	}
+	if len(removed) != 1 || removed[0] != dir+".old" {
+		t.Errorf("removePath calls %v, want the empty %s only", removed, dir+".old")
+	}
+	// A folder aside that is no longer empty when it is removed stays.
+	aside := filepath.Join(t.TempDir(), "rodin3d.old")
+	writeFiles(t, aside, nil)
+	failOn(t, &removePath, func(p string) error {
+		writeFiles(t, p, map[string]string{"late.txt": "mine"})
+		return restore(p)
+	})
+	clearAside(aside)
+	if _, err := os.Stat(filepath.Join(aside, "late.txt")); err != nil {
+		t.Errorf("a file that came into the empty folder aside was removed: %v", err)
 	}
 }

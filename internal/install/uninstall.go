@@ -182,7 +182,7 @@ func Uninstall(ctx context.Context, env Env, cmd cli.Command) int {
 	// 4. The guide skill copies this program wrote; a folder whose SKILL.md
 	// lost the marker since the list is somebody else's now and stays.
 	for _, s := range skills {
-		if ours, _ := ownSkill(s); !ours {
+		if !ownSkill(s) {
 			row(w, "Guide skill", s+": no longer the copy "+domain.BinaryName+" wrote; left as it is")
 			continue
 		}

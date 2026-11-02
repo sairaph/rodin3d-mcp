@@ -3,10 +3,11 @@ package install
 // The rodin3d skill (internal/guide) is written into the skill folders of
 // the AI clients install registers, and only those: each client is mapped to
 // the one folder it reads, and clients that read the same folder share one
-// copy. Only a folder whose SKILL.md carries the marker guide.Generator is
-// ever replaced or removed, so a skill of the same name that somebody else
-// wrote or edited is left alone. update rewrites the copies that exist
-// (RefreshSkills); uninstall removes the ones it wrote.
+// copy. Only a folder that is ours by its content (ownerOf: its SKILL.md
+// carries the marker guide.Generator) is ever replaced or removed, so a
+// skill of the same name that somebody else wrote or edited is left alone;
+// install also writes into an empty folder. update rewrites the copies that
+// exist (RefreshSkills); uninstall removes the ones it wrote.
 
 import (
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/sairaph/mcp-wizard/harness"
 
@@ -113,22 +115,61 @@ func allSkillFolders(scope harness.Scope, home string) []string {
 // skillHome returns the home directory the user-scope folders live under.
 func skillHome() (string, error) { return os.UserHomeDir() }
 
-// ownSkill reports whether dir holds a skill rodin3d-mcp wrote, and whether
-// dir exists at all. An empty folder counts as ours: it is what a removal
-// that could not delete the folder itself (a shell's working directory, on
-// Windows) leaves, and it holds nothing of anybody's.
-func ownSkill(dir string) (ours, exists bool) {
+// skillMarker is the file a removal that could not delete the folder itself
+// (a shell's working directory, on Windows) leaves in the emptied folder. It
+// holds the line guide.Generator, so the next install or uninstall still
+// knows the folder is ours.
+const skillMarker = ".rodin3d-mcp"
+
+// skillOwner says whose a skill folder is, by its content only.
+type skillOwner int
+
+const (
+	// skillAbsent: there is no folder.
+	skillAbsent skillOwner = iota
+	// skillOurs: its SKILL.md carries guide.Generator, or it holds only the
+	// marker file a failed removal left (skillMarker).
+	skillOurs
+	// skillFree: an empty folder. It holds nothing to lose, so install may
+	// write into it; update, prune and uninstall never touch it, as anybody
+	// may have made it.
+	skillFree
+	// skillForeign: anything else, a skill somebody else wrote or edited.
+	skillForeign
+)
+
+// ownerOf says whose the skill folder dir is.
+func ownerOf(dir string) skillOwner {
 	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	if err == nil {
-		return guide.IsOurs(string(data)), true
+		if guide.IsOurs(string(data)) {
+			return skillOurs
+		}
+		return skillForeign
 	}
 	if _, statErr := os.Lstat(dir); statErr != nil {
-		return false, false
+		return skillAbsent
 	}
-	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
-		return true, true
+	entries, err := os.ReadDir(dir)
+	switch {
+	case err != nil:
+		return skillForeign
+	case len(entries) == 0:
+		return skillFree
+	case len(entries) == 1 && entries[0].Name() == skillMarker && entries[0].Type().IsRegular() && isMarker(filepath.Join(dir, skillMarker)):
+		return skillOurs
 	}
-	return false, true
+	return skillForeign
+}
+
+// ownSkill reports whether dir holds a skill rodin3d-mcp wrote.
+func ownSkill(dir string) bool { return ownerOf(dir) == skillOurs }
+
+// isMarker reports whether the file at path is the marker a failed removal
+// wrote.
+func isMarker(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.TrimSpace(string(data)) == guide.Generator
 }
 
 // isLink reports whether path is a symbolic link or, on Windows, a junction
@@ -208,20 +249,28 @@ func writeSkillFrom(src fs.FS, dir string) error {
 // SKILL.md goes first, so a client never lists a half-removed folder as a
 // second skill; a folder there that holds somebody else's SKILL.md stays. A
 // link there (a linked copy that a write renamed aside) loses only the link.
+// An empty folder there (an empty one a write replaced) is removed with
+// removePath, which removes only an empty folder.
 func clearAside(old string) {
-	ours, exists := ownSkill(old)
-	if !exists {
+	owner := ownerOf(old)
+	if owner == skillAbsent {
 		return
 	}
 	skill := filepath.Join(old, "SKILL.md")
-	if _, err := os.Stat(skill); err == nil && !ours {
+	_, statErr := os.Stat(skill)
+	hasSkill := statErr == nil
+	if hasSkill && owner != skillOurs {
 		return
 	}
 	if isLink(old) {
 		removePath(old)
 		return
 	}
-	if ours && removePath(skill) != nil {
+	switch {
+	case owner == skillFree:
+		removePath(old)
+		return
+	case hasSkill && removePath(skill) != nil:
 		return
 	}
 	removeTree(old)
@@ -229,9 +278,11 @@ func clearAside(old string) {
 
 // removeSkillFolder removes a copy rodin3d-mcp wrote with its SKILL.md
 // last, so a file that cannot be removed (locked on Windows) leaves a copy
-// that is still recognised as ours and is removed on the next try. A link
-// (symbolic, or a junction) is removed itself; what it points to is never
-// entered.
+// that is still recognised as ours and is removed on the next try. A folder
+// that cannot be removed itself once emptied (a shell's working directory,
+// on Windows) gets the marker file, so it stays ours for the next try. A
+// link (symbolic, or a junction) is removed itself; what it points to is
+// never entered.
 func removeSkillFolder(dir string) error {
 	if isLink(dir) {
 		if err := removePath(dir); err != nil {
@@ -260,6 +311,8 @@ func removeSkillFolder(dir string) error {
 		return err
 	}
 	if err := removePath(dir); err != nil {
+		// Without the marker the empty folder would read as anybody's.
+		os.WriteFile(filepath.Join(dir, skillMarker), []byte(guide.Generator+"\n"), 0o644)
 		return err
 	}
 	clearAside(dir + ".old")
@@ -298,7 +351,7 @@ type skillPlan struct {
 
 // planSkills decides, and with dryRun false does, the writing of the guide
 // for ids' clients: one row per folder. A folder that holds a skill this
-// program did not write is skipped.
+// program did not write is skipped; an empty one is written into.
 func planSkills(scope harness.Scope, ids []harness.ID, dryRun bool) skillPlan {
 	if len(ids) == 0 {
 		return skillPlan{}
@@ -312,9 +365,8 @@ func planSkills(scope harness.Scope, ids []harness.ID, dryRun bool) skillPlan {
 	for _, dir := range dirs {
 		target := filepath.Join(dir, guide.Name)
 		row := skillRow{Dir: target, Clients: served[dir]}
-		ours, exists := ownSkill(target)
 		switch {
-		case exists && !ours:
+		case ownerOf(target) == skillForeign:
 			row.State = skillSkipped
 		case dryRun:
 			row.State = skillWouldWrite
@@ -403,7 +455,7 @@ func removeSkills(w io.Writer, scope harness.Scope, removed, remaining []harness
 	var targets []string
 	for _, dir := range dirs {
 		target := filepath.Join(dir, guide.Name)
-		if ours, _ := ownSkill(target); ours && !keep[dir] {
+		if ownSkill(target) && !keep[dir] {
 			targets = append(targets, target)
 		}
 	}
@@ -413,10 +465,11 @@ func removeSkills(w io.Writer, scope harness.Scope, removed, remaining []harness
 	fmt.Fprintln(w, "\n  Guide skill")
 	code := removeOwnSkills(w, targets, dryRun)
 	// A client that stays registered may have read the folder just emptied
-	// (Cursor read Claude Code's): give it a copy where it looks.
+	// (Cursor read Claude Code's): give it a copy where it looks, unless a
+	// copy is there (ours or somebody else's); an empty folder gets one.
 	for _, dir := range stillNeeded {
 		target := filepath.Join(dir, guide.Name)
-		if _, exists := ownSkill(target); exists {
+		if owner := ownerOf(target); owner == skillOurs || owner == skillForeign {
 			continue
 		}
 		if dryRun {
@@ -438,7 +491,7 @@ func removeSkills(w io.Writer, scope harness.Scope, removed, remaining []harness
 func removeOwnSkills(w io.Writer, targets []string, dryRun bool) int {
 	code := 0
 	for _, target := range targets {
-		if ours, _ := ownSkill(target); !ours {
+		if !ownSkill(target) {
 			continue
 		}
 		if dryRun {
@@ -461,7 +514,7 @@ func ownUserSkills(home string) []string {
 	var out []string
 	for _, dir := range allSkillFolders(harness.Scope{}, home) {
 		target := filepath.Join(dir, guide.Name)
-		if ours, _ := ownSkill(target); ours {
+		if ownSkill(target) {
 			out = append(out, target)
 		}
 	}

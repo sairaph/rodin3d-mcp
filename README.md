@@ -212,6 +212,8 @@ what to do for each error. It is the `rodin3d` skill, in topics:
 - Only a copy whose `SKILL.md` carries the `generator: rodin3d-mcp` marker is
   ever replaced or removed: a `rodin3d` skill without it (one you wrote, or a
   copy whose marker line you removed to keep your edits) stays as it is.
+  `install` also writes into an empty `rodin3d` folder; `update` and
+  `uninstall` leave an empty one alone.
 - `rodin3d-mcp update` rewrites the copies it wrote with the new version's
   guide, and `uninstall` removes them. After updating from 0.1.2 or older
   with `rodin3d-mcp update`, run `rodin3d-mcp install --yes` once (or the

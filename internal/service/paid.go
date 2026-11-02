@@ -261,17 +261,19 @@ func sentUnanswered(err error) bool {
 // sendRefused reports whether err, the error of a request that charges or
 // changes a task, is a clear refusal, after which nothing was charged or
 // changed:
-//   - a Hyper3D error code in a 2xx body (not CodeNoTaskInReply, which the
-//     client reports for a create taken with a broken reply);
+//   - a Hyper3D error code in a 2xx body that names a check of the request
+//     (not one of serverFailureCodes);
 //   - a session Hyper3D refused, or none to send (401, sign in again);
-//   - an HTTP status below 500: 403, the other 4xx, and 429, which by
-//     convention (RFC 6585) means the request was not processed; nothing in
-//     the docs or the notes says that Hyper3D applies a request it answers
-//     with 429.
+//   - an HTTP status below 500: 403, the other 4xx, and 429. Treating 429 as
+//     refused follows the usual rate-limiter practice of answering before
+//     the request is handled; it is not verified. RFC 6585 only says that
+//     too many requests were sent, the docs (notes/10) list 429 with
+//     Retry-After beside 400 and 401, and no note shows whether Hyper3D
+//     applies a request it answers with 429.
 //
 // Any other error may have come after Hyper3D took the request: a 5xx from a
-// gateway after the backend acted, no answer, or a broken one. Such a
-// request is never to be sent again.
+// gateway after the backend acted, a body code naming a server failure, no
+// answer, or a broken one. Such a request is never to be sent again.
 func sendRefused(err error) bool {
 	var se *rodin.ServiceError
 	var ae *rodin.AuthError
@@ -280,13 +282,30 @@ func sendRefused(err error) bool {
 	var oe *auth.OAuthError
 	switch {
 	case errors.As(err, &se):
-		return se.Code != rodin.CodeNoTaskInReply
+		return !serverFailureCodes[se.Code]
 	case errors.As(err, &ae), errors.Is(err, rodin.ErrUnauthorized), errors.As(err, &lr), errors.As(err, &oe):
 		return true
 	case errors.As(err, &he):
 		return he.Status < 500
 	}
 	return false
+}
+
+// serverFailureCodes are the body error codes that name a failure on
+// Hyper3D's side, not a check of the request, so the request may have been
+// taken before it (the same as a 5xx):
+//   - INTERNAL_SERVER_ERROR: "An unexpected error occurred" (the web's
+//     table, rodin.WebMessages);
+//   - NS_ERROR_FAILURE: "WebSocket connection failed" (the same table);
+//   - API_UNKNOWN: the API v2 docs' unknown error (notes/10);
+//   - rodin.CodeNoTaskInReply: the client's own code for a create taken with
+//     a reply that names no task.
+//
+// Every other code of the table names a check of the request (balance,
+// stage, plan, input) or belongs to no task procedure (the referral and
+// e-mail codes), and stays a refusal.
+var serverFailureCodes = map[string]bool{
+	"INTERNAL_SERVER_ERROR": true, "NS_ERROR_FAILURE": true, "API_UNKNOWN": true, rodin.CodeNoTaskInReply: true,
 }
 
 // sendFailure turns the error of the sent request into the reply: a request

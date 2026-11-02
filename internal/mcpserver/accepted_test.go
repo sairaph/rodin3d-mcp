@@ -175,15 +175,25 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 	})
 	// M5: a toggle answered 5xx (a gateway failing after Hyper3D acted) may
 	// have been applied: it is answered and recorded as an accepted one.
+	// M6: so does one answered 201 with a body code naming a server failure.
 	answers := []struct {
 		name   string
-		status int // what task/set_private answers after it toggled; 0: 201
-	}{{"the card lags", 0}, {"the toggle answered 503 after it was applied, the card lags", 503}}
+		status int    // what task/set_private answers after it toggled; 0: 201
+		code   string // or the body error code of its 201
+	}{{"the card lags", 0, ""}, {"the toggle answered 503 after it was applied, the card lags", 503, ""},
+		{"the toggle answered INTERNAL_SERVER_ERROR after it was applied, the card lags", 0, "INTERNAL_SERVER_ERROR"}}
+	answer := func(f *fixture, status int, code string) {
+		if code != "" {
+			f.fake.ActThenBodyError(toggle, code)
+		} else {
+			f.fake.ActThenAnswer(toggle, status)
+		}
+	}
 	for _, a := range answers {
 		t.Run("set_private, "+a.name+", sent again after get_task", func(t *testing.T) {
 			f := newFixture(t, true, true)
 			f.fake.SetPrivacyLag(lag)
-			f.fake.ActThenAnswer(toggle, a.status)
+			answer(f, a.status, a.code)
 			r := f.call("set_private", map[string]any{"task_id": fakehyper.GeometryID, "private": true})
 			hint, _ := get(r.front, "error", "hint").(string)
 			if r.code() != "unavailable" || get(r.front, "error", "fields", "toggle_sent") != true {
@@ -224,7 +234,7 @@ func TestAcceptedToggleIsNeverSentAgain(t *testing.T) {
 		t.Run("new task, "+a.name+", sent again after get_task", func(t *testing.T) {
 			f := generate(t)
 			f.fake.SetPrivacyLag(lag)
-			f.fake.ActThenAnswer(toggle, a.status)
+			answer(f, a.status, a.code)
 			r := f.paidCall("generate_model", args())
 			if r.code() != "" {
 				t.Fatalf("code %q:\n%s", r.code(), r.text)
@@ -398,6 +408,70 @@ func TestPaidSend5xxKeepsItsClaim(t *testing.T) {
 			r := f.paidCall(c.tool, c.args())
 			if r.code() != "conflict" || !strings.Contains(r.text, "still running") || f.fake.Calls(c.sent) != 1 {
 				t.Fatalf("the repeat: %s sent %d times:\n%s", c.sent, f.fake.Calls(c.sent), r.text)
+			}
+		})
+	}
+}
+
+// M6 (notes/75): a paid send answered 201 with a body code naming a failure
+// on Hyper3D's side (INTERNAL_SERVER_ERROR) may have started, as a 5xx: the
+// reply says so and never to send it again, the ledger records unknown, and
+// a recorded call keeps its claim, so a repeat is refused.
+func TestPaidSendBodyServerErrorIsNeverSentAgain(t *testing.T) {
+	img := writeFile(t, "front.png", fakehyper.PNG(64, 64))
+	cases := []struct {
+		name, tool, sent string
+		args             func() map[string]any
+		where            string // what the hint must point to
+		ledger           string // the task whose ledger row says unknown ("" none known)
+		setup            func(f *fixture)
+		claim            bool // a repeat is refused while the claim stays
+	}{
+		{"generate_model", "generate_model", "task/rodin_mesh",
+			func() map[string]any {
+				return map[string]any{"images": []any{map[string]any{"path": img}}, "tier": "medium"}
+			}, "list_tasks", "", nil, false},
+		{"redo_geometry", "redo_geometry", "task/rodin_update", func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID} },
+			"get_task with " + fakehyper.DraftID, fakehyper.DraftID, nil, false},
+		{"split_parts generate", "split_parts", "task/bang_generate",
+			func() map[string]any { return map[string]any{"task_id": fakehyper.DraftID, "step": "generate"} }, "get_task with " + fakehyper.DraftID,
+			fakehyper.DraftID, func(f *fixture) { splitSetup(f, nil); f.fake.Tasks(fakehyper.DraftID).Planned = true }, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, true, true)
+			f.allow("generate", "redo", "split_parts")
+			if c.setup != nil {
+				c.setup(f)
+			}
+			f.fake.ActThenBodyError(c.sent, "INTERNAL_SERVER_ERROR")
+			r := f.paidCall(c.tool, c.args())
+			hint, _ := get(r.front, "error", "hint").(string)
+			msg, _ := get(r.front, "error", "message").(string)
+			switch {
+			case f.fake.Calls(c.sent) != 1:
+				t.Fatalf("%s sent %d times:\n%s", c.sent, f.fake.Calls(c.sent), r.text)
+			case r.code() != "unavailable" || !strings.Contains(msg, "may have started"):
+				t.Fatalf("code %q, message %q:\n%s", r.code(), msg, r.text)
+			case !strings.Contains(hint, c.where) || !strings.Contains(hint, "o not send it again") || strings.Contains(hint, "etry"):
+				t.Fatalf("hint %q does not say %q and not to send it again, or advises a retry:\n%s", hint, c.where, r.text)
+			}
+			if c.ledger != "" {
+				st, err := f.svc.Store()
+				if err != nil {
+					t.Fatal(err)
+				}
+				rows, err := st.LedgerFor(c.ledger)
+				if err != nil || len(rows) == 0 || !strings.HasPrefix(rows[len(rows)-1].Result, "unknown:") {
+					t.Fatalf("ledger of %s: %+v, %v", c.ledger, rows, err)
+				}
+			}
+			if c.claim {
+				f.fake.ActThenBodyError(c.sent, "")
+				r := f.paidCall(c.tool, c.args())
+				if r.code() != "conflict" || !strings.Contains(r.text, "still running") || f.fake.Calls(c.sent) != 1 {
+					t.Fatalf("the repeat: %s sent %d times:\n%s", c.sent, f.fake.Calls(c.sent), r.text)
+				}
 			}
 		})
 	}

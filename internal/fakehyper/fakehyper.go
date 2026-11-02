@@ -107,18 +107,18 @@ type Server struct {
 	refreshes int
 	revokes   int
 	// Switches set through their methods (under the lock).
-	bodyRefuse int               // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
-	failList   int               // next n history lists: HTTP 503
-	failRevoke int               // next n revokes: HTTP 503
-	fileStatus int               // non-zero: every file request answers this status
-	extraTotal int               // added to the history list's reported total
-	fileOK     int               // file replies with the body
-	fileNotMod int               // file replies 304 Not Modified
-	failAfter  string            // once this procedure was called, failProcs answer HTTP 503
-	failProcs  []string          // procedures (as Calls names them) failing after failAfter
-	privacyLag time.Duration     // how long the cards show the privacy before a task/set_private
-	actThen    map[string]int    // procedure -> the status it answers after acting (ActThenAnswer)
-	onCall     map[string]func() // runs once when the procedure is called (OnCall)
+	bodyRefuse int                  // next n API calls: 2xx with {"error":"NO_CURRENT_USER"}
+	failList   int                  // next n history lists: HTTP 503
+	failRevoke int                  // next n revokes: HTTP 503
+	fileStatus int                  // non-zero: every file request answers this status
+	extraTotal int                  // added to the history list's reported total
+	fileOK     int                  // file replies with the body
+	fileNotMod int                  // file replies 304 Not Modified
+	failAfter  string               // once this procedure was called, failProcs answer HTTP 503
+	failProcs  []string             // procedures (as Calls names them) failing after failAfter
+	privacyLag time.Duration        // how long the cards show the privacy before a task/set_private
+	actThen    map[string]actAnswer // procedure -> what it answers after acting (ActThenAnswer, ActThenBodyError)
+	onCall     map[string]func()    // runs once when the procedure is called (OnCall)
 	// AccessTTL is the lifetime of issued access tokens (seconds).
 	AccessTTL int
 	// Reject401 makes the next n API calls answer 401 regardless of the token.
@@ -288,12 +288,31 @@ func (s *Server) SetPrivacyLag(d time.Duration) {
 // usual and then answer HTTP status instead of its own reply, as a gateway
 // that fails after Hyper3D acted; 0 gives the procedure its own reply again.
 func (s *Server) ActThenAnswer(procedure string, status int) {
+	s.actThenWith(procedure, actAnswer{status: status})
+}
+
+// ActThenBodyError makes every call of procedure act as usual and then
+// answer HTTP 201 with {"error": code} instead of its own reply, as Hyper3D
+// reporting a failure of its own (INTERNAL_SERVER_ERROR) after it acted; ""
+// gives the procedure its own reply again.
+func (s *Server) ActThenBodyError(procedure, code string) {
+	s.actThenWith(procedure, actAnswer{code: code})
+}
+
+// actAnswer is what a procedure answers after acting: HTTP status, or 201
+// with the body error code.
+type actAnswer struct {
+	status int
+	code   string
+}
+
+func (s *Server) actThenWith(procedure string, a actAnswer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.actThen == nil {
-		s.actThen = map[string]int{}
+		s.actThen = map[string]actAnswer{}
 	}
-	s.actThen[procedure] = status
+	s.actThen[procedure] = a
 }
 
 // OnCall runs fn once, the next time procedure (as Calls names it) is
@@ -596,11 +615,16 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request, proc string) {
 		}
 		return t, ok
 	}
-	if status := s.actThen[name]; status != 0 {
-		// The procedure acts as usual; its own answer is dropped (ActThenAnswer).
+	if a := s.actThen[name]; a.status != 0 || a.code != "" {
+		// The procedure acts as usual; its own answer is dropped
+		// (ActThenAnswer, ActThenBodyError).
 		answer := w
 		w = httptest.NewRecorder()
-		defer writeJSON(answer, status, map[string]any{"statusCode": status, "message": http.StatusText(status)})
+		if a.code != "" {
+			defer writeJSON(answer, 201, map[string]any{"error": a.code})
+		} else {
+			defer writeJSON(answer, a.status, map[string]any{"statusCode": a.status, "message": http.StatusText(a.status)})
+		}
 	}
 
 	switch {

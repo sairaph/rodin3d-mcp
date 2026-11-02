@@ -88,7 +88,12 @@ func TestSendRefused(t *testing.T) {
 	}{
 		{"body error code", &rodin.ServiceError{Procedure: proc, Code: "INSUFFICIENT_BALANCE"}, true},
 		{"body rate limit", &rodin.ServiceError{Procedure: proc, Code: "RATE_LIMITED"}, true},
+		{"body quota", &rodin.ServiceError{Procedure: proc, Code: "INSUFFICIENT_CHANCES"}, true},
+		{"body missing input", &rodin.ServiceError{Procedure: proc, Code: "FILE_NOT_FOUND"}, true},
 		{"2xx naming no task", &rodin.ServiceError{Procedure: "task/rodin_mesh", Code: rodin.CodeNoTaskInReply}, false},
+		{"body server error", &rodin.ServiceError{Procedure: proc, Code: "INTERNAL_SERVER_ERROR"}, false},
+		{"body NS_ERROR_FAILURE", &rodin.ServiceError{Procedure: proc, Code: "NS_ERROR_FAILURE"}, false},
+		{"body API_UNKNOWN", &rodin.ServiceError{Procedure: proc, Code: "API_UNKNOWN"}, false},
 		{"401", &rodin.AuthError{Procedure: proc, Status: 401}, true},
 		{"403", &rodin.HTTPError{Procedure: proc, Status: 403}, true},
 		{"400", &rodin.HTTPError{Procedure: proc, Status: 400}, true},

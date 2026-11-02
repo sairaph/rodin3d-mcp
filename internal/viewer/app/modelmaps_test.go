@@ -280,7 +280,18 @@ func TestModelFileReloadFromTextures(t *testing.T) {
 	if st := a.snapshot(); st.Layout != viewer.LayoutTextures || !slices.Contains(st.Layouts, st.Layout) {
 		t.Fatalf("while reloading: layout %s of %v", st.Layout, st.Layouts)
 	}
+	// The panel has no picture while the file is read again: a screenshot
+	// waits (the state is not full quality) and the panel says why.
+	if q := a.snapshot().Quality; q != viewer.QualityInteractive || a.pendingImages() != 1 {
+		t.Fatalf("while reloading: quality %s, %d pending", q, a.pendingImages())
+	}
+	if got := noTextureText(a); got != "Reading out.glb again..." {
+		t.Fatalf("while reloading the panel says %q", got)
+	}
 	runPost(t, a)
+	if got := noTextureText(a); got != "No texture to show." {
+		t.Fatalf("after the reload the empty panel would say %q", got)
+	}
 	if p.status != "ready" || loads.Load() != 2 || shown.err != "" {
 		t.Fatalf("after the reload: status %s, %d reads, old thumb error %q", p.status, loads.Load(), shown.err)
 	}

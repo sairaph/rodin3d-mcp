@@ -822,12 +822,25 @@ func (s *uiState) marker(a *App, dst *ebiten.Image, i int, x, y float32) {
 	s.textIn(dst, strconv.Itoa(i), s.faceSmall, image.Rect(int(x-rr), int(y-rr), int(x+rr), int(y+rr)), colText)
 }
 
+// noTextureText is what the textures panel says when it has no picture to
+// show: that the model file is being read (again, on a reload), or that
+// there is none.
+func noTextureText(a *App) string {
+	if p := a.modelPane(); p != nil && p.status == "loading" {
+		if p.reloaded {
+			return "Reading " + filepath.Base(p.file) + " again..."
+		}
+		return "Reading " + filepath.Base(p.file) + "..."
+	}
+	return "No texture to show."
+}
+
 func (s *uiState) drawTextures(a *App, dst *ebiten.Image) {
 	r := s.texView
 	s.fill(dst, s.main, colBg)
 	s.fill(dst, r, colPane)
 	if a.texSel < 0 || a.texSel >= len(a.textures) {
-		s.textIn(dst, "No texture to show.", s.face, r, colDim)
+		s.textIn(dst, noTextureText(a), s.face, r, colDim)
 		return
 	}
 	t := a.textures[a.texSel]

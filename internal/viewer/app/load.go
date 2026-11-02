@@ -767,7 +767,9 @@ func (a *App) releaseThumbs(ts []*thumb) {
 	}
 }
 
-// pendingImages counts pictures still loading.
+// pendingImages counts pictures still loading; in the textures layout a
+// model file pane that is loading (a reload reads the file again, and its
+// pictures are listed after it) counts as one.
 func (a *App) pendingImages() int {
 	n := 0
 	count := func(ts []*thumb) {
@@ -783,6 +785,9 @@ func (a *App) pendingImages() int {
 			count(a.inputs.items)
 		}
 	case viewer.LayoutTextures:
+		if p := a.modelPane(); p != nil && p.status == "loading" {
+			n++
+		}
 		if t := a.shownTexture(); t != nil {
 			count([]*thumb{t})
 		}

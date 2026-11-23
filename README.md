@@ -1,3 +1,5 @@
+<img src=".github/icon.svg" alt="" width="96" height="96">
+
 # rodin3d-mcp
 
 An MCP server, command line and terminal app for **Rodin**, the image-to-3D
